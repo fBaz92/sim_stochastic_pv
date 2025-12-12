@@ -23,6 +23,8 @@ from .optimizer import (
     ScenarioOptimizer,
 )
 from .reporting import generate_report
+from .result_builder import ResultBuilder
+from .application import SimulationApplication
 
 __all__ = [
     "BatteryBank",
@@ -54,4 +56,6 @@ __all__ = [
     "SolarMonthParams",
     "make_default_solar_params_for_pavullo",
     "generate_report",
+    "ResultBuilder",
+    "SimulationApplication",
 ]

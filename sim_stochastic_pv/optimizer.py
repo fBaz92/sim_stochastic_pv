@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass, replace
 from itertools import product
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional
+from typing import Any, Callable, Iterable, List, Optional
 
 from .battery import BatterySpecs
 from .energy_simulator import EnergySystemConfig, EnergySystemSimulator
@@ -25,6 +25,9 @@ class InverterOption:
     integrated_battery_specs: BatterySpecs | None = None
     integrated_battery_price_eur: float | None = None
     integrated_battery_count_options: List[int] | None = None
+    manufacturer: str | None = None
+    model_number: str | None = None
+    datasheet: dict[str, Any] | None = None
 
     def total_cost(self) -> float:
         return self.price_eur + self.installation_cost()
@@ -40,6 +43,9 @@ class PanelOption:
     name: str
     power_w: float
     price_eur: float
+    manufacturer: str | None = None
+    model_number: str | None = None
+    datasheet: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -47,6 +53,9 @@ class BatteryOption:
     name: str
     specs: BatterySpecs
     price_eur: float
+    manufacturer: str | None = None
+    model_number: str | None = None
+    datasheet: dict[str, Any] | None = None
 
 
 @dataclass

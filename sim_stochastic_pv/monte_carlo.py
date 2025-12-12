@@ -207,8 +207,8 @@ class MonteCarloSimulator:
             monthly_savings_eur = np.zeros(n_months)
             for m in range(n_months):
                 year = m // 12
-                month_in_year = m % 12
-                price = self.price_model.get_price(year, month_in_year)
+                month_in_year_idx = m % 12
+                price = self.price_model.get_price(year, month_in_year_idx)
                 monthly_savings_eur[m] = monthly_savings_kwh[m] * price
 
             profit_cum = -cfg.investment_eur + np.cumsum(monthly_savings_eur)
