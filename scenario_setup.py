@@ -47,6 +47,8 @@ def build_default_load_profile() -> LoadProfile:
         away_profile_factory=lambda: AreraLoadProfile(),
         min_days_home=min_days_home,
         max_days_home=max_days_home,
+        home_variation_percentiles=(-0.35, 0.35),
+        away_variation_percentiles=(-0.10, 0.10),
     )
     return load_blueprint.build_load_profile()
 
@@ -67,10 +69,15 @@ def build_default_energy_config() -> EnergySystemConfig:
     )
 
 
-def build_default_price_model() -> EscalatingPriceModel:
+def build_default_price_model(
+    use_stochastic_price: bool = True,
+    escalation_percentiles: tuple[float, float] = (-0.05, 0.05),
+) -> EscalatingPriceModel:
     return EscalatingPriceModel(
         base_price_eur_per_kwh=0.19,
         annual_escalation=0.04,
+        use_stochastic_escalation=use_stochastic_price,
+        escalation_variation_percentiles=escalation_percentiles,
     )
 
 

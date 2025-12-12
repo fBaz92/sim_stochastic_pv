@@ -8,6 +8,7 @@ from .load_profiles import (
     LoadProfile,
     LoadScenarioBlueprint,
     MonthlyAverageLoadProfile,
+    VariableLoadProfile,
     make_flat_monthly_load_profiles,
 )
 from .monte_carlo import EconomicConfig, MonteCarloResults, MonteCarloSimulator
@@ -36,6 +37,7 @@ __all__ = [
     "AreraLoadProfile",
     "HomeAwayLoadProfile",
     "LoadScenarioBlueprint",
+    "VariableLoadProfile",
     "make_flat_monthly_load_profiles",
     "InverterOption",
     "PanelOption",

@@ -14,6 +14,57 @@ from .energy_simulator import EnergySystemSimulator
 from .prices import PriceModel
 
 
+def _npv(rate: float, cashflows: np.ndarray) -> float:
+    periods = np.arange(cashflows.size, dtype=float)
+    return np.sum(cashflows / np.power(1.0 + rate, periods))
+
+
+def _compute_irr_monthly(
+    cashflows: np.ndarray,
+    tol: float = 1e-6,
+    max_iter: int = 100,
+) -> float:
+    if cashflows.size < 2:
+        return np.nan
+    if not (np.any(cashflows > 0) and np.any(cashflows < 0)):
+        return np.nan
+
+    low = -0.9999
+    high = 5.0
+    npv_low = _npv(low, cashflows)
+    npv_high = _npv(high, cashflows)
+
+    expand = 0
+    while npv_low * npv_high > 0 and expand < 12:
+        high *= 2.0
+        npv_high = _npv(high, cashflows)
+        expand += 1
+        if high > 1e6:
+            return np.nan
+    if npv_low * npv_high > 0:
+        return np.nan
+
+    for _ in range(max_iter):
+        mid = (low + high) / 2.0
+        npv_mid = _npv(mid, cashflows)
+        if abs(npv_mid) < tol:
+            return mid
+        if npv_low * npv_mid < 0:
+            high = mid
+            npv_high = npv_mid
+        else:
+            low = mid
+            npv_low = npv_mid
+    return mid
+
+
+def _compute_irr_annual(cashflows: np.ndarray) -> float:
+    irr_monthly = _compute_irr_monthly(cashflows)
+    if np.isnan(irr_monthly):
+        return np.nan
+    return (1.0 + irr_monthly) ** 12 - 1.0
+
+
 @dataclass
 class EconomicConfig:
     """
@@ -25,6 +76,7 @@ class EconomicConfig:
     """
     investment_eur: float = 2500.0
     n_mc: int = 200
+    inflation_rate: float = 0.025
 
 
 @dataclass
@@ -37,7 +89,9 @@ class MonteCarloResults:
     df_soc: pd.DataFrame
     df_soh: pd.DataFrame
     monthly_savings_eur_paths: np.ndarray
+    monthly_savings_real_eur_paths: np.ndarray
     monthly_load_kwh_paths: np.ndarray
+    irr_annual_paths: np.ndarray
 
 
 class MonteCarloSimulator:
@@ -98,10 +152,18 @@ class MonteCarloSimulator:
         grid_import_paths = np.zeros((n_mc, n_months))
         savings_kwh_paths = np.zeros((n_mc, n_months))
         savings_eur_paths = np.zeros((n_mc, n_months))
+        savings_real_eur_paths = np.zeros((n_mc, n_months))
         load_kwh_paths = np.zeros((n_mc, n_months))
 
+        profit_cum_real_paths = np.zeros((n_mc, n_months))
         soh_paths = np.zeros((n_mc, n_months))
         soc_profiles_paths = np.zeros((n_mc, 12, 24))
+        irr_annual_paths = np.full(n_mc, np.nan)
+
+        months = np.arange(n_months)
+        years = months // 12
+        month_in_year = months % 12
+        inflation_factors = np.power(1.0 + cfg.inflation_rate, years)
 
         bar_len = 30
         start_time = time.time()
@@ -127,6 +189,7 @@ class MonteCarloSimulator:
 
         for i in range(n_mc):
             rng = np.random.default_rng(rng_global.integers(0, 1_000_000_000))
+            self.price_model.reset_for_run(rng=rng, n_years=n_years)
 
             (
                 monthly_pv_prod_kwh,
@@ -149,13 +212,19 @@ class MonteCarloSimulator:
                 monthly_savings_eur[m] = monthly_savings_kwh[m] * price
 
             profit_cum = -cfg.investment_eur + np.cumsum(monthly_savings_eur)
+            monthly_savings_real = monthly_savings_eur / inflation_factors
+            profit_cum_real = -cfg.investment_eur + np.cumsum(monthly_savings_real)
+            cashflows = np.concatenate(([-cfg.investment_eur], monthly_savings_eur))
+            irr_annual_paths[i] = _compute_irr_annual(cashflows)
 
             profit_cum_paths[i, :] = profit_cum
+            profit_cum_real_paths[i, :] = profit_cum_real
             pv_prod_paths[i, :] = monthly_pv_prod_kwh
             solar_used_paths[i, :] = monthly_solar_used_kwh
             grid_import_paths[i, :] = monthly_grid_import_kwh
             savings_kwh_paths[i, :] = monthly_savings_kwh
             savings_eur_paths[i, :] = monthly_savings_eur
+            savings_real_eur_paths[i, :] = monthly_savings_real
             load_kwh_paths[i, :] = monthly_load_kwh
 
             soh_paths[i, :] = soh_end_of_month
@@ -174,14 +243,13 @@ class MonteCarloSimulator:
         if progress_callback is None and show_progress:
             sys.stdout.write("\n")
 
-        months = np.arange(n_months)
-        years = months // 12
-        month_in_year = months % 12
-
         prob_gain = (profit_cum_paths > 0.0).mean(axis=0)
         mean_gain = profit_cum_paths.mean(axis=0)
         p05_gain = np.percentile(profit_cum_paths, 5, axis=0)
         p95_gain = np.percentile(profit_cum_paths, 95, axis=0)
+        mean_gain_real = profit_cum_real_paths.mean(axis=0)
+        p05_gain_real = np.percentile(profit_cum_real_paths, 5, axis=0)
+        p95_gain_real = np.percentile(profit_cum_real_paths, 95, axis=0)
 
         df_profit = pd.DataFrame(
             {
@@ -192,6 +260,9 @@ class MonteCarloSimulator:
                 "mean_gain_eur": mean_gain,
                 "p05_gain_eur": p05_gain,
                 "p95_gain_eur": p95_gain,
+                "mean_gain_real_eur": mean_gain_real,
+                "p05_gain_real_eur": p05_gain_real,
+                "p95_gain_real_eur": p95_gain_real,
             }
         )
 
@@ -273,7 +344,9 @@ class MonteCarloSimulator:
             df_soc=df_soc,
             df_soh=df_soh,
             monthly_savings_eur_paths=savings_eur_paths,
+            monthly_savings_real_eur_paths=savings_real_eur_paths,
             monthly_load_kwh_paths=load_kwh_paths,
+            irr_annual_paths=irr_annual_paths,
         )
 
     # ---------- plotting utilities ----------

@@ -7,10 +7,9 @@ import numpy as np
 
 from .calendar_utils import MONTH_LENGTHS
 
-# Ogni riga = mese (0=Gennaio..11=Dicembre)
-# Colonne: [BL_F1, BL_F2, BL_F3] in Watt
-# ARERA tariff bands base load table: array of shape (12, 3) containing base load
-# values in Watt for each month (rows) and ARERA tariff band (columns: F1, F2, F3).
+# Rows represent months (0=January..11=December)
+# Columns represent the base load in Watt for ARERA tariff bands [F1, F2, F3].
+# The table is used to build deterministic load profiles for the "away" periods.
 BL_TABLE: np.ndarray = np.array([
     [110.6719368,  83.79888268, 157.0512821 ],  # Gen
     [ 68.18181818, 73.17073171,  72.91666667],  # Feb
@@ -267,6 +266,122 @@ class HomeAwayLoadProfile(LoadProfile):
         )
 
 
+Z_VALUE_95 = 1.6448536269514722
+
+
+class VariableLoadProfile(LoadProfile):
+    """
+    Decorator that applies stochastic daily multipliers to a base load profile.
+
+    Args:
+        base_profile: Deterministic profile providing the reference load.
+        p05_delta: Target 5th percentile variation (negative) applied to the multiplier.
+        p95_delta: Target 95th percentile variation (positive) applied to the multiplier.
+    """
+
+    def __init__(
+        self,
+        base_profile: LoadProfile,
+        p05_delta: float = -0.1,
+        p95_delta: float = 0.1,
+    ) -> None:
+        if p05_delta >= 0:
+            raise ValueError("p05_delta must be negative")
+        if p95_delta <= 0:
+            raise ValueError("p95_delta must be positive")
+        self.base_profile = base_profile
+        self.p05_delta = float(p05_delta)
+        self.p95_delta = float(p95_delta)
+        max_delta = max(abs(self.p05_delta), abs(self.p95_delta))
+        self._sigma = max_delta / Z_VALUE_95 if max_delta > 0 else 0.0
+        self._rng: np.random.Generator | None = None
+        self._fallback_rng = np.random.default_rng()
+        self._daily_multipliers: Dict[Tuple[int, int, int], float] = {}
+
+    def reset_for_run(
+        self,
+        rng: np.random.Generator | None = None,
+        n_years: int | None = None,
+    ) -> None:
+        """
+        Reset the wrapped profile and clear cached multipliers for a new run.
+
+        Args:
+            rng: Optional RNG shared with the simulator.
+            n_years: Number of simulated years (unused but kept for signature compatibility).
+        """
+        self.base_profile.reset_for_run(rng=rng, n_years=n_years)
+        self._daily_multipliers.clear()
+        if rng is not None:
+            self._rng = rng
+        elif self._rng is None:
+            self._rng = self._fallback_rng
+
+    def _rng_for_variation(self) -> np.random.Generator:
+        """Return the RNG instance, falling back to the internal generator."""
+        if self._rng is None:
+            self._rng = self._fallback_rng
+        return self._rng
+
+    def _sample_multiplier(self) -> float:
+        """Sample a stochastic multiplier according to the configured percentiles."""
+        if self._sigma <= 0.0:
+            return 1.0
+        rng = self._rng_for_variation()
+        variation = rng.normal(loc=0.0, scale=self._sigma)
+        variation = np.clip(variation, self.p05_delta, self.p95_delta)
+        multiplier = 1.0 + variation
+        return max(0.0, multiplier)
+
+    def _get_multiplier(
+        self,
+        year_index: int,
+        month_in_year: int,
+        day_in_month: int,
+    ) -> float:
+        """
+        Get or sample the multiplier associated with a specific calendar day.
+        """
+        key = (year_index, month_in_year, day_in_month)
+        multiplier = self._daily_multipliers.get(key)
+        if multiplier is not None:
+            return multiplier
+        multiplier = self._sample_multiplier()
+        self._daily_multipliers[key] = multiplier
+        return multiplier
+
+    def get_hourly_load_kw(
+        self,
+        year_index: int,
+        month_in_year: int,
+        day_in_month: int,
+        hour_in_day: int,
+        weekday: int,
+    ) -> float:
+        """
+        Return the stochastic load value for the requested timestamp.
+
+        Args:
+            year_index: Simulation year index.
+            month_in_year: Month within the year.
+            day_in_month: Day within the month.
+            hour_in_day: Hour within the day.
+            weekday: Weekday index (ignored, passed to base profile).
+
+        Returns:
+            Load in kW after applying the sampled multiplier to the base profile.
+        """
+        base_kw = self.base_profile.get_hourly_load_kw(
+            year_index=year_index,
+            month_in_year=month_in_year,
+            day_in_month=day_in_month,
+            hour_in_day=hour_in_day,
+            weekday=weekday,
+        )
+        multiplier = self._get_multiplier(year_index, month_in_year, day_in_month)
+        return base_kw * multiplier
+
+
 def get_load_w(
     month_index: int,
     hour_in_month: int,
@@ -274,7 +389,16 @@ def get_load_w(
     bl_table: np.ndarray = BL_TABLE,
 ) -> float:
     """
-    Restituisce il carico in Watt per una certa ora del mese, usando le fasce ARERA.
+    Return the base load value (in Watt) for a given hour using ARERA bands.
+
+    Args:
+        month_index: Month index (0 = January).
+        hour_in_month: Hour index within the month (0-based).
+        first_weekday_of_month: Weekday index of the first day in the month.
+        bl_table: Base load table shaped (12, 3) with F1/F2/F3 band values.
+
+    Returns:
+        Base load in Watt corresponding to the appropriate tariff band.
     """
     if not (0 <= month_index < 12):
         raise ValueError("month_index deve essere tra 0 e 11")
@@ -331,7 +455,13 @@ def _get_band_arera(weekday: int, hour: int) -> str:
 
 def make_flat_monthly_load_profiles(base_load_w: float = 140.0) -> np.ndarray:
     """
-    Returns a (12,24) array with constant load base_load_w for all months/hours.
+    Build a (12, 24) array with the same load value for every month and hour.
+
+    Args:
+        base_load_w: Constant load expressed in Watt.
+
+    Returns:
+        NumPy array containing the flat monthly-hourly profiles.
     """
     return np.full((12, 24), base_load_w, dtype=float)
 
@@ -349,6 +479,32 @@ class LoadScenarioBlueprint:
     away_profile_factory: Callable[[], LoadProfile] | None = None
     min_days_home: List[int] | None = None
     max_days_home: List[int] | None = None
+    home_variation_percentiles: Tuple[float, float] | None = None
+    away_variation_percentiles: Tuple[float, float] | None = None
+
+    @staticmethod
+    def _apply_variation(
+        profile: LoadProfile,
+        percentiles: Tuple[float, float] | None,
+    ) -> LoadProfile:
+        """
+        Optionally wrap a base profile with a VariableLoadProfile.
+
+        Args:
+            profile: Base profile to decorate.
+            percentiles: Tuple ``(p05, p95)`` defining the multiplier spread.
+
+        Returns:
+            Possibly wrapped LoadProfile instance.
+        """
+        if percentiles is None:
+            return profile
+        p05, p95 = percentiles
+        return VariableLoadProfile(
+            base_profile=profile,
+            p05_delta=p05,
+            p95_delta=p95,
+        )
 
     def build_load_profile(self) -> LoadProfile:
         """
@@ -364,8 +520,14 @@ class LoadScenarioBlueprint:
         if self.home_profile_factory and self.away_profile_factory:
             if self.min_days_home is None or self.max_days_home is None:
                 raise ValueError("min_days_home and max_days_home are required for home/away scenarios")
-            home_profile = self.home_profile_factory()
-            away_profile = self.away_profile_factory()
+            home_profile = self._apply_variation(
+                self.home_profile_factory(),
+                self.home_variation_percentiles,
+            )
+            away_profile = self._apply_variation(
+                self.away_profile_factory(),
+                self.away_variation_percentiles,
+            )
             return HomeAwayLoadProfile(
                 home_profile=home_profile,
                 away_profile=away_profile,
@@ -374,9 +536,15 @@ class LoadScenarioBlueprint:
             )
 
         if self.home_profile_factory:
-            return self.home_profile_factory()
+            return self._apply_variation(
+                self.home_profile_factory(),
+                self.home_variation_percentiles,
+            )
 
         if self.away_profile_factory:
-            return self.away_profile_factory()
+            return self._apply_variation(
+                self.away_profile_factory(),
+                self.away_variation_percentiles,
+            )
 
         raise ValueError("At least one profile factory must be provided")

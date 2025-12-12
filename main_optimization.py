@@ -21,10 +21,28 @@ from scenario_setup import (
 
 
 def _slugify(value: str) -> str:
+    """
+    Convert an arbitrary string to a filesystem-safe slug.
+
+    Args:
+        value: Raw string that may contain spaces or special characters.
+
+    Returns:
+        A lowercase string composed only of alphanumeric characters, dash, or underscore.
+    """
     return "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in value.strip()).strip("_")
 
 
 def _create_run_directory(scenario_name: str) -> Path:
+    """
+    Create a timestamped directory that collects all artifacts for a run.
+
+    Args:
+        scenario_name: Human-readable scenario batch name.
+
+    Returns:
+        Path to the created directory inside ``results/``.
+    """
     timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
     slug = _slugify(scenario_name) or "scenario"
     run_dir = Path("results") / f"{timestamp}_{slug}_batch"
@@ -33,17 +51,36 @@ def _create_run_directory(scenario_name: str) -> Path:
 
 
 def _battery_label(definition) -> str:
+    """
+    Return a compact label describing the battery setup for a scenario definition.
+
+    Args:
+        definition: ScenarioDefinition with inverter, panel, and battery choices.
+
+    Returns:
+        Short string used in tables/plots to identify the battery configuration.
+    """
     if definition.integrated_battery_specs and definition.integrated_battery_count > 0:
-        return f"{definition.inverter.name}-integrata"
+        return f"{definition.inverter.name}-integrated"
     if definition.battery_option and definition.battery_count > 0:
         return definition.battery_option.name
-    return "senza batteria"
+    return "no battery"
 
 
 def _select_comparison_scenarios(
     evaluations: List[ScenarioEvaluation],
     top_n: int = 10,
 ) -> List[ScenarioEvaluation]:
+    """
+    Build a representative subset of scenarios for the comparison dashboard.
+
+    Args:
+        evaluations: All evaluated scenarios.
+        top_n: Number of top performers to include before covering each inverter/battery.
+
+    Returns:
+        Sorted list of unique scenarios emphasizing high gain and component diversity.
+    """
     if not evaluations:
         return []
 
@@ -52,6 +89,7 @@ def _select_comparison_scenarios(
     seen_ids: set[int] = set()
 
     def _add(ev: ScenarioEvaluation) -> None:
+        """Append scenario if it is not already part of the selection."""
         if id(ev) not in seen_ids:
             seen_ids.add(id(ev))
             selected.append(ev)
@@ -81,10 +119,29 @@ def _select_comparison_scenarios(
 
 
 def _short_label(value: str, max_len: int = 50) -> str:
+    """
+    Produce a compact label that fits legends or tables.
+
+    Args:
+        value: Original string.
+        max_len: Desired maximum length.
+
+    Returns:
+        Possibly truncated string ending with ``...`` when over the limit.
+    """
     return value if len(value) <= max_len else value[: max_len - 3] + "..."
 
 
 def _final_profit_paths(evaluation: ScenarioEvaluation) -> np.ndarray:
+    """
+    Compute the distribution of final profit for one scenario.
+
+    Args:
+        evaluation: ScenarioEvaluation containing monthly savings paths.
+
+    Returns:
+        1D array with the final cumulative profit per Monte Carlo path.
+    """
     monthly = evaluation.results.monthly_savings_eur_paths
     if monthly.size == 0:
         return np.array([])
@@ -92,63 +149,50 @@ def _final_profit_paths(evaluation: ScenarioEvaluation) -> np.ndarray:
     return profit_paths[:, -1]
 
 
+def _compute_irr_stats(evaluation: ScenarioEvaluation) -> tuple[float, float, float] | None:
+    """
+    Summarize the IRR distribution for a scenario.
+
+    Args:
+        evaluation: ScenarioEvaluation exposing ``irr_annual_paths``.
+
+    Returns:
+        Tuple ``(mean, percentile_5, percentile_95)`` or ``None`` if IRR is undefined.
+    """
+    irr_paths = evaluation.results.irr_annual_paths
+    if irr_paths.size == 0:
+        return None
+    valid = irr_paths[~np.isnan(irr_paths)]
+    if valid.size == 0:
+        return None
+    return (
+        float(np.mean(valid)),
+        float(np.percentile(valid, 5)),
+        float(np.percentile(valid, 95)),
+    )
+
+
 def _plot_profit_curves(evaluations: List[ScenarioEvaluation], save_path: Path) -> None:
+    """
+    Plot mean cumulative profit trajectories for all selected scenarios.
+
+    Args:
+        evaluations: Scenarios to plot.
+        save_path: Output image path.
+
+    Returns:
+        None. Figure is saved to disk and closed.
+    """
     if not evaluations:
         return
     fig, ax = plt.subplots(figsize=(10, 5))
-    max_month_index = 0
     for ev in evaluations:
         df = ev.results.df_profit
-        line, = ax.plot(
+        ax.plot(
             df["month_index"],
             df["mean_gain_eur"],
             label=_short_label(ev.definition.describe(), 40),
         )
-        color = line.get_color()
-        max_month_index = max(max_month_index, int(df["month_index"].max()))
-
-        if ev.break_even_month is not None:
-            be_month = ev.break_even_month
-            be_year = be_month // 12 + 1
-            be_mask = df["month_index"] == be_month
-            if be_mask.any():
-                be_gain = float(df.loc[be_mask, "mean_gain_eur"].iloc[0])
-                ax.scatter(be_month, be_gain, color=color, marker="o", zorder=5)
-                ax.annotate(
-                    f"BE anno {be_year}",
-                    (be_month, be_gain),
-                    textcoords="offset points",
-                    xytext=(0, -15),
-                    ha="center",
-                    fontsize=8,
-                    color=color,
-                )
-
-        max_gain_idx = int(df["mean_gain_eur"].idxmax())
-        max_gain_row = df.loc[max_gain_idx]
-        ax.scatter(
-            max_gain_row["month_index"],
-            max_gain_row["mean_gain_eur"],
-            color=color,
-            marker="^",
-            zorder=5,
-        )
-        ax.annotate(
-            f"{max_gain_row['mean_gain_eur']:.0f} €",
-            (max_gain_row["month_index"], max_gain_row["mean_gain_eur"]),
-            textcoords="offset points",
-            xytext=(0, 8),
-            ha="center",
-            fontsize=8,
-            color=color,
-        )
-
-    year_ticks = np.arange(0, max_month_index + 12, 12)
-    ax_top = ax.twiny()
-    ax_top.set_xlim(ax.get_xlim())
-    ax_top.set_xticks(year_ticks)
-    ax_top.set_xticklabels([f"Anno {i+1}" for i in range(len(year_ticks))])
-    ax_top.set_xlabel("Anni simulati")
 
     ax.set_xlabel("Mese simulato")
     ax.set_ylabel("Profitto cumulato medio [€]")
@@ -161,6 +205,16 @@ def _plot_profit_curves(evaluations: List[ScenarioEvaluation], save_path: Path) 
 
 
 def _plot_final_profit_distribution(evaluations: List[ScenarioEvaluation], save_path: Path) -> None:
+    """
+    Visualize the final profit distribution for each scenario using violin plots.
+
+    Args:
+        evaluations: Scenario evaluations to compare.
+        save_path: Output image path.
+
+    Returns:
+        None.
+    """
     datasets = []
     labels = []
     for ev in evaluations:
@@ -187,6 +241,16 @@ def _plot_final_profit_distribution(evaluations: List[ScenarioEvaluation], save_
 
 
 def _plot_break_even_vs_gain(evaluations: List[ScenarioEvaluation], save_path: Path) -> None:
+    """
+    Plot break-even month against final mean gain for several scenarios.
+
+    Args:
+        evaluations: Scenario evaluations to include.
+        save_path: Output image path.
+
+    Returns:
+        None.
+    """
     if not evaluations:
         return
     fig, ax = plt.subplots(figsize=(9, 5))
@@ -213,6 +277,16 @@ def _plot_break_even_vs_gain(evaluations: List[ScenarioEvaluation], save_path: P
 
 
 def _save_comparison_summary(evaluations: List[ScenarioEvaluation], save_path: Path) -> None:
+    """
+    Save a CSV file describing the main economic metrics for each scenario.
+
+    Args:
+        evaluations: Scenario evaluations to serialize.
+        save_path: Destination CSV file.
+
+    Returns:
+        None. The CSV file is written to ``save_path``.
+    """
     if not evaluations:
         return
     rows = []
@@ -238,6 +312,16 @@ def _save_comparison_summary(evaluations: List[ScenarioEvaluation], save_path: P
 
 
 def _write_best_summary_txt(path: Path, evaluation: ScenarioEvaluation) -> None:
+    """
+    Write a detailed text summary for a specific scenario.
+
+    Args:
+        path: Output text file path.
+        evaluation: Scenario evaluation to summarize.
+
+    Returns:
+        None. The summary is saved to disk.
+    """
     defn = evaluation.definition
     df_profit = evaluation.results.df_profit
     final_row = df_profit.iloc[-1]
@@ -266,6 +350,18 @@ def _write_best_summary_txt(path: Path, evaluation: ScenarioEvaluation) -> None:
     lines.append(
         f"Intervallo 5°-95° percentile: {final_row['p05_gain_eur']:.2f} € / {final_row['p95_gain_eur']:.2f} €"
     )
+    lines.append(
+        f"Guadagno reale medio (inflazione): {final_row['mean_gain_real_eur']:.2f} € "
+        f"(5°-95°: {final_row['p05_gain_real_eur']:.2f} € / {final_row['p95_gain_real_eur']:.2f} €)"
+    )
+    irr_stats = _compute_irr_stats(evaluation)
+    if irr_stats is None:
+        lines.append("TIR: non disponibile (flussi non sufficienti)")
+    else:
+        irr_mean, irr_p05, irr_p95 = irr_stats
+        lines.append(
+            f"TIR medio: {irr_mean:.2%} (5° percentile {irr_p05:.2%} / 95° percentile {irr_p95:.2%})"
+        )
     lines.append(f"Probabilità profitto positivo a fine orizzonte: {final_row['prob_gain']:.2%}")
     if evaluation.break_even_month is None:
         lines.append("Break-even non raggiunto nell'orizzonte simulato")
@@ -284,6 +380,18 @@ def _persist_best_scenario(
     run_dir: Path,
     price_model,
 ) -> Path:
+    """
+    Persist all assets for a winning scenario (CSV, plots, reports).
+
+    Args:
+        label: Subdirectory name, e.g., ``best_gain``.
+        evaluation: Scenario evaluation to export.
+        run_dir: Root directory for the optimization run.
+        price_model: Price model used in the simulations (passed to reporting).
+
+    Returns:
+        Path pointing to the created scenario directory.
+    """
     scenario_dir = run_dir / label
     scenario_dir.mkdir(parents=True, exist_ok=True)
 
@@ -309,10 +417,22 @@ def _persist_best_scenario(
 
 
 def _load_profile_factory():
+    """
+    Factory wrapper to create a fresh load profile for each scenario evaluation.
+
+    Returns:
+        LoadProfile built by ``build_default_load_profile``.
+    """
     return build_default_load_profile()
 
 
 def main() -> None:
+    """
+    Run the optimization workflow, select best scenarios, and generate reports.
+
+    Returns:
+        None. All artifacts are written under ``results/`` and key metrics are printed.
+    """
     request = build_default_optimization_request()
     base_energy_cfg = build_default_energy_config()
     econ_cfg = build_default_economic_config(n_mc=200)
@@ -364,6 +484,12 @@ def main() -> None:
         print(f"  Break-even al mese {best_break_even.break_even_month}")
     print(f"  Investimento: {best_break_even.definition.investment_eur:.2f} €")
     print(f"  Guadagno medio 20 anni: {best_break_even.final_gain_eur:.2f} €")
+    irr_stats_be = _compute_irr_stats(best_break_even)
+    if irr_stats_be is None:
+        print("  TIR: non disponibile")
+    else:
+        irr_mean, irr_p05, irr_p95 = irr_stats_be
+        print(f"  TIR medio: {irr_mean:.2%} (5° {irr_p05:.2%} / 95° {irr_p95:.2%})")
     print(f"  Report dettagliato: {break_even_dir}")
 
     print("\nScenario migliore per guadagno finale:")
@@ -374,6 +500,12 @@ def main() -> None:
         print(f"  Break-even al mese {best_gain.break_even_month}")
     print(f"  Investimento: {best_gain.definition.investment_eur:.2f} €")
     print(f"  Guadagno medio 20 anni: {best_gain.final_gain_eur:.2f} €")
+    irr_stats_gain = _compute_irr_stats(best_gain)
+    if irr_stats_gain is None:
+        print("  TIR: non disponibile")
+    else:
+        irr_mean, irr_p05, irr_p95 = irr_stats_gain
+        print(f"  TIR medio: {irr_mean:.2%} (5° {irr_p05:.2%} / 95° {irr_p95:.2%})")
     print(f"  Report dettagliato: {gain_dir}")
 
     print("\nConfronto globale salvato in:", comparison_dir)

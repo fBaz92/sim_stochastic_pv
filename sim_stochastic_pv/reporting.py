@@ -117,6 +117,7 @@ def _build_yearly_summary(
     df_energy: pd.DataFrame,
     df_soh: pd.DataFrame,
     price_model: PriceModel,
+    economic_config: EconomicConfig,
 ) -> pd.DataFrame:
     df_energy = df_energy.copy()
     prices = [
@@ -124,12 +125,19 @@ def _build_yearly_summary(
         for row in df_energy.itertuples()
     ]
     df_energy["savings_mean_eur"] = df_energy["savings_mean_kwh"] * np.array(prices)
+    inflation_factors = np.power(
+        1.0 + economic_config.inflation_rate,
+        df_energy["year"].values,
+    )
+    df_energy["savings_mean_real_eur"] = df_energy["savings_mean_eur"] / inflation_factors
 
     annual = df_energy.groupby("year").agg(
         savings_mean_eur=("savings_mean_eur", "sum"),
+        savings_mean_real_eur=("savings_mean_real_eur", "sum"),
         pv_prod_mean_kwh=("pv_prod_mean_kwh", "sum"),
     )
     annual["gain_loss_eur"] = df_profit.groupby("year")["mean_gain_eur"].last()
+    annual["gain_loss_real_eur"] = df_profit.groupby("year")["mean_gain_real_eur"].last()
     annual["soh_mean"] = df_soh.groupby("year")["soh_mean"].mean()
     return annual.reset_index()
 
@@ -142,6 +150,7 @@ def _write_text_report(
     price_model: PriceModel,
     break_even_text: str,
     yearly_summary: pd.DataFrame,
+    df_profit: pd.DataFrame,
     df_energy: pd.DataFrame,
 ) -> None:
     lines = []
@@ -155,6 +164,7 @@ def _write_text_report(
     lines.append(f"- Efficienze carica/scarica: {energy_config.eta_charge:.2f}/{energy_config.eta_discharge:.2f}")
     lines.append(f"- Investimento iniziale: {economic_config.investment_eur:.2f} €")
     lines.append(f"- Percorsi Monte Carlo: {economic_config.n_mc}")
+    lines.append(f"- Inflazione attesa: {economic_config.inflation_rate:.2%}")
 
     price_info = []
     if hasattr(price_model, "base_price"):
@@ -167,14 +177,30 @@ def _write_text_report(
     lines.append("== Break-even ==")
     lines.append(break_even_text)
     lines.append("")
+    lines.append("== ROI nominale vs reale ==")
+    final_nominal = df_profit["mean_gain_eur"].iloc[-1]
+    final_real = df_profit["mean_gain_real_eur"].iloc[-1]
+    p05_real = df_profit["p05_gain_real_eur"].iloc[-1]
+    p95_real = df_profit["p95_gain_real_eur"].iloc[-1]
+    lines.append(f"ROI medio cumulato nominale: {final_nominal:.2f} €")
+    lines.append(
+        f"ROI medio cumulato reale: {final_real:.2f} € "
+        f"(5°-95° percentile: {p05_real:.2f} € / {p95_real:.2f} €)"
+    )
+    lines.append("")
     lines.append("== Sintesi annuale ==")
-    lines.append(f"{'Anno':>4} | {'Risparmio medio [€]':>20} | {'Gain/Loss [€]':>15} | {'SoH medio':>9} | {'PV prod [kWh]':>13}")
-    lines.append("-" * 72)
+    lines.append(
+        f"{'Anno':>4} | {'Risparmio [€]':>16} | {'Risparmio reale [€]':>20} | "
+        f"{'Gain/Loss [€]':>15} | {'Gain/Loss reale [€]':>20} | {'SoH medio':>9} | {'PV prod [kWh]':>13}"
+    )
+    lines.append("-" * 118)
     for _, row in yearly_summary.iterrows():
         lines.append(
             f"{int(row['year']) + 1:4d} | "
-            f"{row['savings_mean_eur']:20.2f} | "
+            f"{row['savings_mean_eur']:16.2f} | "
+            f"{row['savings_mean_real_eur']:20.2f} | "
             f"{row['gain_loss_eur']:15.2f} | "
+            f"{row['gain_loss_real_eur']:20.2f} | "
             f"{row['soh_mean']:9.3f} | "
             f"{row['pv_prod_mean_kwh']:13.1f}"
         )
@@ -250,7 +276,13 @@ def generate_report(
     )
 
     break_even_text = _format_break_even(results.df_profit)
-    yearly_summary = _build_yearly_summary(results.df_profit, results.df_energy, results.df_soh, price_model)
+    yearly_summary = _build_yearly_summary(
+        df_profit=results.df_profit,
+        df_energy=results.df_energy,
+        df_soh=results.df_soh,
+        price_model=price_model,
+        economic_config=economic_config,
+    )
     _write_text_report(
         output_path=output_dir / "report.txt",
         scenario_name=scenario_name,
@@ -259,6 +291,7 @@ def generate_report(
         price_model=price_model,
         break_even_text=break_even_text,
         yearly_summary=yearly_summary,
+        df_profit=results.df_profit,
         df_energy=results.df_energy,
     )
 
