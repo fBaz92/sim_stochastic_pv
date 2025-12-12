@@ -1,3 +1,7 @@
+"""
+Simple inverter dispatch logic for coupling PV, load, and batteries.
+"""
+
 from __future__ import annotations
 
 from typing import Tuple

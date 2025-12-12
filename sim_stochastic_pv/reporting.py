@@ -8,9 +8,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from .energy_simulator import EnergySystemConfig
-from .monte_carlo import EconomicConfig, MonteCarloResults, MonteCarloSimulator
-from .prices import PriceModel
+from .simulation.energy_simulator import EnergySystemConfig
+from .simulation.monte_carlo import EconomicConfig, MonteCarloResults, MonteCarloSimulator
+from .simulation.prices import PriceModel
 
 MONTH_NAMES = [
     "Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno",

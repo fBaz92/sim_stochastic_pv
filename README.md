@@ -39,9 +39,11 @@ Se `requirements.txt` non è aggiornato, rigeneralo con `pip freeze > requiremen
 1. **Database**
    - Genera un file `.env` nella root del progetto.
    - Per PostgreSQL definisci `POSTGRES_DSN`, ad esempio:
+
      ```
      POSTGRES_DSN=postgresql+psycopg://user:password@host:5432/database
      ```
+
    - In assenza di `POSTGRES_DSN`, l’app creerà automaticamente un SQLite locale (`sim_pv.db`).
 
 2. **Directory risultati**
@@ -50,6 +52,7 @@ Se `requirements.txt` non è aggiornato, rigeneralo con `pip freeze > requiremen
 
 3. **Cache Matplotlib/Fontconfig (solo se richiesto dall’ambiente)**
    - Se ricevi errori su directory non scrivibili, esporta:
+
      ```bash
      export MPLCONFIGDIR=$(pwd)/.cache/matplotlib
      export XDG_CACHE_HOME=$(pwd)/.cache
@@ -139,25 +142,3 @@ Per aggiungere nuovi test:
 - assicurati che nuovi moduli/funzioni abbiano docstring chiare (obbligatorio nel progetto).
 
 ---
-
-## Personalizzazione scenari
-
-Modifica `scenario_setup.py` per cambiare:
-
-- elenco di inverter/pannelli/batterie (con eventuali datasheet);
-- profili di carico (`LoadScenarioBlueprint`);
-- modello solare e parametri economici;
-- numero di percorsi Monte Carlo (`build_default_economic_config(n_mc=...)`).
-
-Ogni modifica sarà automaticamente riflessa sia nella CLI sia nell’API.
-
----
-
-## Contribuire
-
-1. Crea una branch o un fork.
-2. Aggiungi/aggiorna codice con relative docstring.
-3. Esegui `pytest` prima di aprire una PR.
-4. Documenta eventuali nuovi comandi/API nel README.
-
-Buone simulazioni!

@@ -1,3 +1,10 @@
+"""
+Hourly PV + battery + load simulation engine.
+
+The :class:`EnergySystemSimulator` generates one Monte Carlo path by coupling
+solar production, household load, inverter dispatch, and the battery bank.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -5,8 +12,8 @@ from typing import Tuple
 
 import numpy as np
 
+from ..calendar_utils import build_calendar
 from .battery import BatteryBank, BatterySpecs
-from .calendar_utils import build_calendar
 from .inverter import InverterAC
 from .load_profiles import LoadProfile
 from .solar import SolarModel

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any, Dict, List
+from pathlib import Path
+from typing import Any, Dict, List, Mapping
 
-from .monte_carlo import EconomicConfig, MonteCarloSimulator
-from .optimizer import ScenarioOptimizer, ScenarioEvaluation
+from .simulation.monte_carlo import EconomicConfig, MonteCarloSimulator
+from .simulation.optimizer import ScenarioOptimizer, ScenarioEvaluation
 from .persistence import PersistenceService
 from .result_builder import ResultBuilder
 try:
@@ -15,6 +16,7 @@ try:
         build_default_optimization_request,
         build_default_price_model,
         build_default_solar_model,
+        load_scenario_data,
     )
 except ModuleNotFoundError:  # pragma: no cover - fallback for top-level scripts
     from scenario_setup import (  # type: ignore
@@ -24,9 +26,12 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for top-level scripts
         build_default_optimization_request,
         build_default_price_model,
         build_default_solar_model,
+        load_scenario_data,
     )
-from .energy_simulator import EnergySystemSimulator
-from .prices import PriceModel
+from .simulation.energy_simulator import EnergySystemSimulator
+from .simulation.prices import PriceModel
+
+ScenarioData = Mapping[str, Any] | str | Path | None
 
 
 def _build_summary(evaluation: ScenarioEvaluation) -> Dict[str, Any]:
@@ -72,22 +77,30 @@ class SimulationApplication:
         self.persistence = persistence
         self.result_builder = result_builder
 
-    def run_analysis(self, *, n_mc: int | None = None, seed: int = 123) -> Dict[str, Any]:
+    def run_analysis(
+        self,
+        *,
+        n_mc: int | None = None,
+        seed: int = 123,
+        scenario_data: ScenarioData = None,
+    ) -> Dict[str, Any]:
         """
         Execute the single-scenario Monte Carlo analysis.
 
         Args:
             n_mc: Number of Monte Carlo paths (defaults to scenario setup).
             seed: RNG seed for reproducibility.
+            scenario_data: Optional mapping/path overriding the default scenario definition.
 
         Returns:
             Summary dictionary with economic metrics and optional output path.
         """
-        load_profile = build_default_load_profile()
-        solar_model = build_default_solar_model()
-        energy_cfg = build_default_energy_config()
-        price_model = build_default_price_model()
-        econ_cfg = build_default_economic_config(n_mc=n_mc or 200)
+        scenario_payload = load_scenario_data(scenario_data)
+        load_profile = build_default_load_profile(scenario_payload)
+        solar_model = build_default_solar_model(scenario_payload)
+        energy_cfg = build_default_energy_config(scenario_payload)
+        price_model = build_default_price_model(scenario_data=scenario_payload)
+        econ_cfg = build_default_economic_config(n_mc=n_mc, scenario_data=scenario_payload)
 
         energy_sim = EnergySystemSimulator(
             config=energy_cfg,
@@ -102,13 +115,39 @@ class SimulationApplication:
         )
 
         results = mc.run(seed=seed)
-        scenario_name = "home_away_default"
+        scenario_name = scenario_payload.get("scenario_name", "custom_scenario")
 
         summary = {
             "scenario": scenario_name,
             "final_gain_mean_eur": float(results.df_profit["mean_gain_eur"].iloc[-1]),
             "final_gain_real_mean_eur": float(results.df_profit["mean_gain_real_eur"].iloc[-1]),
             "prob_gain": float(results.df_profit["prob_gain"].iloc[-1]),
+            "plots_data": {
+                "profit": {
+                    "months": results.df_profit["month_index"].tolist(),
+                    "mean_gain_eur": results.df_profit["mean_gain_eur"].tolist(),
+                    "p05_gain_eur": results.df_profit["p05_gain_eur"].tolist(),
+                    "p95_gain_eur": results.df_profit["p95_gain_eur"].tolist(),
+                    "mean_gain_real_eur": results.df_profit["mean_gain_real_eur"].tolist(),
+                },
+                "energy_monthly": {
+                    "months": results.df_energy["month_index"].tolist(),
+                    "pv_prod_mean_kwh": results.df_energy["pv_prod_mean_kwh"].tolist(),
+                    "solar_used_mean_kwh": results.df_energy["solar_used_mean_kwh"].tolist(),
+                    "grid_import_mean_kwh": results.df_energy["grid_import_mean_kwh"].tolist(),
+                    "savings_mean_kwh": results.df_energy["savings_mean_kwh"].tolist(),
+                },
+                "soc_profile": {
+                    "hours": list(range(24)),
+                    "months_data": [
+                        {
+                            "month": m,
+                            "soc_mean": results.df_soc[results.df_soc["month_in_year"] == m].sort_values("hour")["soc_mean"].tolist()
+                        }
+                        for m in range(12)
+                    ]
+                }
+            }
         }
 
         output_dir = None
@@ -124,8 +163,11 @@ class SimulationApplication:
         if self.persistence:
             scenario_record = self.persistence.record_scenario(
                 scenario_name,
-                config=asdict(energy_cfg),
-                metadata={"economic": asdict(econ_cfg)},
+                config=scenario_payload,
+                metadata={
+                    "economic": asdict(econ_cfg),
+                    "scenario_name": scenario_name,
+                },
             )
             self.persistence.record_run_result(
                 "analysis",
@@ -137,28 +179,37 @@ class SimulationApplication:
         summary["output_dir"] = str(output_dir) if output_dir else None
         return summary
 
-    def run_optimization(self, *, seed: int = 321) -> Dict[str, Any]:
+    def run_optimization(
+        self,
+        *,
+        seed: int = 321,
+        n_mc: int | None = None,
+        scenario_data: ScenarioData = None,
+    ) -> Dict[str, Any]:
         """
         Execute the optimization batch covering all configured scenarios.
 
         Args:
             seed: RNG seed propagated to ScenarioOptimizer.
+            n_mc: Override for Monte Carlo paths used per scenario.
+            scenario_data: Optional mapping/path overriding the default scenario definition.
 
         Returns:
             Dictionary containing the number of evaluations and optional output dir.
         """
-        request = build_default_optimization_request()
-        base_energy_cfg = build_default_energy_config()
-        econ_cfg = build_default_economic_config(n_mc=200)
-        price_model = build_default_price_model()
-        solar_model = build_default_solar_model()
+        scenario_payload = load_scenario_data(scenario_data)
+        request = build_default_optimization_request(scenario_payload)
+        base_energy_cfg = build_default_energy_config(scenario_payload)
+        econ_cfg = build_default_economic_config(n_mc=n_mc, scenario_data=scenario_payload)
+        price_model = build_default_price_model(scenario_data=scenario_payload)
+        solar_model = build_default_solar_model(scenario_payload)
 
         optimizer = ScenarioOptimizer(
             request=request,
             base_energy_config=base_energy_cfg,
             economic_config_template=econ_cfg,
             price_model=price_model,
-            load_profile_factory=build_default_load_profile,
+            load_profile_factory=lambda payload=scenario_payload: build_default_load_profile(payload),
             solar_model=solar_model,
         )
         evaluations = optimizer.run(seed=seed)
@@ -176,7 +227,10 @@ class SimulationApplication:
         if self.persistence:
             optimization_record = self.persistence.record_optimization(
                 request.scenario_name,
-                request_payload={"scenario_name": request.scenario_name},
+                request_payload={
+                    "scenario": scenario_payload,
+                    "request": asdict(request),
+                },
                 metadata=metadata,
             )
             for ev in evaluations:

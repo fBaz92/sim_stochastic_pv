@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from .optimizer import ScenarioEvaluation
+from .simulation.optimizer import ScenarioEvaluation
 from .reporting import generate_report
 
 

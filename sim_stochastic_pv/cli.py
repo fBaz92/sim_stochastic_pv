@@ -25,12 +25,36 @@ def build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Non salvare i file di output nella cartella results",
     )
+    analyze.add_argument(
+        "--scenario-file",
+        type=str,
+        default=None,
+        help="Percorso a un file JSON con la definizione dello scenario",
+    )
+    analyze.add_argument(
+        "--n-mc",
+        type=int,
+        default=None,
+        help="Numero di simulazioni Monte Carlo da eseguire",
+    )
 
     optimize = sub.add_parser("optimize", help="Esegui ottimizzazione multi scenario")
     optimize.add_argument(
         "--no-save",
         action="store_true",
         help="Non salvare i file di output nella cartella results",
+    )
+    optimize.add_argument(
+        "--scenario-file",
+        type=str,
+        default=None,
+        help="Percorso a un file JSON con la definizione dello scenario",
+    )
+    optimize.add_argument(
+        "--n-mc",
+        type=int,
+        default=None,
+        help="Numero di simulazioni Monte Carlo per scenario durante l'ottimizzazione",
     )
 
     return parser
@@ -61,10 +85,16 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
 
     if args.command == "analyze":
-        summary = app.run_analysis()
+        summary = app.run_analysis(
+            n_mc=getattr(args, "n_mc", None),
+            scenario_data=getattr(args, "scenario_file", None),
+        )
         print("Analisi completata:", summary)
     elif args.command == "optimize":
-        summary = app.run_optimization()
+        summary = app.run_optimization(
+            n_mc=getattr(args, "n_mc", None),
+            scenario_data=getattr(args, "scenario_file", None),
+        )
         print("Ottimizzazione completata:", summary)
     else:
         parser.error(f"Comando non riconosciuto: {args.command}")

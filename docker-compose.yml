@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: sim-pv-backend
+    ports:
+      - "8000:8000"
+    environment:
+      MPLCONFIGDIR: /tmp/matplotlib
+      XDG_CACHE_HOME: /tmp
+    volumes:
+      - ./sim_pv.db:/app/sim_pv.db
+      - ./sim_stochastic_pv:/app/sim_stochastic_pv
+      - ./api_main.py:/app/api_main.py
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: sim-pv-frontend
+    ports:
+      - "4173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped

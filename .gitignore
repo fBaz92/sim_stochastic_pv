@@ -116,3 +116,17 @@ dmypy.json
 
 # Results
 results/*
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+*.sqlitedb
+*.mdb
+*.accdb
+*.bak
+*.dump
+*.sql
+
+
+.DS_Store
