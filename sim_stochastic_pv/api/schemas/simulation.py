@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AnalysisRequest(BaseModel):
@@ -332,13 +332,11 @@ class RunResult(BaseModel):
         - Runs are ordered by created_at descending (newest first) in GET /api/runs
     """
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     result_type: str = Field(..., description="Type of execution: 'analysis' or 'optimization'")
     summary: Dict[str, Any] = Field(..., description="Execution results (structure varies by type)")
     scenario_id: Optional[int] = Field(None, description="Link to scenario if from saved scenario")
     optimization_id: Optional[int] = Field(None, description="Link to optimization if from campaign")
     created_at: datetime = Field(..., description="Timestamp of result creation")
-
-    class Config:
-        """Pydantic configuration for ORM mode support."""
-        orm_mode = True

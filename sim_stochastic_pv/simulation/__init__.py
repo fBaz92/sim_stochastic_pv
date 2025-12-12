@@ -39,6 +39,7 @@ from .optimizer import (
     ScenarioOptimizer,
 )
 from .prices import EscalatingPriceModel, PriceModel
+from .pv_model import PVModelSingleDiode
 from .solar import SolarModel, SolarMonthParams, make_default_solar_params_for_pavullo
 
 __all__ = [
@@ -46,6 +47,7 @@ __all__ = [
     "BatteryBank",
     "BatterySpecs",
     "InverterAC",
+    "PVModelSingleDiode",
     "SolarModel",
     "SolarMonthParams",
     "make_default_solar_params_for_pavullo",

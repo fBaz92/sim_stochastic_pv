@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, root_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .common import _coerce_to_dict, _merge_specs_defaults
 
@@ -82,6 +82,8 @@ class InverterResponse(BaseModel):
         - The specs JSON blob is auto-merged into top-level fields via validator
     """
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
     manufacturer: Optional[str] = None
@@ -97,12 +99,9 @@ class InverterResponse(BaseModel):
     datasheet: Optional[Any] = None
     specs: Optional[Dict[str, Any]] = None
 
-    class Config:
-        """Pydantic configuration for ORM mode support."""
-        orm_mode = True
-
-    @root_validator(pre=True)
-    def populate_from_specs(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+    @model_validator(mode="before")
+    @classmethod
+    def populate_from_specs(cls, values: Any) -> Dict[str, Any]:
         """
         Auto-populate missing fields from the specs JSON blob.
 
@@ -246,6 +245,8 @@ class PanelResponse(BaseModel):
         - specs can store electrical characteristics (Voc, Isc, Vmp, Imp)
     """
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
     manufacturer: Optional[str] = None
@@ -255,12 +256,9 @@ class PanelResponse(BaseModel):
     datasheet: Optional[Any] = None
     specs: Optional[Dict[str, Any]] = None
 
-    class Config:
-        """Pydantic configuration for ORM mode support."""
-        orm_mode = True
-
-    @root_validator(pre=True)
-    def populate_from_specs(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+    @model_validator(mode="before")
+    @classmethod
+    def populate_from_specs(cls, values: Any) -> Dict[str, Any]:
         """
         Auto-populate missing fields from the specs JSON blob.
 
@@ -379,6 +377,8 @@ class BatteryResponse(BaseModel):
         - specs can include chemistry, voltage, power limits, efficiency
     """
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
     manufacturer: Optional[str] = None
@@ -389,12 +389,9 @@ class BatteryResponse(BaseModel):
     datasheet: Optional[Any] = None
     specs: Optional[Dict[str, Any]] = None
 
-    class Config:
-        """Pydantic configuration for ORM mode support."""
-        orm_mode = True
-
-    @root_validator(pre=True)
-    def populate_from_specs(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+    @model_validator(mode="before")
+    @classmethod
+    def populate_from_specs(cls, values: Any) -> Dict[str, Any]:
         """
         Auto-populate missing fields from the specs JSON blob.
 

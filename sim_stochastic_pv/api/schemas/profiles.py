@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class LoadProfileResponse(BaseModel):
@@ -82,14 +82,12 @@ class LoadProfileResponse(BaseModel):
         - Profiles include both "home" and "away" consumption patterns
     """
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str = Field(..., description="Unique profile name")
     profile_type: str = Field(..., description="Profile type: 'arera', 'custom', or 'custom_24h'")
     data: Dict[str, Any] = Field(..., description="Profile configuration (structure varies by type)")
-
-    class Config:
-        """Pydantic configuration for ORM mode support."""
-        orm_mode = True
 
 
 class LoadProfileCreate(BaseModel):
@@ -177,13 +175,11 @@ class PriceProfileResponse(BaseModel):
         - Stochastic escalation adds Monte Carlo uncertainty to price evolution
     """
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str = Field(..., description="Unique profile name")
     data: Dict[str, Any] = Field(..., description="Price model configuration")
-
-    class Config:
-        """Pydantic configuration for ORM mode support."""
-        orm_mode = True
 
 
 class PriceProfileCreate(BaseModel):

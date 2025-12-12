@@ -17,7 +17,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SavedConfigurationResponse(BaseModel):
@@ -108,14 +108,12 @@ class SavedConfigurationResponse(BaseModel):
         - This ensures scenarios always use up-to-date hardware specifications
     """
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str = Field(..., description="Unique configuration name")
     config_type: str = Field(..., description="Configuration type: 'scenario' or 'campaign'")
     data: Dict[str, Any] = Field(..., description="Configuration data (structure varies by type)")
-
-    class Config:
-        """Pydantic configuration for ORM mode support."""
-        orm_mode = True
 
 
 class SavedConfigurationCreate(BaseModel):
@@ -221,11 +219,9 @@ class ScenarioResponse(BaseModel):
         - Consider using SavedConfiguration for new code
     """
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
     config: Dict[str, Any]
     created_at: datetime
-
-    class Config:
-        """Pydantic configuration for ORM mode support."""
-        orm_mode = True

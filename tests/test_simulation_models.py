@@ -15,6 +15,7 @@ def test_battery_bank_charge_and_discharge_updates_soh() -> None:
     bank = BatteryBank(
         specs=specs,
         n_batteries=1,
+        soc_init=0,
         eta_charge=1.0,
         eta_discharge=1.0,
         max_charge_kw=None,
