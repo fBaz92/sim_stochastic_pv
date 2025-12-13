@@ -130,3 +130,4 @@ results/*
 
 
 .DS_Store
+.cache

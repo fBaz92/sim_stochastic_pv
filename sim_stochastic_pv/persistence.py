@@ -548,6 +548,20 @@ class PersistenceService:
             stmt = select(SavedConfigurationModel).where(SavedConfigurationModel.id == config_id)
             return session.execute(stmt).scalar_one_or_none()
 
+    def get_configuration_by_name(self, name: str) -> SavedConfigurationModel | None:
+        """
+        Retrieve a saved configuration by its unique name.
+
+        Args:
+            name: Configuration name (case-sensitive).
+
+        Returns:
+            SavedConfigurationModel or None if not found.
+        """
+        with self.session() as session:
+            stmt = select(SavedConfigurationModel).where(SavedConfigurationModel.name == name)
+            return session.execute(stmt).scalar_one_or_none()
+
     def hydrate_scenario_from_ids(
         self,
         scenario_data: Dict[str, Any],
