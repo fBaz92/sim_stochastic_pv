@@ -9,7 +9,7 @@ from typing import Any, Sequence
 from .application import SimulationApplication
 from .db.session import init_db
 from .persistence import PersistenceService
-from .result_builder import ResultBuilder
+from .output import ResultBuilder
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -136,47 +136,70 @@ def build_argument_parser() -> argparse.ArgumentParser:
     scenario_save.add_argument("--file", required=True, help="Percorso file JSON")
 
     scenario_run = scenario_sub.add_parser("run", help="Esegui uno scenario")
-    run_group = scenario_run.add_mutually_exclusive_group(required=True)
-    run_group.add_argument("--file", help="Config JSON inline (non viene salvato)")
-    run_group.add_argument("--name", help="Nome scenario salvato")
-    run_group.add_argument("--id", type=int, help="ID scenario salvato")
-    scenario_run.add_argument("--seed", type=int, help="Seed RNG (default 123)")
-    scenario_run.add_argument("--n-mc", type=int, help="Numero di simulazioni Monte Carlo")
-    scenario_run.add_argument(
-        "--no-save",
-        action="store_true",
-        help="Non salvare report su disco anche se ResultBuilder è disponibile",
-    )
+    _add_execution_arguments(scenario_run, "scenario", 123)
 
-    # Campaign management
-    campaign = sub.add_parser("campaign", help="Gestisci campagne (ottimizzazioni)")
-    campaign_sub = campaign.add_subparsers(dest="campaign_command")
+    # Optimization management
+    optimization = sub.add_parser("optimization", help="Gestisci ottimizzazioni multi-scenario")
+    optimization_sub = optimization.add_subparsers(dest="optimization_command")
 
-    campaign_list = campaign_sub.add_parser("list", help="Elenca le campagne salvate")
-    campaign_list.add_argument(
+    optimization_list = optimization_sub.add_parser("list", help="Elenca le ottimizzazioni salvate")
+    optimization_list.add_argument(
         "--json",
         action="store_true",
         help="Stampa la configurazione completa in JSON",
     )
 
-    campaign_save = campaign_sub.add_parser("save", help="Salva/aggiorna una campagna da file JSON")
-    campaign_save.add_argument("--name", required=True)
-    campaign_save.add_argument("--file", required=True)
+    optimization_save = optimization_sub.add_parser("save", help="Salva/aggiorna un'ottimizzazione da file JSON")
+    optimization_save.add_argument("--name", required=True)
+    optimization_save.add_argument("--file", required=True)
 
-    campaign_run = campaign_sub.add_parser("run", help="Esegui una campagna")
-    campaign_group = campaign_run.add_mutually_exclusive_group(required=True)
-    campaign_group.add_argument("--file", help="Config JSON inline (non viene salvata)")
-    campaign_group.add_argument("--name", help="Nome campagna salvata")
-    campaign_group.add_argument("--id", type=int, help="ID campagna salvata")
-    campaign_run.add_argument("--seed", type=int, help="Seed RNG (default 321)")
-    campaign_run.add_argument("--n-mc", type=int, help="Numero di simulazioni Monte Carlo")
-    campaign_run.add_argument(
-        "--no-save",
-        action="store_true",
-        help="Non salvare report su disco anche se ResultBuilder è disponibile",
-    )
+    optimization_run = optimization_sub.add_parser("run", help="Esegui un'ottimizzazione")
+    _add_execution_arguments(optimization_run, "ottimizzazione", 123)
 
     return parser
+
+
+def _add_execution_arguments(
+    parser: argparse.ArgumentParser,
+    config_type: str,
+    default_seed: int
+) -> None:
+    """Add common execution arguments to a run subparser.
+
+    Args:
+        parser: Subparser to add arguments to
+        config_type: Type of config ("scenario" or "ottimizzazione")
+        default_seed: Default RNG seed value
+    """
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        "--file",
+        help=f"Config JSON inline per {config_type} (non viene salvato)"
+    )
+    group.add_argument(
+        "--name",
+        help=f"Nome {config_type} salvato"
+    )
+    group.add_argument(
+        "--id",
+        type=int,
+        help=f"ID {config_type} salvato"
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        help=f"Seed RNG (default {default_seed})"
+    )
+    parser.add_argument(
+        "--n-mc",
+        type=int,
+        help="Numero di simulazioni Monte Carlo"
+    )
+    parser.add_argument(
+        "--no-save",
+        action="store_true",
+        help="Non salvare report su disco anche se ResultBuilder è disponibile"
+    )
 
 
 def _load_json_file(path: str | Path) -> dict[str, Any]:
@@ -243,7 +266,7 @@ def _scenario_payload_from_args(
     return persistence.hydrate_scenario_from_ids(config.data)
 
 
-def _campaign_payload_from_args(
+def _optimization_payload_from_args(
     args: argparse.Namespace,
     persistence: PersistenceService,
 ) -> dict[str, Any]:
@@ -253,7 +276,7 @@ def _campaign_payload_from_args(
         persistence,
         config_id=args.id,
         name=args.name,
-        expected_type="campaign",
+        expected_type="optimization",
     )
     return persistence.hydrate_scenario_from_ids(config.data)
 
@@ -436,6 +459,16 @@ def main(argv: Sequence[str] | None = None) -> None:
             if not save_outputs:
                 app.result_builder = None
             payload = _scenario_payload_from_args(args, persistence)
+
+            # Validate configuration
+            from .validation import validate_scenario
+            errors = validate_scenario(payload)
+            if errors:
+                print("❌ Errori di configurazione:", file=sys.stderr)
+                for err in errors:
+                    print(f"  • {err}", file=sys.stderr)
+                sys.exit(1)
+
             summary = app.run_analysis(
                 n_mc=args.n_mc,
                 seed=args.seed or 123,
@@ -446,12 +479,12 @@ def main(argv: Sequence[str] | None = None) -> None:
 
         parser.error(f"Sottocomando scenario non riconosciuto: {args.scenario_command}")
 
-    if args.command == "campaign":
-        if not args.campaign_command:
-            parser.error("Specificare un sottocomando campaign (list/save/run).")
+    if args.command == "optimization":
+        if not args.optimization_command:
+            parser.error("Specificare un sottocomando optimization (list/save/run).")
 
-        if args.campaign_command == "list":
-            configs = persistence.list_configurations("campaign")
+        if args.optimization_command == "list":
+            configs = persistence.list_configurations("optimization")
             if args.json:
                 data = [
                     {"id": cfg.id, "name": cfg.name, "data": cfg.data}
@@ -462,29 +495,39 @@ def main(argv: Sequence[str] | None = None) -> None:
             _print_json(data)
             return
 
-        if args.campaign_command == "save":
+        if args.optimization_command == "save":
             data = _load_json_file(args.file)
-            record = persistence.save_configuration(args.name, "campaign", data)
-            print(f"Campagna '{record.name}' salvata con ID {record.id}.")
+            record = persistence.save_configuration(args.name, "optimization", data)
+            print(f"Ottimizzazione '{record.name}' salvata con ID {record.id}.")
             return
 
-        if args.campaign_command == "run":
+        if args.optimization_command == "run":
             save_outputs = not getattr(args, "no_save", False)
             app.save_outputs = save_outputs
             if save_outputs and app.result_builder is None:
                 app.result_builder = ResultBuilder()
             if not save_outputs:
                 app.result_builder = None
-            payload = _campaign_payload_from_args(args, persistence)
+            payload = _optimization_payload_from_args(args, persistence)
+
+            # Validate configuration
+            from .validation import validate_optimization
+            errors = validate_optimization(payload)
+            if errors:
+                print("❌ Errori di configurazione:", file=sys.stderr)
+                for err in errors:
+                    print(f"  • {err}", file=sys.stderr)
+                sys.exit(1)
+
             summary = app.run_optimization(
-                seed=args.seed or 321,
+                seed=args.seed or 123,
                 n_mc=args.n_mc,
                 scenario_data=payload,
             )
             _print_json(summary)
             return
 
-        parser.error(f"Sottocomando campaign non riconosciuto: {args.campaign_command}")
+        parser.error(f"Sottocomando optimization non riconosciuto: {args.optimization_command}")
 
     parser.error(f"Comando non riconosciuto: {args.command}")
 

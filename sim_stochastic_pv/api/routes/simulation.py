@@ -197,11 +197,11 @@ def trigger_optimization(
         - Large parameter spaces can take significant time (minutes to hours)
         - Detailed results (best config, rankings, plots) saved to output_dir
         - Best configuration selected by highest mean real economic gain
-        - seed defaults to 321 if not provided
+        - seed defaults to 123 if not provided
     """
     payload = payload or sim_schemas.OptimizationRequest()
     summary = app_service.run_optimization(
-        seed=payload.seed or 321,
+        seed=payload.seed or 123,
         n_mc=payload.n_mc,
         scenario_data=payload.scenario,
     )

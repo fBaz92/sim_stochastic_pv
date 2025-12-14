@@ -111,6 +111,18 @@ def run_saved_scenario(
     # Hydrate the scenario: replace hardware/profile IDs with current specs
     hydrated_scenario = persistence.hydrate_scenario_from_ids(config.data)
 
+    # Validate the hydrated configuration
+    from ...validation import validate_scenario
+    errors = validate_scenario(hydrated_scenario)
+    if errors:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Configuration validation failed",
+                "errors": errors
+            }
+        )
+
     # Run the analysis with the hydrated scenario
     summary = app_service.run_analysis(
         n_mc=n_mc,
@@ -120,33 +132,33 @@ def run_saved_scenario(
     return sim_schemas.AnalysisResponse(**summary)
 
 
-@router.post("/campaigns/{campaign_id}/run", response_model=sim_schemas.OptimizationResponse)
-def run_saved_campaign(
-    campaign_id: int,
+@router.post("/optimizations/{optimization_id}/run", response_model=sim_schemas.OptimizationResponse)
+def run_saved_optimization(
+    optimization_id: int,
     seed: int | None = None,
     n_mc: int | None = None,
     persistence: PersistenceService = Depends(dependencies.get_persistence_service),
     app_service: SimulationApplication = Depends(dependencies.get_application_service),
 ) -> sim_schemas.OptimizationResponse:
     """
-    Execute a saved campaign (optimization) configuration by ID.
+    Execute a saved optimization configuration by ID.
 
-    Implements the database-driven execution workflow for campaigns:
+    Implements the database-driven execution workflow for optimizations:
     1. Fetch saved configuration from database by ID
-    2. Verify it's a campaign (not a single scenario)
+    2. Verify it's an optimization (not a single scenario)
     3. Hydrate hardware selection IDs to current specs from database
     4. Execute the optimization with hydrated configuration
     5. Return results (same structure as POST /optimization)
 
-    For campaigns, the hardware_selections section contains arrays of IDs
+    For optimizations, the hardware_selections section contains arrays of IDs
     (inverter_ids, panel_ids, battery_ids). These are hydrated into the
     optimization.{inverter,panel,battery}_options arrays with current specs.
 
     Args:
-        campaign_id: Database ID of the saved campaign configuration.
+        optimization_id: Database ID of the saved optimization configuration.
         seed: Optional random seed for reproducibility across all scenarios
             in the optimization. Overrides any seed in saved configuration.
-            Defaults to 321 if not provided.
+            Defaults to 123 if not provided.
         n_mc: Optional Monte Carlo path count per scenario. Overrides n_mc
             in saved configuration's economic section. If None, uses saved value.
         persistence: Database persistence service (dependency injected).
@@ -158,12 +170,12 @@ def run_saved_campaign(
         - output_dir: Path to detailed results (if enabled)
 
     Raises:
-        HTTPException 404: If campaign_id not found in database
-        HTTPException 400: If configuration exists but is not type "campaign"
+        HTTPException 404: If optimization_id not found in database
+        HTTPException 400: If configuration exists but is not type "optimization"
 
     Example:
         ```python
-        # POST /api/campaigns/5/run?seed=321&n_mc=200
+        # POST /api/optimizations/5/run?seed=123&n_mc=200
 
         # Response (same as POST /api/optimization)
         {
@@ -173,7 +185,7 @@ def run_saved_campaign(
         ```
 
     Notes:
-        - Campaign data must include full scenario structure with all sections:
+        - Optimization data must include full scenario structure with all sections:
           hardware_selections, optimization, load_profile, solar, energy, price, economic
         - hardware_selections.inverter_ids array is hydrated to
           optimization.inverter_options with current specs
@@ -183,26 +195,38 @@ def run_saved_campaign(
         - Detailed results (best config, rankings) saved to output_dir
     """
     # Fetch the saved configuration
-    config = persistence.get_configuration_by_id(campaign_id)
+    config = persistence.get_configuration_by_id(optimization_id)
     if not config:
         raise HTTPException(
             status_code=404,
-            detail=f"Campaign {campaign_id} not found",
+            detail=f"Optimization {optimization_id} not found",
         )
 
-    # Verify it's a campaign (not a scenario)
-    if config.config_type != "campaign":
+    # Verify it's an optimization (not a scenario)
+    if config.config_type != "optimization":
         raise HTTPException(
             status_code=400,
-            detail=f"Configuration {campaign_id} is a {config.config_type}, not a campaign",
+            detail=f"Configuration {optimization_id} is a {config.config_type}, not an optimization",
         )
 
-    # Hydrate the campaign: replace hardware selection IDs with current specs
+    # Hydrate the optimization: replace hardware selection IDs with current specs
     hydrated_scenario = persistence.hydrate_scenario_from_ids(config.data)
+
+    # Validate the hydrated configuration
+    from ...validation import validate_optimization
+    errors = validate_optimization(hydrated_scenario)
+    if errors:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Configuration validation failed",
+                "errors": errors
+            }
+        )
 
     # Run the optimization with the hydrated scenario
     summary = app_service.run_optimization(
-        seed=seed or 321,
+        seed=seed or 123,
         n_mc=n_mc,
         scenario_data=hydrated_scenario,
     )

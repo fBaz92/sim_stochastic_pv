@@ -1,0 +1,329 @@
+"""
+Database persistence layer for PV system configurations and results.
+
+Provides CRUD operations for hardware components (inverters, panels, batteries),
+simulation configurations, and analysis results. Handles serialization of complex
+data structures to JSON for database storage.
+"""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+from typing import Any, Iterable, Mapping
+
+from sqlalchemy.orm import Session
+
+from ..db.models import (
+    BatteryModel,
+    InverterModel,
+    LoadProfileModel,
+    OptimizationRecord,
+    PanelModel,
+    PriceProfileModel,
+    RunResultRecord,
+    SavedConfigurationModel,
+    ScenarioRecord,
+)
+from ..db.session import SessionLocal
+from .configuration_repo import ConfigurationRepository
+from .execution_repo import ExecutionRepository
+from .hardware_repo import HardwareRepository
+from .hydration import hydrate_scenario, hydrate_optimization, hydrate_scenario_from_ids
+
+
+class PersistenceService:
+    """
+    Unified persistence service providing access to all repositories.
+
+    Provides high-level CRUD operations for:
+    - Hardware components (inverters, panels, batteries)
+    - Load and price profiles
+    - Simulation configurations
+    - Scenario definitions
+    - Optimization requests
+    - Analysis results
+
+    All database operations use transactional sessions with automatic
+    commit/rollback handling. The service supports upsert operations
+    (insert or update) for hardware components based on unique identifiers.
+
+    Maintains backward compatibility via delegation while enabling
+    direct repository access for advanced use cases.
+
+    Attributes:
+        _session_factory: SQLAlchemy session factory for creating database connections.
+        hardware: HardwareRepository for hardware CRUD operations.
+        configurations: ConfigurationRepository for configuration CRUD operations.
+        executions: ExecutionRepository for execution CRUD operations.
+
+    Example:
+        ```python
+        from sim_stochastic_pv.persistence import PersistenceService
+
+        # Create service
+        service = PersistenceService()
+
+        # Store hardware (backward compatible API)
+        inverter = service.upsert_inverter({
+            "name": "Fronius Primo 5.0",
+            "p_ac_max_kw": 5.0,
+            "price_eur": 1500.0,
+            "manufacturer": "Fronius"
+        })
+
+        # Or use repository directly (advanced)
+        inverter = service.hardware.upsert_inverter({...})
+
+        # List available hardware
+        all_inverters = service.list_inverters()
+        all_panels = service.list_panels()
+
+        # Store scenario
+        scenario = service.record_scenario(
+            name="Residential 5kWp",
+            config={"pv_kwp": 5.4, "n_batteries": 1},
+            inverter=inverter,
+            panel=panel
+        )
+        ```
+
+    Notes:
+        - Thread-safe: Each operation uses independent session
+        - Transactional: Auto-commit on success, auto-rollback on error
+        - Upsert operations use component name as unique key
+        - JSON columns support complex nested structures
+    """
+
+    def __init__(self, session_factory: type[Session] | None = None) -> None:
+        """
+        Initialize persistence service with optional session factory.
+
+        Args:
+            session_factory: SQLAlchemy session factory class. If None,
+                uses the default SessionLocal from db.session module.
+                Useful for testing with alternative database configurations.
+
+        Example:
+            ```python
+            # Default configuration
+            service = PersistenceService()
+
+            # Custom session factory (e.g., for testing)
+            from sqlalchemy.orm import sessionmaker
+            TestSession = sessionmaker(bind=test_engine)
+            service_test = PersistenceService(session_factory=TestSession)
+            ```
+        """
+        self._session_factory = session_factory or SessionLocal
+
+        # Initialize repositories
+        self.hardware = HardwareRepository(self._session_factory)
+        self.configurations = ConfigurationRepository(self._session_factory)
+        self.executions = ExecutionRepository(self._session_factory)
+
+    @contextmanager
+    def session(self) -> Iterable[Session]:
+        """
+        Context manager providing transactional database session.
+
+        Yields a SQLAlchemy session with automatic transaction management:
+        - Commits on successful completion
+        - Rolls back on exception
+        - Always closes session in finally block
+
+        Yields:
+            Session: Active SQLAlchemy session for database operations.
+
+        Raises:
+            Exception: Any exception from database operations (after rollback).
+
+        Example:
+            ```python
+            service = PersistenceService()
+
+            # Manual session usage
+            with service.session() as db:
+                inverter = InverterModel(name="Test", nominal_power_kw=5.0)
+                db.add(inverter)
+                db.flush()
+                print(f"Created inverter ID: {inverter.id}")
+            # Auto-commit happens here
+
+            # Error handling
+            try:
+                with service.session() as db:
+                    # ... operations ...
+                    raise ValueError("Something went wrong")
+            except ValueError:
+                pass  # Transaction was rolled back automatically
+            ```
+
+        Notes:
+            - Session is thread-local (not shared across threads)
+            - Used internally by all CRUD methods
+            - Flush within context to get generated IDs
+            - Commit happens automatically on context exit
+        """
+        session: Session = self._session_factory()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    # Hardware operations (delegate to HardwareRepository)
+    def upsert_inverter(self, inverter_data: Any) -> InverterModel | None:
+        """Insert or update an inverter record based on its name."""
+        return self.hardware.upsert_inverter(inverter_data)
+
+    def upsert_panel(self, panel_data: Any) -> PanelModel | None:
+        """Insert or update a panel record."""
+        return self.hardware.upsert_panel(panel_data)
+
+    def upsert_battery(self, battery_data: Any) -> BatteryModel | None:
+        """Insert or update a battery record."""
+        return self.hardware.upsert_battery(battery_data)
+
+    def list_inverters(self) -> list[InverterModel]:
+        """List all available inverters."""
+        return self.hardware.list_inverters()
+
+    def list_panels(self) -> list[PanelModel]:
+        """List all available panels."""
+        return self.hardware.list_panels()
+
+    def list_batteries(self) -> list[BatteryModel]:
+        """List all available batteries."""
+        return self.hardware.list_batteries()
+
+    # Configuration operations (delegate to ConfigurationRepository)
+    def upsert_load_profile(self, name: str, profile_type: str, data: dict) -> LoadProfileModel:
+        """Insert or update a load profile."""
+        return self.configurations.upsert_load_profile(name, profile_type, data)
+
+    def list_load_profiles(self) -> list[LoadProfileModel]:
+        """List all saved load profiles."""
+        return self.configurations.list_load_profiles()
+
+    def upsert_price_profile(self, name: str, data: dict) -> PriceProfileModel:
+        """Insert or update a price profile."""
+        return self.configurations.upsert_price_profile(name, data)
+
+    def list_price_profiles(self) -> list[PriceProfileModel]:
+        """List all saved price profiles."""
+        return self.configurations.list_price_profiles()
+
+    def save_configuration(self, name: str, config_type: str, data: dict) -> SavedConfigurationModel:
+        """Save or update a configuration (scenario or optimization)."""
+        return self.configurations.save_configuration(name, config_type, data)
+
+    def list_configurations(self, config_type: str | None = None) -> list[SavedConfigurationModel]:
+        """List all saved configurations, optionally filtered by type."""
+        return self.configurations.list_configurations(config_type)
+
+    def get_configuration_by_id(self, config_id: int) -> SavedConfigurationModel | None:
+        """Retrieve a saved configuration by ID."""
+        return self.configurations.get_configuration_by_id(config_id)
+
+    def get_configuration_by_name(self, name: str) -> SavedConfigurationModel | None:
+        """Retrieve a saved configuration by its unique name."""
+        return self.configurations.get_configuration_by_name(name)
+
+    # Execution operations (delegate to ExecutionRepository)
+    def record_scenario(
+        self,
+        name: str,
+        config: Mapping[str, Any],
+        metadata: Mapping[str, Any] | None = None,
+        inverter: InverterModel | None = None,
+        panel: PanelModel | None = None,
+        battery: BatteryModel | None = None,
+    ) -> ScenarioRecord:
+        """Persist a scenario definition for later re-use."""
+        return self.executions.record_scenario(name, config, metadata, inverter, panel, battery)
+
+    def record_optimization(
+        self,
+        label: str,
+        request_payload: Mapping[str, Any],
+        metadata: Mapping[str, Any] | None = None,
+    ) -> OptimizationRecord:
+        """Persist an optimization request/result summary."""
+        return self.executions.record_optimization(label, request_payload, metadata)
+
+    def record_run_result(
+        self,
+        result_type: str,
+        summary: Mapping[str, Any],
+        *,
+        scenario: ScenarioRecord | None = None,
+        optimization: OptimizationRecord | None = None,
+        output_dir: str | None = None,
+    ) -> RunResultRecord:
+        """Store the outcome of an analysis or optimization run."""
+        return self.executions.record_run_result(
+            result_type, summary, scenario=scenario, optimization=optimization, output_dir=output_dir
+        )
+
+    def list_run_results(self, limit: int = 50) -> list[RunResultRecord]:
+        """Fetch the latest run results ordered by creation date."""
+        return self.executions.list_run_results(limit)
+
+    def list_scenarios(self) -> list[ScenarioRecord]:
+        """List all saved scenarios (history)."""
+        return self.executions.list_scenarios()
+
+    # Hydration operations
+    def hydrate_scenario(self, scenario_data: dict[str, Any]) -> dict[str, Any]:
+        """
+        Hydrate a scenario configuration by replacing hardware/profile IDs with full specs.
+
+        Handles single hardware selections (inverter_id, panel_id, battery_id, etc.).
+
+        Args:
+            scenario_data: Partial scenario dict with IDs instead of full specs.
+
+        Returns:
+            Complete scenario dict with all hardware and profile data hydrated.
+        """
+        with self.session() as session:
+            return hydrate_scenario(scenario_data, session)
+
+    def hydrate_optimization(self, optimization_data: dict[str, Any]) -> dict[str, Any]:
+        """
+        Hydrate an optimization configuration by expanding hardware_selections.
+
+        Handles multiple hardware selections (hardware_selections.inverter_ids[], etc.).
+
+        Args:
+            optimization_data: Partial optimization dict with hardware_selections.
+
+        Returns:
+            Complete optimization dict with all hardware options expanded.
+        """
+        with self.session() as session:
+            return hydrate_optimization(optimization_data, session)
+
+    def hydrate_scenario_from_ids(self, scenario_data: dict[str, Any]) -> dict[str, Any]:
+        """
+        Hydrate a scenario or optimization configuration (backward compatible).
+
+        DEPRECATED: Use hydrate_scenario() or hydrate_optimization() instead.
+
+        Auto-detects whether to call hydrate_scenario() or hydrate_optimization()
+        based on the presence of hardware_selections in the data.
+
+        Args:
+            scenario_data: Partial scenario/optimization dict with IDs.
+
+        Returns:
+            Complete configuration dict with all data hydrated.
+        """
+        with self.session() as session:
+            return hydrate_scenario_from_ids(scenario_data, session)
+
+
+__all__ = ["PersistenceService"]

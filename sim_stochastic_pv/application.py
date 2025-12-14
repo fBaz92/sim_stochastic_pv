@@ -7,27 +7,16 @@ from typing import Any, Dict, List, Mapping
 from .simulation.monte_carlo import EconomicConfig, MonteCarloSimulator
 from .simulation.optimizer import ScenarioOptimizer, ScenarioEvaluation
 from .persistence import PersistenceService
-from .result_builder import ResultBuilder
-try:
-    from .scenario_setup import (
-        build_default_economic_config,
-        build_default_energy_config,
-        build_default_load_profile,
-        build_default_optimization_request,
-        build_default_price_model,
-        build_default_solar_model,
-        load_scenario_data,
-    )
-except ModuleNotFoundError:  # pragma: no cover - fallback for top-level scripts
-    from scenario_setup import (  # type: ignore
-        build_default_economic_config,
-        build_default_energy_config,
-        build_default_load_profile,
-        build_default_optimization_request,
-        build_default_price_model,
-        build_default_solar_model,
-        load_scenario_data,
-    )
+from .output import ResultBuilder
+from .scenario_builder import (
+    build_default_economic_config,
+    build_default_energy_config,
+    build_default_load_profile,
+    build_default_optimization_request,
+    build_default_price_model,
+    build_default_solar_model,
+    load_scenario_data,
+)
 from .simulation.energy_simulator import EnergySystemSimulator
 from .simulation.prices import PriceModel
 
@@ -182,7 +171,7 @@ class SimulationApplication:
     def run_optimization(
         self,
         *,
-        seed: int = 321,
+        seed: int = 123,  # Default seed unified to 123 for consistency across workflows
         n_mc: int | None = None,
         scenario_data: ScenarioData = None,
     ) -> Dict[str, Any]:
@@ -233,13 +222,25 @@ class SimulationApplication:
                 },
                 metadata=metadata,
             )
+
+            # OPTIMIZATION: Collect unique hardware before loop to reduce database calls
+            # (100 scenarios × 3 hardware types = 300 calls → ~10-20 calls typically)
+            unique_inverters = {}
+            unique_panels = {}
+            unique_batteries = {}
+
             for ev in evaluations:
-                inverter_record = self.persistence.upsert_inverter(ev.definition.inverter)
-                panel_record = self.persistence.upsert_panel(ev.definition.panel)
-                battery_payload = None
+                # Collect unique inverters
+                unique_inverters[ev.definition.inverter.name] = ev.definition.inverter
+
+                # Collect unique panels
+                unique_panels[ev.definition.panel.name] = ev.definition.panel
+
+                # Collect unique batteries (handle integrated vs separate)
                 if ev.definition.integrated_battery_specs and ev.definition.integrated_battery_count > 0:
-                    battery_payload = {
-                        "name": f"{ev.definition.inverter.name}-integrated",
+                    battery_key = f"{ev.definition.inverter.name}-integrated"
+                    unique_batteries[battery_key] = {
+                        "name": battery_key,
                         "manufacturer": getattr(ev.definition.inverter, "manufacturer", None),
                         "model_number": None,
                         "datasheet": getattr(ev.definition.inverter, "datasheet", None),
@@ -249,14 +250,43 @@ class SimulationApplication:
                         },
                     }
                 elif ev.definition.battery_option and ev.definition.battery_count > 0:
-                    battery_payload = {
+                    battery_key = ev.definition.battery_option.name
+                    unique_batteries[battery_key] = {
                         "name": ev.definition.battery_option.name,
                         "manufacturer": ev.definition.battery_option.manufacturer,
                         "model_number": ev.definition.battery_option.model_number,
                         "datasheet": ev.definition.battery_option.datasheet,
                         "specs": asdict(ev.definition.battery_option.specs),
                     }
-                battery_record = self.persistence.upsert_battery(battery_payload) if battery_payload else None
+
+            # Batch upsert all unique hardware (reduces N*3 calls to U*3 where U = unique count)
+            inverter_map = {
+                name: self.persistence.upsert_inverter(inv)
+                for name, inv in unique_inverters.items()
+            }
+            panel_map = {
+                name: self.persistence.upsert_panel(panel)
+                for name, panel in unique_panels.items()
+            }
+            battery_map = {
+                key: self.persistence.upsert_battery(battery)
+                for key, battery in unique_batteries.items()
+            }
+
+            # Loop: Use cached hardware records instead of upserting
+            for ev in evaluations:
+                # Lookup from cached maps
+                inverter_record = inverter_map[ev.definition.inverter.name]
+                panel_record = panel_map[ev.definition.panel.name]
+
+                # Lookup battery (if applicable)
+                battery_record = None
+                if ev.definition.integrated_battery_specs and ev.definition.integrated_battery_count > 0:
+                    battery_key = f"{ev.definition.inverter.name}-integrated"
+                    battery_record = battery_map[battery_key]
+                elif ev.definition.battery_option and ev.definition.battery_count > 0:
+                    battery_key = ev.definition.battery_option.name
+                    battery_record = battery_map[battery_key]
 
                 scenario_record = self.persistence.record_scenario(
                     ev.definition.describe(),

@@ -15,11 +15,13 @@ Monte Carlo toolkit for residential photovoltaic + battery systems. The project 
 
 | Path | Description |
 |------|-------------|
-| `sim_stochastic_pv/simulation/` | Core physical/economic models (solar, prices, battery, inverter, Monte Carlo). |
+| `sim_stochastic_pv/simulation/` | Core physical/economic models organized into submodules (load_profiles, monte_carlo, optimizer, etc.). |
 | `sim_stochastic_pv/application.py` | High-level orchestrator shared across CLI/API. |
 | `sim_stochastic_pv/cli.py` | CLI entry point (`python -m sim_stochastic_pv.cli ...`). |
 | `sim_stochastic_pv/api/` | FastAPI router, schemas, and app wiring. |
-| `sim_stochastic_pv/persistence.py` | DB CRUD helpers for components, scenarios, optimizations, and results. |
+| `sim_stochastic_pv/persistence/` | DB CRUD helpers organized as repositories (hardware, configuration, execution). |
+| `sim_stochastic_pv/output/` | Result builder and reporting utilities for CSV/plot generation. |
+| `sim_stochastic_pv/validation.py` | Post-hydration configuration validation. |
 | `frontend/` | Optional Vite/TypeScript UI (served via Docker container). |
 | `Dockerfile.backend`, `frontend/Dockerfile` | Production images for backend and frontend. |
 | `docker-compose.yml` | Compose stack exposing backend on `:8000` and frontend on `:4173`. |
@@ -94,7 +96,7 @@ docker compose up --build backend
 
 ```python
 from sim_stochastic_pv.application import SimulationApplication
-from sim_stochastic_pv.result_builder import ResultBuilder
+from sim_stochastic_pv.output import ResultBuilder
 from sim_stochastic_pv.persistence import PersistenceService
 
 persistence = PersistenceService()
@@ -104,6 +106,22 @@ summary = app.run_analysis(n_mc=100)
 ```
 
 Simulation models (solar, prices, PV diode model, battery bank, etc.) are available directly from `sim_stochastic_pv.simulation`.
+
+Example imports from reorganized modules:
+
+```python
+# Load profiles
+from sim_stochastic_pv.simulation.load_profiles import HomeAwayLoadProfile, AreraLoadProfile
+
+# Monte Carlo simulation
+from sim_stochastic_pv.simulation.monte_carlo import MonteCarloSimulator, EconomicConfig
+
+# Optimization
+from sim_stochastic_pv.simulation.optimizer import ScenarioOptimizer, InverterOption
+
+# Validation
+from sim_stochastic_pv.validation import validate_scenario, validate_optimization
+```
 
 ### CLI
 
@@ -116,11 +134,11 @@ python -m sim_stochastic_pv.cli optimize --n-mc 50
 python -m sim_stochastic_pv.cli analyze --no-save   # skip saving CSV/plots
 ```
 
-- `analyze`: single-scenario Monte Carlo (defaults defined in `scenario_setup.py`).
-- `optimize`: multi-scenario campaign with PV/battery/inverter sweeps.
+- `analyze`: single-scenario Monte Carlo (defaults defined in `scenario_builder.py`).
+- `optimize`: multi-scenario optimization with PV/battery/inverter sweeps.
 - Outputs: DB entries + optional CSV/plots under `results/<timestamp>_<scenario>/`.
 
-The CLI now mirrors the API workflow, letting you manage the catalog and run database-backed scenarios/campaigns without touching HTTP:
+The CLI now mirrors the API workflow, letting you manage the catalog and run database-backed scenarios/optimizations without touching HTTP:
 
 ```bash
 # Hardware catalog
@@ -133,15 +151,16 @@ python -m sim_stochastic_pv.cli scenario save --name base_case --file examples/h
 python -m sim_stochastic_pv.cli scenario list
 python -m sim_stochastic_pv.cli scenario run --name base_case --seed 42 --n-mc 200
 
-# Saved campaigns (optimization space)
-python -m sim_stochastic_pv.cli campaign save --name premium_sweep --file examples/campaign_template.json
-python -m sim_stochastic_pv.cli campaign run --name premium_sweep --seed 321 --n-mc 50
+# Saved optimizations
+python -m sim_stochastic_pv.cli optimize save --name premium_sweep --file examples/optimization_template.json
+python -m sim_stochastic_pv.cli optimize run --name premium_sweep --seed 123 --n-mc 50
 ```
 
-- Scenario/campaign JSON format is identical to the API payloads (`config_type`, `data` with hardware IDs, load profiles, solar, energy, price, economic, optimization, etc.).
+- Scenario/optimization JSON format is identical to the API payloads (`config_type`, `data` with hardware IDs, load profiles, solar, energy, price, economic, optimization, etc.).
 - When running saved configurations, the CLI hydrates hardware/profile IDs from the DB (always uses the latest specs).
+- Configuration validation runs automatically after hydration to catch errors early with clear error messages.
 - Use `--file` on the `run` subcommands to execute ad-hoc JSON without saving it first.
-- `--no-save` is available on `scenario run`/`campaign run` to skip CSV/plot exports even if the `ResultBuilder` is installed.
+- `--no-save` is available on `scenario run`/`optimize run` to skip CSV/plot exports even if the `ResultBuilder` is installed.
 
 ### FastAPI backend
 
@@ -199,6 +218,45 @@ For new tests:
 - Add fixtures to `tests/conftest.py`.
 - Document behavior with docstrings/comments when non-trivial.
 - Keep Monte Carlo randomness deterministic by seeding RNGs.
+
+---
+
+## Configuration validation
+
+All scenario and optimization configurations are automatically validated after hydration to catch errors early. Validation checks:
+
+- **Required sections**: Ensures presence of `load_profile`, `solar`, `energy`, `economic`, and `price` sections
+- **Type checking**: Validates that sections are dictionaries/objects with correct types
+- **Value ranges**: Checks that numeric values (e.g., `pv_kwp`, `n_mc`, `n_years`) are positive
+- **Optimization-specific**: Validates that at least one hardware option list is provided (inverters, panels, or batteries)
+
+### Validation errors
+
+When validation fails, you'll see clear error messages:
+
+```bash
+❌ Errori di configurazione:
+  • Missing required section: 'load_profile'
+  • energy.pv_kwp must be positive
+  • optimization.inverter_options cannot be empty
+```
+
+Common validation issues:
+- **Missing sections**: Ensure all required sections (load_profile, solar, energy, economic, price) are present
+- **Type mismatches**: Check that `n_mc` and `n_years` are integers, not strings
+- **Empty option lists**: Optimization requires at least one non-empty hardware option list
+- **Invalid ranges**: Ensure `pv_kwp`, `n_mc`, `n_years` are positive numbers
+
+### Progress indicators
+
+Monte Carlo simulations and optimizations now show real-time progress with tqdm:
+
+```
+Monte Carlo simulation: 100%|████████████████| 200/200 [00:45<00:00, 4.42path/s]
+Evaluating scenarios: 100%|████████████████| 36/36 [02:30<00:00, 4.17s/scenario]
+```
+
+Progress bars auto-detect TTY and are hidden when running in non-interactive environments (e.g., scripts, CI/CD).
 
 ---
 

@@ -22,8 +22,7 @@ from .simulation.optimizer import (
 )
 from .simulation.prices import EscalatingPriceModel, PriceModel
 from .simulation.solar import SolarModel, SolarMonthParams, make_default_solar_params_for_pavullo
-from .reporting import generate_report
-from .result_builder import ResultBuilder
+from .output import generate_report, ResultBuilder
 from .application import SimulationApplication
 
 __all__ = [

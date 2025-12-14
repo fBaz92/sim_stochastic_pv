@@ -493,11 +493,11 @@ class SavedConfigurationModel(Base, TimestampMixin):
         - name is unique constraint
         - config_type determines data structure
         - "scenario": Single system configuration
-        - "campaign": Optimization search space
+        - "optimization": Multi-scenario optimization search space
     """
     __tablename__ = "saved_configurations"
 
     id = Column(Integer, primary_key=True)
     name = Column(String(255), unique=True, nullable=False)
-    config_type = Column(String(50), nullable=False)  # scenario, campaign
+    config_type = Column(String(50), nullable=False)  # scenario, optimization
     data = Column(JSON, nullable=False)

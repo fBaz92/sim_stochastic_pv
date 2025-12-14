@@ -4,7 +4,7 @@ from functools import lru_cache
 
 from ..application import SimulationApplication
 from ..persistence import PersistenceService
-from ..result_builder import ResultBuilder
+from ..output import ResultBuilder
 from ..db.session import init_db
 
 

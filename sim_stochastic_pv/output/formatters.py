@@ -1,16 +1,14 @@
+"""
+Text formatting and report generation.
+"""
+
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable
+from typing import Dict
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-
-from .simulation.energy_simulator import EnergySystemConfig
-from .simulation.monte_carlo import EconomicConfig, MonteCarloResults, MonteCarloSimulator
-from .simulation.prices import PriceModel
 
 MONTH_NAMES = [
     "Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno",
@@ -20,86 +18,6 @@ MONTH_NAMES = [
 HOT_MONTHS = {5, 6, 7, 8}
 COLD_MONTHS = {9, 10, 11, 0, 1}
 TEMPERATE_MONTHS = set(range(12)) - HOT_MONTHS - COLD_MONTHS
-
-
-def _slugify(value: str) -> str:
-    return "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in value.strip()).strip("_")
-
-
-def _create_results_directory(scenario_name: str, base_dir: Path) -> Path:
-    timestamp = datetime.now().strftime("%y%m%d_%H%M")
-    slug = _slugify(scenario_name) or "scenario"
-    output_dir = base_dir / f"{timestamp}_{slug}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    return output_dir
-
-
-def _plot_monthly_savings_distribution(
-    savings_eur_paths: np.ndarray,
-    save_path: Path,
-) -> None:
-    data = savings_eur_paths.flatten()
-    fig, ax = plt.subplots(figsize=(8, 4.5))
-    weights = np.ones_like(data, dtype=float) / max(len(data), 1) * 100.0
-    ax.hist(data, bins=40, color="#1f77b4", alpha=0.8, weights=weights)
-    ax.set_xlabel("Risparmio mensile [€]")
-    ax.set_ylabel("Percentuale [%]")
-    ax.set_title("Distribuzione percentuale dei risparmi mensili")
-    ax.grid(True, alpha=0.2)
-    fig.tight_layout()
-    fig.savefig(save_path, dpi=300)
-    plt.close(fig)
-
-
-def _plot_energy_consumption_distributions(
-    load_kwh_paths: np.ndarray,
-    month_in_year: np.ndarray,
-    save_path_total: Path,
-    save_path_grouped: Path,
-) -> None:
-    flattened = load_kwh_paths.flatten()
-    fig, ax = plt.subplots(figsize=(8, 4.5))
-    ax.hist(flattened, bins=40, color="#ff7f0e", alpha=0.8, density=True)
-    ax.set_xlabel("Consumo mensile [kWh]")
-    ax.set_ylabel("Probabilità")
-    ax.set_title("Distribuzione del consumo energetico (tutti i mesi)")
-    ax.grid(True, alpha=0.2)
-    fig.tight_layout()
-    fig.savefig(save_path_total, dpi=300)
-    plt.close(fig)
-
-    groups: Dict[str, Iterable[int]] = {
-        "Freddi (Ott-Feb)": COLD_MONTHS,
-        "Caldi (Giu-Set)": HOT_MONTHS,
-        "Temerati (Mar-Mag)": TEMPERATE_MONTHS,
-    }
-
-    fig, ax = plt.subplots(figsize=(9, 5))
-    for label, months in groups.items():
-        mask = np.isin(month_in_year, list(months))
-        if not mask.any():
-            continue
-        data = load_kwh_paths[:, mask].flatten()
-        if data.size == 0:
-            continue
-        ax.hist(
-            data,
-            bins=40,
-            density=True,
-            histtype="step",
-            linewidth=2,
-            label=label,
-        )
-
-    ax.set_xlabel("Consumo mensile [kWh]")
-    ax.set_ylabel("Probabilità")
-    ax.set_title("Distribuzione consumo per stagionalità")
-    ax.grid(True, alpha=0.2)
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(save_path_grouped, dpi=300)
-    plt.close(fig)
-
 
 def _format_break_even(df_profit: pd.DataFrame) -> str:
     mask = df_profit["mean_gain_eur"] >= 0.0
@@ -221,78 +139,3 @@ def _write_text_report(
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def generate_report(
-    scenario_name: str,
-    results: MonteCarloResults,
-    energy_config: EnergySystemConfig,
-    economic_config: EconomicConfig,
-    price_model: PriceModel,
-    output_root: Path | str = "results",
-) -> Path:
-    """
-    Generate full report: plots and textual summary saved to disk.
-    """
-    output_dir = _create_results_directory(scenario_name, Path(output_root))
-
-    MonteCarloSimulator.plot_profit_bands(
-        results.df_profit,
-        save_path=output_dir / "profit.png",
-        show=False,
-    )
-    MonteCarloSimulator.plot_monthly_energy_bands(
-        results.df_energy,
-        var_prefix="pv_prod",
-        save_path=output_dir / "pv_production.png",
-        show=False,
-    )
-    MonteCarloSimulator.plot_monthly_energy_bands(
-        results.df_energy,
-        var_prefix="solar_used",
-        aggregate_by_year=True,
-        save_path=output_dir / "solar_used_per_year.png",
-        show=False,
-    )
-    MonteCarloSimulator.plot_soh_evolution(
-        results.df_soh,
-        save_path=output_dir / "soh.png",
-        show=False,
-    )
-    MonteCarloSimulator.plot_monthly_soc_bands(
-        results.df_soc,
-        save_dir=output_dir / "soc_profiles",
-        show=False,
-    )
-
-    _plot_monthly_savings_distribution(
-        results.monthly_savings_eur_paths,
-        save_path=output_dir / "savings_distribution.png",
-    )
-    month_in_year = results.df_energy.sort_values("month_index")["month_in_year"].values
-    _plot_energy_consumption_distributions(
-        results.monthly_load_kwh_paths,
-        month_in_year=month_in_year,
-        save_path_total=output_dir / "energy_consumption_distribution.png",
-        save_path_grouped=output_dir / "energy_consumption_by_season.png",
-    )
-
-    break_even_text = _format_break_even(results.df_profit)
-    yearly_summary = _build_yearly_summary(
-        df_profit=results.df_profit,
-        df_energy=results.df_energy,
-        df_soh=results.df_soh,
-        price_model=price_model,
-        economic_config=economic_config,
-    )
-    _write_text_report(
-        output_path=output_dir / "report.txt",
-        scenario_name=scenario_name,
-        energy_config=energy_config,
-        economic_config=economic_config,
-        price_model=price_model,
-        break_even_text=break_even_text,
-        yearly_summary=yearly_summary,
-        df_profit=results.df_profit,
-        df_energy=results.df_energy,
-    )
-
-    return output_dir

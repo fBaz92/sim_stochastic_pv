@@ -14,7 +14,7 @@ from sim_stochastic_pv.simulation.optimizer import (
     ScenarioEvaluation,
 )
 from sim_stochastic_pv.simulation.prices import EscalatingPriceModel
-from sim_stochastic_pv.result_builder import ResultBuilder
+from sim_stochastic_pv.output import ResultBuilder
 
 
 def _make_stub_evaluation() -> ScenarioEvaluation:
