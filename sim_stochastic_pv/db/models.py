@@ -222,6 +222,99 @@ class BatteryModel(Base, TimestampMixin):
     scenarios = relationship("ScenarioRecord", back_populates="battery")
 
 
+class SolarProfileModel(Base, TimestampMixin):
+    """
+    Database model for solar irradiance profiles by geographic location.
+
+    Stores monthly solar production data for specific locations, enabling
+    accurate PV system simulations across different Italian cities or custom
+    locations. Includes optimal panel orientation for each location.
+
+    Attributes:
+        id: Primary key (auto-increment).
+        name: Unique profile identifier (e.g., "Pavullo_nel_Frignano", "Milano").
+        location_name: Full location description (e.g., "Pavullo nel Frignano, Modena, Italy").
+        latitude: Location latitude in degrees (-90 to +90).
+        longitude: Location longitude in degrees (-180 to +180).
+        elevation_m: Elevation above sea level in meters (optional).
+        optimal_tilt_degrees: Recommended panel tilt angle (typically ≈ latitude).
+        optimal_azimuth_degrees: Recommended panel azimuth (180° = south).
+        avg_daily_kwh_per_kwp: Monthly average daily production per kWp (12 floats).
+        p_sunny: Monthly long-term marginal probability of sunny conditions
+            (12 floats, 0-1). When the Markov chain is active this is the
+            stationary distribution that the day-by-day simulation will
+            preserve for construction.
+        weather_persistence: Monthly day-to-day weather persistence factor
+            (12 floats, 0-1). Controls the autocorrelation of the sunny/cloudy
+            Markov chain:
+            - 0.0 = no memory (iid Bernoulli, legacy behaviour)
+            - 1.0 = perfect persistence (weather state never flips)
+            Typical climatological values for Italy: 0.2–0.5, higher in
+            stable summer/winter, lower in changeable shoulder seasons.
+            If `None` (legacy records) the simulation falls back to iid.
+        sunny_factor: Production multiplier for sunny days (typically 1.2).
+        cloudy_factor: Production multiplier for cloudy days (typically 0.3).
+        source: Data source attribution (e.g., "PVGIS", "NREL", "measured").
+        notes: Additional metadata and comments.
+
+    Example:
+        ```python
+        profile = SolarProfileModel(
+            name="Pavullo_nel_Frignano",
+            location_name="Pavullo nel Frignano, Modena, Italy",
+            latitude=44.34,
+            longitude=10.83,
+            elevation_m=682,
+            optimal_tilt_degrees=35.0,
+            optimal_azimuth_degrees=180.0,
+            avg_daily_kwh_per_kwp=[1.46, 2.27, 3.47, 4.42, 5.29, 5.80,
+                                    6.28, 5.70, 4.45, 3.06, 1.81, 1.36],
+            p_sunny=[0.40, 0.45, 0.50, 0.55, 0.60, 0.70,
+                     0.75, 0.70, 0.60, 0.50, 0.40, 0.42],
+            sunny_factor=1.2,
+            cloudy_factor=0.3,
+            source="PVGIS",
+            notes="Data extracted from PVGIS for 35° tilt, south-facing"
+        )
+        ```
+
+    Notes:
+        - name is unique constraint (upsert key)
+        - avg_daily_kwh_per_kwp and p_sunny must contain exactly 12 values
+        - optimal_tilt_degrees typically set to latitude for mid-latitudes
+        - Data sourced from PVGIS (https://re.jrc.ec.europa.eu/pvg_tools/en/)
+        - Used by SolarModel via SolarProfileRepository
+    """
+    __tablename__ = "solar_profiles"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), unique=True, nullable=False, index=True)
+
+    # Location metadata
+    location_name = Column(String(255), nullable=False)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    elevation_m = Column(Float, nullable=True)
+
+    # Optimal orientation for this location
+    optimal_tilt_degrees = Column(Float, nullable=False)
+    optimal_azimuth_degrees = Column(Float, nullable=False, default=180.0)
+
+    # Monthly solar production data (JSON columns storing arrays)
+    avg_daily_kwh_per_kwp = Column(JSON, nullable=False)  # 12 floats
+    p_sunny = Column(JSON, nullable=False)  # 12 floats (0-1)
+    # Day-to-day Markov-chain persistence per month (12 floats, 0-1).
+    # Nullable to keep retro-compatibility with legacy rows: a NULL value is
+    # interpreted as 0.0 (no memory) by the simulator.
+    weather_persistence = Column(JSON, nullable=True)
+    sunny_factor = Column(Float, nullable=False, default=1.2)
+    cloudy_factor = Column(Float, nullable=False, default=0.3)
+
+    # Data source and notes
+    source = Column(String(255), nullable=True)
+    notes = Column(Text, nullable=True)
+
+
 class ScenarioRecord(Base, TimestampMixin):
     """
     Database model for complete PV system scenario configurations.

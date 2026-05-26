@@ -1,0 +1,16 @@
+{
+  "name": "Roma",
+  "location_name": "Roma, Lazio, Italy",
+  "latitude": 41.90,
+  "longitude": 12.50,
+  "elevation_m": 21,
+  "optimal_tilt_degrees": 35.0,
+  "optimal_azimuth_degrees": 180.0,
+  "avg_daily_kwh_per_kwp": [2.05, 2.85, 3.85, 4.75, 5.65, 6.20, 6.45, 5.90, 4.80, 3.50, 2.35, 1.85],
+  "p_sunny": [0.48, 0.52, 0.58, 0.62, 0.68, 0.75, 0.80, 0.78, 0.68, 0.58, 0.50, 0.45],
+  "weather_persistence": [0.35, 0.32, 0.25, 0.22, 0.25, 0.40, 0.45, 0.42, 0.30, 0.28, 0.30, 0.35],
+  "sunny_factor": 1.2,
+  "cloudy_factor": 0.3,
+  "source": "PVGIS typical values",
+  "notes": "Central Italy, Mediterranean climate, ~1485 kWh/kWp/year. Persistent summer anticyclones drive higher Jun-Aug persistence."
+}

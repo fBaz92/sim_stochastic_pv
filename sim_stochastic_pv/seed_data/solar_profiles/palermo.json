@@ -1,0 +1,16 @@
+{
+  "name": "Palermo",
+  "location_name": "Palermo, Sicilia, Italy",
+  "latitude": 38.12,
+  "longitude": 13.36,
+  "elevation_m": 14,
+  "optimal_tilt_degrees": 32.0,
+  "optimal_azimuth_degrees": 180.0,
+  "avg_daily_kwh_per_kwp": [2.35, 3.15, 4.15, 5.05, 5.95, 6.55, 6.85, 6.30, 5.15, 3.85, 2.65, 2.15],
+  "p_sunny": [0.52, 0.58, 0.62, 0.68, 0.72, 0.80, 0.85, 0.82, 0.72, 0.65, 0.55, 0.50],
+  "weather_persistence": [0.38, 0.35, 0.28, 0.25, 0.30, 0.45, 0.50, 0.48, 0.35, 0.30, 0.32, 0.38],
+  "sunny_factor": 1.2,
+  "cloudy_factor": 0.3,
+  "source": "PVGIS typical values",
+  "notes": "Sicily, Mediterranean climate with high solar irradiance, ~1640 kWh/kWp/year. Highest summer persistence in the seed set due to the stable subtropical high."
+}

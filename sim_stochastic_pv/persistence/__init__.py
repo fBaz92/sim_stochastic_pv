@@ -23,11 +23,13 @@ from ..db.models import (
     RunResultRecord,
     SavedConfigurationModel,
     ScenarioRecord,
+    SolarProfileModel,
 )
 from ..db.session import SessionLocal
 from .configuration_repo import ConfigurationRepository
 from .execution_repo import ExecutionRepository
 from .hardware_repo import HardwareRepository
+from .solar_repo import SolarProfileRepository
 from .hydration import hydrate_scenario, hydrate_optimization, hydrate_scenario_from_ids
 
 
@@ -120,6 +122,7 @@ class PersistenceService:
         self.hardware = HardwareRepository(self._session_factory)
         self.configurations = ConfigurationRepository(self._session_factory)
         self.executions = ExecutionRepository(self._session_factory)
+        self.solar = SolarProfileRepository(self._session_factory)
 
     @contextmanager
     def session(self) -> Iterable[Session]:
@@ -324,6 +327,78 @@ class PersistenceService:
         """
         with self.session() as session:
             return hydrate_scenario_from_ids(scenario_data, session)
+
+    # ========================================================================
+    # Solar Profile Operations (Delegate to SolarProfileRepository)
+    # ========================================================================
+
+    def upsert_solar_profile(self, data: dict[str, Any]) -> SolarProfileModel:
+        """
+        Insert or update solar profile by name (unique key).
+
+        Delegates to SolarProfileRepository.upsert_solar_profile().
+        See SolarProfileRepository for detailed documentation.
+
+        Args:
+            data: Dictionary containing solar profile fields.
+
+        Returns:
+            SolarProfileModel: The created or updated database record.
+        """
+        return self.solar.upsert_solar_profile(data)
+
+    def list_solar_profiles(self) -> list[SolarProfileModel]:
+        """
+        List all solar profiles ordered by name.
+
+        Delegates to SolarProfileRepository.list_solar_profiles().
+
+        Returns:
+            List of all solar profile records.
+        """
+        return self.solar.list_solar_profiles()
+
+    def get_solar_profile_by_id(self, profile_id: int) -> SolarProfileModel | None:
+        """
+        Get solar profile by primary key ID.
+
+        Delegates to SolarProfileRepository.get_solar_profile_by_id().
+
+        Args:
+            profile_id: Primary key ID of the solar profile.
+
+        Returns:
+            The matching profile record, or None if not found.
+        """
+        return self.solar.get_solar_profile_by_id(profile_id)
+
+    def get_solar_profile_by_name(self, name: str) -> SolarProfileModel | None:
+        """
+        Get solar profile by unique name.
+
+        Delegates to SolarProfileRepository.get_solar_profile_by_name().
+
+        Args:
+            name: Unique name of the solar profile.
+
+        Returns:
+            The matching profile record, or None if not found.
+        """
+        return self.solar.get_solar_profile_by_name(name)
+
+    def delete_solar_profile(self, profile_id: int) -> bool:
+        """
+        Delete solar profile by ID.
+
+        Delegates to SolarProfileRepository.delete_solar_profile().
+
+        Args:
+            profile_id: Primary key ID of the profile to delete.
+
+        Returns:
+            True if a profile was deleted, False if not found.
+        """
+        return self.solar.delete_solar_profile(profile_id)
 
 
 __all__ = ["PersistenceService"]

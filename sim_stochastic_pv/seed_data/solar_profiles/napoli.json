@@ -1,0 +1,16 @@
+{
+  "name": "Napoli",
+  "location_name": "Napoli, Campania, Italy",
+  "latitude": 40.84,
+  "longitude": 14.25,
+  "elevation_m": 17,
+  "optimal_tilt_degrees": 35.0,
+  "optimal_azimuth_degrees": 180.0,
+  "avg_daily_kwh_per_kwp": [2.15, 2.95, 3.95, 4.85, 5.75, 6.35, 6.60, 6.05, 4.95, 3.65, 2.45, 1.95],
+  "p_sunny": [0.50, 0.55, 0.60, 0.65, 0.70, 0.77, 0.82, 0.80, 0.70, 0.62, 0.52, 0.48],
+  "weather_persistence": [0.35, 0.32, 0.25, 0.22, 0.25, 0.40, 0.45, 0.42, 0.30, 0.28, 0.30, 0.35],
+  "sunny_factor": 1.2,
+  "cloudy_factor": 0.3,
+  "source": "PVGIS typical values",
+  "notes": "Southern Italy, Mediterranean climate, ~1560 kWh/kWp/year. Strong anticyclonic persistence in summer; lower Tyrrhenian convective volatility in shoulder months."
+}

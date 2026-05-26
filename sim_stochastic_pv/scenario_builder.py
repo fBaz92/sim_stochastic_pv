@@ -102,28 +102,178 @@ def build_default_load_profile(scenario_data: Mapping[str, Any] | str | Path | N
     return load_blueprint.build_load_profile()
 
 
-def build_default_solar_model(scenario_data: Mapping[str, Any] | str | Path | None = None) -> SolarModel:
+def build_default_solar_model(
+    scenario_data: Mapping[str, Any] | str | Path | None = None,
+    persistence=None,
+) -> SolarModel:
+    """
+    Build SolarModel from scenario configuration with database fallback.
+
+    Supports three ways to specify solar data (in priority order):
+    1. Database reference by ID or name (requires persistence parameter)
+    2. Inline month_params in scenario data
+    3. Fallback to Pavullo defaults (always available)
+
+    Args:
+        scenario_data: Scenario configuration (JSON path, dict, or None for default).
+        persistence: Optional PersistenceService for loading solar profiles from DB.
+            Required if scenario data references solar_profile_id or solar_profile_name.
+
+    Returns:
+        SolarModel: Configured solar production model with orientation support.
+
+    Example:
+        ```python
+        from sim_stochastic_pv.persistence import PersistenceService
+        from sim_stochastic_pv.scenario_builder import build_default_solar_model
+
+        # Load from database by name
+        persistence = PersistenceService()
+        solar_model = build_default_solar_model(
+            scenario_data={"solar": {"solar_profile_name": "Milano"}},
+            persistence=persistence
+        )
+
+        # Inline configuration (no database)
+        solar_model = build_default_solar_model(
+            scenario_data={"solar": {"month_params": [...]}}
+        )
+
+        # Fallback to Pavullo defaults
+        solar_model = build_default_solar_model()
+        ```
+
+    Notes:
+        - Pavullo defaults ALWAYS available as fallback (backward compatible)
+        - Orientation parameters (tilt/azimuth) supported from config
+        - Database loading requires persistence parameter
+    """
+    from .simulation.solar import SolarMonthParams
+
     data = load_scenario_data(scenario_data)
     solar_cfg = data["solar"]
+
+    # Extract common parameters
+    pv_kwp = solar_cfg.get("pv_kwp", 2.0)
+    degradation_per_year = solar_cfg.get("degradation_per_year", 0.007)
+    panel_tilt_degrees = solar_cfg.get("panel_tilt_degrees")
+    panel_azimuth_degrees = solar_cfg.get("panel_azimuth_degrees")
+
+    # Priority 1: Load from database by ID
+    if "solar_profile_id" in solar_cfg and persistence:
+        profile_id = solar_cfg["solar_profile_id"]
+        profile = persistence.get_solar_profile_by_id(profile_id)
+        if not profile:
+            raise ValueError(f"Solar profile ID {profile_id} not found in database")
+        return _solar_model_from_db_record(
+            profile,
+            pv_kwp,
+            degradation_per_year,
+            panel_tilt_degrees,
+            panel_azimuth_degrees,
+        )
+
+    # Priority 2: Load from database by name
+    if "solar_profile_name" in solar_cfg and persistence:
+        name = solar_cfg["solar_profile_name"]
+        profile = persistence.get_solar_profile_by_name(name)
+        if not profile:
+            raise ValueError(
+                f"Solar profile '{name}' not found in database. "
+                f"Available profiles: {', '.join(p.name for p in persistence.list_solar_profiles())}"
+            )
+        return _solar_model_from_db_record(
+            profile,
+            pv_kwp,
+            degradation_per_year,
+            panel_tilt_degrees,
+            panel_azimuth_degrees,
+        )
+
+    # Priority 3: Inline month_params
     month_params_raw = solar_cfg.get("month_params")
-    default_params = make_default_solar_params_for_pavullo()
-    param_cls = type(default_params[0])
-    if month_params_raw is None:
-        month_params = default_params
-    else:
+    if month_params_raw is not None:
         month_params = [
-            param_cls(
+            SolarMonthParams(
                 avg_daily_kwh_per_kwp=entry["avg_daily_kwh_per_kwp"],
                 p_sunny=entry["p_sunny"],
                 sunny_factor=entry["sunny_factor"],
                 cloudy_factor=entry["cloudy_factor"],
+                weather_persistence=float(entry.get("weather_persistence", 0.0) or 0.0),
             )
             for entry in month_params_raw
         ]
+        optimal_tilt = solar_cfg.get("optimal_tilt_degrees", 35.0)
+        optimal_azimuth = solar_cfg.get("optimal_azimuth_degrees", 180.0)
+        return SolarModel(
+            pv_kwp=pv_kwp,
+            month_params=month_params,
+            degradation_per_year=degradation_per_year,
+            optimal_tilt_degrees=optimal_tilt,
+            optimal_azimuth_degrees=optimal_azimuth,
+            panel_tilt_degrees=panel_tilt_degrees,
+            panel_azimuth_degrees=panel_azimuth_degrees,
+        )
+
+    # Fallback: Pavullo defaults (PRESERVED - always available as fallback)
+    month_params = make_default_solar_params_for_pavullo()
     return SolarModel(
-        pv_kwp=solar_cfg.get("pv_kwp", 2.0),
+        pv_kwp=pv_kwp,
         month_params=month_params,
-        degradation_per_year=solar_cfg.get("degradation_per_year", 0.007),
+        degradation_per_year=degradation_per_year,
+        optimal_tilt_degrees=35.0,
+        optimal_azimuth_degrees=180.0,
+        panel_tilt_degrees=panel_tilt_degrees,
+        panel_azimuth_degrees=panel_azimuth_degrees,
+    )
+
+
+def _solar_model_from_db_record(profile, pv_kwp, degradation_per_year, panel_tilt_degrees, panel_azimuth_degrees):
+    """
+    Create SolarModel from database solar profile record.
+
+    Helper function to construct SolarModel from SolarProfileModel database record.
+
+    Args:
+        profile: SolarProfileModel database record.
+        pv_kwp: PV system capacity in kWp.
+        degradation_per_year: Annual degradation rate.
+        panel_tilt_degrees: Actual panel tilt (None = use optimal from profile).
+        panel_azimuth_degrees: Actual panel azimuth (None = use optimal from profile).
+
+    Returns:
+        SolarModel: Configured solar model with database profile data.
+    """
+    from .simulation.solar import SolarMonthParams
+
+    # Build month_params from database arrays. ``weather_persistence`` is
+    # nullable on legacy records and on profiles that predate the Markov
+    # chain feature: in that case we substitute a per-month value of 0.0
+    # which collapses the Markov chain to the legacy iid Bernoulli model.
+    persistence_array = getattr(profile, "weather_persistence", None)
+    if persistence_array is None:
+        persistence_array = [0.0] * 12
+
+    month_params = []
+    for i in range(12):
+        params = SolarMonthParams(
+            avg_daily_kwh_per_kwp=profile.avg_daily_kwh_per_kwp[i],
+            p_sunny=profile.p_sunny[i],
+            sunny_factor=profile.sunny_factor,
+            cloudy_factor=profile.cloudy_factor,
+            weather_persistence=float(persistence_array[i] or 0.0),
+        )
+        month_params.append(params)
+
+    # Create SolarModel with database profile's optimal orientation
+    return SolarModel(
+        pv_kwp=pv_kwp,
+        month_params=month_params,
+        degradation_per_year=degradation_per_year,
+        optimal_tilt_degrees=profile.optimal_tilt_degrees,
+        optimal_azimuth_degrees=profile.optimal_azimuth_degrees,
+        panel_tilt_degrees=panel_tilt_degrees,
+        panel_azimuth_degrees=panel_azimuth_degrees,
     )
 
 

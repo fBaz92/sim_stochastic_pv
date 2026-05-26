@@ -1,0 +1,16 @@
+{
+  "name": "Milano",
+  "location_name": "Milano, Lombardia, Italy",
+  "latitude": 45.46,
+  "longitude": 9.19,
+  "elevation_m": 122,
+  "optimal_tilt_degrees": 35.0,
+  "optimal_azimuth_degrees": 180.0,
+  "avg_daily_kwh_per_kwp": [1.38, 2.15, 3.10, 3.95, 4.85, 5.35, 5.50, 4.70, 3.55, 2.55, 1.70, 1.25],
+  "p_sunny": [0.35, 0.40, 0.48, 0.52, 0.58, 0.68, 0.72, 0.68, 0.58, 0.48, 0.38, 0.35],
+  "weather_persistence": [0.40, 0.38, 0.25, 0.22, 0.25, 0.40, 0.45, 0.40, 0.28, 0.25, 0.35, 0.42],
+  "sunny_factor": 1.2,
+  "cloudy_factor": 0.3,
+  "source": "PVGIS typical values",
+  "notes": "Northern Italy, continental climate, ~1235 kWh/kWp/year. Markov persistence higher in winter due to persistent Po-valley fog/inversion layers."
+}

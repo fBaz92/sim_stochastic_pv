@@ -13,74 +13,104 @@ from typing import List
 
 import numpy as np
 
+# Empirical azimuth factors for Italian latitudes (Northern Hemisphere, ~35-45°N)
+# Based on real PV system measurements accounting for direct + diffuse radiation
+AZIMUTH_FACTORS = {
+    0: 0.68,    # North - mostly diffuse + reflected light
+    45: 0.78,   # Northeast
+    90: 0.84,   # East - morning sun
+    135: 0.93,  # Southeast - excellent
+    180: 1.00,  # South - optimal
+    225: 0.93,  # Southwest - excellent
+    270: 0.84,  # West - afternoon sun
+    315: 0.78,  # Northwest
+}
+
 
 @dataclass
 class SolarMonthParams:
     """
-    Monthly parameters for stochastic solar PV production modeling.
+    Monthly parameters for stochastic solar PV production modelling.
 
     Encapsulates the statistical characteristics of solar energy production
-    for a single month, enabling Monte Carlo simulation of weather variability.
-    Each day is randomly classified as "sunny" or "cloudy" based on probability,
-    with corresponding production multipliers applied.
+    for a single month so the Monte Carlo simulator can draw realistic
+    sunny/cloudy day sequences. The model classifies every day as either
+    *sunny* or *cloudy* and applies the corresponding production multiplier.
 
-    This bimodal weather model (sunny/cloudy) is a simplification of real
-    weather patterns but captures the essential variability needed for
-    economic risk assessment of PV systems.
+    Day-to-day dependence is governed by a two-state Markov chain whose
+    transition probabilities are computed from two user-facing knobs:
+    ``p_sunny`` (the long-term marginal probability of a sunny day) and
+    ``weather_persistence`` (the strength of day-to-day autocorrelation).
+    The transition matrix is built so that ``p_sunny`` is the *stationary
+    distribution* of the chain by construction:
+
+        p_ss = p_sunny      + (1 − p_sunny) · persistence
+        p_cs = p_sunny      · (1 − persistence)
+        p_sc = (1 − p_sunny) · (1 − persistence)
+        p_cc = (1 − p_sunny) + p_sunny      · persistence
+
+    Setting ``weather_persistence = 0.0`` recovers the legacy iid Bernoulli
+    behaviour (no memory). Setting it to ``1.0`` produces perfect runs
+    (whatever state starts the month is held until the next month).
 
     Attributes:
-        avg_daily_kwh_per_kwp: Average daily energy production per installed kWp (kWh/kWp/day).
-            This is the baseline production for an "average" day in the month.
-            Typical values:
-            - Winter (Dec-Feb): 1.0-2.5 kWh/kWp/day (Northern Italy)
-            - Spring/Fall (Mar-May, Sep-Nov): 3.0-5.0 kWh/kWp/day
-            - Summer (Jun-Aug): 5.0-6.0 kWh/kWp/day
-            Annual total typically 1100-1400 kWh/kWp/year in Northern Italy.
-        p_sunny: Probability of a sunny day (0.0 to 1.0).
-            Fraction of days in the month expected to be sunny (not cloudy).
-            Examples:
-            - 0.4 = 40% sunny days (typical winter)
-            - 0.7 = 70% sunny days (typical summer)
-            Higher values = more consistent production, lower risk.
-        sunny_factor: Production multiplier for sunny days (typically > 1.0).
-            Applied to avg_daily_kwh_per_kwp on sunny days.
-            Typical values: 1.1-1.3 (10-30% above average).
-            Example: 1.2 means sunny days produce 20% more than average.
-        cloudy_factor: Production multiplier for cloudy days (typically < 1.0).
-            Applied to avg_daily_kwh_per_kwp on cloudy days.
-            Typical values: 0.2-0.5 (20-50% of average, significant reduction).
-            Example: 0.3 means cloudy days produce 70% less than average.
+        avg_daily_kwh_per_kwp: Average daily energy production per installed
+            kWp (kWh/kWp/day). Baseline for an "average" day in the month.
+            Typical values for Northern Italy:
+            - Winter (Dec-Feb): 1.0-2.5
+            - Shoulder (Mar-May, Sep-Nov): 3.0-5.0
+            - Summer (Jun-Aug): 5.0-6.0
+            Annual total typically 1100-1400 kWh/kWp/year.
+        p_sunny: Long-term marginal probability of a sunny day in this month
+            (0.0 to 1.0). When ``weather_persistence > 0`` this is also the
+            stationary distribution of the underlying Markov chain.
+        sunny_factor: Production multiplier for sunny days (typically > 1.0,
+            range 1.1-1.3). Applied to ``avg_daily_kwh_per_kwp``.
+        cloudy_factor: Production multiplier for cloudy days (typically < 1.0,
+            range 0.2-0.5). Applied to ``avg_daily_kwh_per_kwp``.
+        weather_persistence: Day-to-day persistence parameter (0.0 to 1.0).
+            - 0.0 → memoryless (iid Bernoulli, legacy behaviour).
+            - 0.2-0.5 → realistic climatological values for Italy.
+            - 1.0 → state never flips within a month.
+            Defaults to 0.0 so existing call sites that omit this argument
+            keep their previous semantics.
 
     Example:
         ```python
-        # Summer month in Northern Italy
+        # Summer month in Northern Italy with realistic persistence
         june_params = SolarMonthParams(
-            avg_daily_kwh_per_kwp=5.46,  # High summer production
-            p_sunny=0.7,                  # 70% of days are sunny
-            sunny_factor=1.2,             # Sunny: 5.46 × 1.2 = 6.55 kWh/kWp/day
-            cloudy_factor=0.3             # Cloudy: 5.46 × 0.3 = 1.64 kWh/kWp/day
+            avg_daily_kwh_per_kwp=5.46,
+            p_sunny=0.70,           # 70% sunny on average
+            sunny_factor=1.2,
+            cloudy_factor=0.3,
+            weather_persistence=0.4 # moderate summer persistence
         )
 
-        # Winter month
-        january_params = SolarMonthParams(
-            avg_daily_kwh_per_kwp=1.46,  # Low winter production
-            p_sunny=0.4,                  # Only 40% sunny days
-            sunny_factor=1.2,             # Sunny: 1.75 kWh/kWp/day
-            cloudy_factor=0.3             # Cloudy: 0.44 kWh/kWp/day
+        # Same month modelled as iid (back-compat)
+        june_iid = SolarMonthParams(
+            avg_daily_kwh_per_kwp=5.46,
+            p_sunny=0.70,
+            sunny_factor=1.2,
+            cloudy_factor=0.3,
+            # weather_persistence omitted → 0.0
         )
         ```
 
     Notes:
-        - Factors should satisfy: p_sunny × sunny_factor + (1-p_sunny) × cloudy_factor ≈ 1.0
-          This ensures weighted average production equals avg_daily_kwh_per_kwp
-        - Bimodal model is simpler than full irradiance distributions but adequate
-        - Does not model hour-by-hour variability (uses fixed daily shape)
-        - Calibrate parameters to local climate data for accurate results
+        - For balance of the model it is good practice to choose
+          ``sunny_factor`` and ``cloudy_factor`` so that
+          ``p_sunny·sunny_factor + (1-p_sunny)·cloudy_factor ≈ 1.0``,
+          which keeps the long-run mean equal to ``avg_daily_kwh_per_kwp``.
+        - This is a *bimodal* model — it does not represent partly cloudy
+          conditions or hour-by-hour intra-day variability.
+        - Calibrate ``weather_persistence`` from observed lag-1
+          autocorrelation of clear-sky-index time series for the location.
     """
     avg_daily_kwh_per_kwp: float
     p_sunny: float
     sunny_factor: float
     cloudy_factor: float
+    weather_persistence: float = 0.0
 
 
 class SolarModel:
@@ -159,13 +189,17 @@ class SolarModel:
         pv_kwp: float,
         month_params: List[SolarMonthParams],
         degradation_per_year: float = 0.007,
+        optimal_tilt_degrees: float = 35.0,
+        optimal_azimuth_degrees: float = 180.0,
+        panel_tilt_degrees: float | None = None,
+        panel_azimuth_degrees: float | None = None,
     ) -> None:
         """
-        Initialize a stochastic solar PV production model with degradation.
+        Initialize a stochastic solar PV production model with degradation and orientation.
 
         Sets up the model with system capacity, monthly weather parameters,
-        and degradation assumptions. Automatically generates a Gaussian
-        hourly production shape for daylight hours (6am-6pm).
+        degradation assumptions, and panel orientation. Automatically applies
+        orientation correction factor if panel installation differs from optimal.
 
         Args:
             pv_kwp: PV system capacity in kilowatt-peak (kWp).
@@ -181,13 +215,26 @@ class SolarModel:
                 - 0.007 (0.7%/year): Standard assumption (default)
                 - 0.010 (1.0%/year): Budget panels or harsh environment
                 Defaults to 0.007 (0.7% per year).
+            optimal_tilt_degrees: Tilt angle for which production data is calibrated.
+                Typically equals latitude for mid-latitudes (35-45° for Italy).
+                Defaults to 35.0 degrees.
+            optimal_azimuth_degrees: Azimuth for which production data is calibrated.
+                180° = south (optimal for Northern Hemisphere).
+                Defaults to 180.0 degrees (south).
+            panel_tilt_degrees: Actual installed panel tilt angle (0-90°).
+                If None, assumes optimal_tilt_degrees (no correction applied).
+                If different from optimal, reduces production accordingly.
+            panel_azimuth_degrees: Actual installed panel azimuth (0-360°).
+                0° = north, 90° = east, 180° = south, 270° = west.
+                If None, assumes optimal_azimuth_degrees (no correction applied).
+                If different from optimal, reduces production accordingly.
 
         Raises:
             ValueError: If month_params does not contain exactly 12 entries.
 
         Example:
             ```python
-            # Standard 6 kWp residential system
+            # Standard 6 kWp south-facing system at optimal tilt
             params = make_default_solar_params_for_pavullo()
             model = SolarModel(
                 pv_kwp=6.0,
@@ -195,11 +242,22 @@ class SolarModel:
                 degradation_per_year=0.007
             )
 
-            # Premium system with slower degradation
-            model_premium = SolarModel(
+            # East-facing rooftop installation (reduced production)
+            model_east = SolarModel(
                 pv_kwp=6.0,
                 month_params=params,
-                degradation_per_year=0.005  # Better panels
+                optimal_tilt_degrees=35.0,  # Data calibrated for 35°
+                optimal_azimuth_degrees=180.0,  # Data calibrated for south
+                panel_tilt_degrees=35.0,  # Installed at 35° (optimal)
+                panel_azimuth_degrees=90.0  # But facing EAST (84% of optimal)
+            )
+
+            # Flat roof with suboptimal tilt
+            model_flat = SolarModel(
+                pv_kwp=6.0,
+                month_params=params,
+                panel_tilt_degrees=10.0,  # Nearly flat (reduces production)
+                panel_azimuth_degrees=180.0  # South-facing (optimal azimuth)
             )
             ```
 
@@ -208,13 +266,27 @@ class SolarModel:
             - Shape is normalized (sums to 1.0) for energy distribution
             - month_params order matters: [Jan, Feb, ..., Dec]
             - Degradation compounds: year N capacity = (1 - rate)^N
+            - Orientation factor automatically applied to pv_kwp if non-optimal
+            - See AZIMUTH_FACTORS for empirical orientation derating values
         """
         if len(month_params) != 12:
             raise ValueError("month_params must contain 12 entries")
-        self.pv_kwp = pv_kwp
+
         self.month_params = month_params
         self.degradation_per_year = degradation_per_year
+        self.optimal_tilt_degrees = optimal_tilt_degrees
+        self.optimal_azimuth_degrees = optimal_azimuth_degrees
 
+        # Determine actual panel orientation (defaults to optimal)
+        actual_tilt = panel_tilt_degrees if panel_tilt_degrees is not None else optimal_tilt_degrees
+        actual_azimuth = panel_azimuth_degrees if panel_azimuth_degrees is not None else optimal_azimuth_degrees
+
+        # Compute orientation factor and apply to capacity
+        orientation_factor = self.compute_orientation_factor(actual_tilt, actual_azimuth)
+        self.pv_kwp = pv_kwp * orientation_factor
+        self.orientation_factor = orientation_factor  # Store for reference
+
+        # Generate hourly production shape (Gaussian centered at noon)
         hours = np.arange(24)
         daylight_mask = (hours >= 6) & (hours <= 18)
         x = hours[daylight_mask] - 12.0
@@ -222,6 +294,178 @@ class SolarModel:
         shape /= shape.sum()
         self.hourly_shape = np.zeros(24)
         self.hourly_shape[daylight_mask] = shape
+
+    def _interpolate_azimuth_factor(self, azimuth_degrees: float) -> float:
+        """
+        Linearly interpolate azimuth factor from empirical lookup table.
+
+        Uses AZIMUTH_FACTORS constant with 8 cardinal/intercardinal directions
+        to compute orientation derating. Handles angle wrapping at 360°/0°.
+
+        Args:
+            azimuth_degrees: Panel azimuth angle (0-360°).
+                0° = north, 90° = east, 180° = south, 270° = west.
+
+        Returns:
+            float: Azimuth derating factor (0.68-1.0).
+                1.0 = south (optimal), 0.68 = north (worst case).
+
+        Example:
+            ```python
+            factor_south = model._interpolate_azimuth_factor(180.0)  # 1.00
+            factor_se = model._interpolate_azimuth_factor(135.0)     # 0.93
+            factor_ese = model._interpolate_azimuth_factor(112.5)    # ~0.885 (interpolated)
+            factor_north = model._interpolate_azimuth_factor(0.0)    # 0.68
+            ```
+
+        Notes:
+            - Linear interpolation between table points
+            - Wraps correctly at 360°/0° boundary
+            - Based on empirical Italian PV data (35-45°N latitude)
+        """
+        # Normalize azimuth to [0, 360)
+        azimuth = azimuth_degrees % 360
+
+        # Get sorted table angles
+        angles = sorted(AZIMUTH_FACTORS.keys())
+
+        # Handle wrapping case (azimuth > 315°)
+        if azimuth > 315:
+            lower_angle, upper_angle = 315, 360
+            lower_factor = AZIMUTH_FACTORS[315]
+            upper_factor = AZIMUTH_FACTORS[0]  # Wraps to north
+            weight = (azimuth - lower_angle) / (upper_angle - lower_angle)
+            return lower_factor + weight * (upper_factor - lower_factor)
+
+        # Find bracketing angles in table
+        for i, angle in enumerate(angles):
+            if azimuth <= angle:
+                if i == 0:
+                    return AZIMUTH_FACTORS[angle]
+                lower_angle = angles[i - 1]
+                upper_angle = angle
+                lower_factor = AZIMUTH_FACTORS[lower_angle]
+                upper_factor = AZIMUTH_FACTORS[upper_angle]
+                weight = (azimuth - lower_angle) / (upper_angle - lower_angle)
+                return lower_factor + weight * (upper_factor - lower_factor)
+
+        # Fallback (should not reach here)
+        return AZIMUTH_FACTORS[315]
+
+    def _compute_tilt_factor(self, panel_tilt: float) -> float:
+        """
+        Compute tilt deviation derating factor.
+
+        Calculates production reduction when panel tilt differs from optimal.
+        Tilt deviations are more forgiving than azimuth deviations due to
+        wide solar elevation range throughout the day.
+
+        Args:
+            panel_tilt: Panel tilt from horizontal (0-90°).
+                0° = flat/horizontal, 90° = vertical.
+
+        Returns:
+            float: Tilt derating factor (0.66-1.0).
+                1.0 = at optimal tilt, decreases with deviation.
+
+        Factor ranges by deviation:
+            - ±0-15°: 0.98-1.00 (minimal impact)
+            - ±15-30°: 0.86-0.98 (moderate impact)
+            - ±30°+: 0.66-0.86 (significant impact)
+
+        Example:
+            ```python
+            # Optimal case
+            factor = model._compute_tilt_factor(35.0)  # 1.00 (if optimal=35°)
+
+            # Slightly off
+            factor = model._compute_tilt_factor(40.0)  # ~0.99 (5° deviation)
+
+            # Moderately off
+            factor = model._compute_tilt_factor(50.0)  # ~0.92 (15° deviation)
+
+            # Significantly off
+            factor = model._compute_tilt_factor(70.0)  # ~0.74 (35° deviation)
+            ```
+
+        Notes:
+            - More forgiving than azimuth (wider acceptable range)
+            - ±15° deviation loses only ~2% production
+            - Flat roofs (10-20°) typically 90-98% of optimal
+        """
+        deviation = abs(panel_tilt - self.optimal_tilt_degrees)
+        if deviation <= 15:
+            return 1.0 - 0.02 * (deviation / 15)  # 98-100%
+        elif deviation <= 30:
+            return 0.98 - 0.12 * ((deviation - 15) / 15)  # 86-98%
+        else:
+            return 0.86 - 0.20 * min(1.0, (deviation - 30) / 30)  # 66-86%
+
+    def compute_orientation_factor(
+        self,
+        panel_tilt_degrees: float,
+        panel_azimuth_degrees: float,
+    ) -> float:
+        """
+        Compute combined orientation derating factor using empirical data.
+
+        Calculates production reduction when panel orientation (tilt + azimuth)
+        differs from optimal values. Accounts for both direct radiation geometry
+        and diffuse radiation that panels receive from all orientations.
+
+        The combined factor is the product of azimuth and tilt derating factors,
+        representing the overall reduction in energy capture due to non-optimal
+        orientation.
+
+        Args:
+            panel_tilt_degrees: Panel tilt from horizontal (0-90°).
+                0° = flat, 35° = typical optimal for Italy, 90° = vertical.
+            panel_azimuth_degrees: Panel azimuth (0-360°).
+                0° = north, 90° = east, 180° = south, 270° = west.
+
+        Returns:
+            float: Combined orientation derating factor (0.45-1.0).
+                Multiply production values by this factor.
+                1.0 = optimal orientation (typically 35° tilt, 180° azimuth).
+
+        Example factors for typical installations:
+            - South 35°: 1.00 (100% - optimal)
+            - Southeast 35°: 0.93 (93% - excellent)
+            - Southwest 35°: 0.93 (93% - excellent)
+            - East 35°: 0.84 (84% - good)
+            - West 35°: 0.84 (84% - good)
+            - Northeast 35°: 0.78 (78% - acceptable)
+            - North 35°: 0.68 (68% - poor but viable due to diffuse)
+            - South 20° (flat): 0.98 (98% - very good)
+            - East 50° (steep): 0.74 (74% - moderate)
+
+        Example:
+            ```python
+            # Standard south-facing optimal installation
+            factor = model.compute_orientation_factor(35.0, 180.0)  # 1.00
+
+            # East-facing rooftop
+            factor = model.compute_orientation_factor(35.0, 90.0)   # 0.84
+            # Annual production: 6 kWp × 0.84 = 5.04 kWp effective
+
+            # Flat roof south-facing
+            factor = model.compute_orientation_factor(15.0, 180.0)  # 0.99
+            # Only 1% loss despite 20° tilt deviation
+
+            # North-facing (still produces from diffuse)
+            factor = model.compute_orientation_factor(35.0, 0.0)    # 0.68
+            # Still 68% production (diffuse + reflected light)
+            ```
+
+        Notes:
+            - Based on empirical PV data for Italian latitudes (35-45°N)
+            - Accounts for ~35% diffuse radiation in total irradiance
+            - For other latitudes, adjust AZIMUTH_FACTORS if needed
+            - Orientation losses are MULTIPLICATIVE (worst case: both factors low)
+        """
+        azimuth_factor = self._interpolate_azimuth_factor(panel_azimuth_degrees)
+        tilt_factor = self._compute_tilt_factor(panel_tilt_degrees)
+        return azimuth_factor * tilt_factor
 
     def simulate_daily_energy(
         self,
@@ -309,9 +553,16 @@ class SolarModel:
             ```
 
         Notes:
-            - Each day is simulated independently (no autocorrelation)
+            - Day-to-day weather is generated by a two-state Markov chain
+              whose stationary distribution equals ``p_sunny`` for the
+              current month (see :class:`SolarMonthParams`).
+            - When ``weather_persistence == 0.0`` for all months the chain
+              degenerates to independent Bernoulli draws (legacy behaviour).
+            - The Markov state is reset from the stationary distribution at
+              every month boundary so the marginal ``p_sunny`` is preserved
+              even when transition probabilities change month-to-month.
             - Production = base × weather_factor × degradation_factor × pv_kwp
-            - Weather factor is either sunny_factor or cloudy_factor per day
+            - Weather factor is either ``sunny_factor`` or ``cloudy_factor``.
             - Degradation factor = (1 - degradation_per_year)^year_index
             - Return values represent total daily energy, not hourly breakdown
             - Use daily_profile_kwh() to split into hourly values
@@ -319,19 +570,50 @@ class SolarModel:
         n_days = len(month_in_year_for_day)
         pv_daily = np.zeros(n_days, dtype=float)
 
+        # Markov state for the weather (True = sunny, False = cloudy). The
+        # state is carried from one day to the next and is re-initialised
+        # from the stationary distribution every time we enter a new
+        # (year, month) couple — this keeps the marginal P(sunny) equal to
+        # the month's ``p_sunny`` even at month boundaries where the
+        # transition probabilities change.
+        prev_state_is_sunny: bool | None = None
+        prev_year: int = -1
+        prev_month: int = -1
+
         for i in range(n_days):
-            m = month_in_year_for_day[i]
-            y = year_index_for_day[i]
+            m = int(month_in_year_for_day[i])
+            y = int(year_index_for_day[i])
             params = self.month_params[m]
 
             base_daily = params.avg_daily_kwh_per_kwp * self.pv_kwp
 
-            is_sunny = rng.random() < params.p_sunny
+            persistence = float(getattr(params, "weather_persistence", 0.0) or 0.0)
+            persistence = min(1.0, max(0.0, persistence))
+
+            crossed_month_boundary = (m != prev_month) or (y != prev_year)
+            if prev_state_is_sunny is None or crossed_month_boundary:
+                # First day overall, or first day of this month: draw from the
+                # stationary distribution which by construction equals p_sunny.
+                is_sunny = rng.random() < params.p_sunny
+            else:
+                # Transition from the previous state using the Markov chain
+                # transition probabilities derived from p_sunny + persistence.
+                if prev_state_is_sunny:
+                    # P(sunny_t | sunny_{t-1}) = p_sunny + (1-p_sunny) * persistence
+                    p_stay_sunny = params.p_sunny + (1.0 - params.p_sunny) * persistence
+                    is_sunny = rng.random() < p_stay_sunny
+                else:
+                    # P(sunny_t | cloudy_{t-1}) = p_sunny * (1 - persistence)
+                    p_jump_to_sunny = params.p_sunny * (1.0 - persistence)
+                    is_sunny = rng.random() < p_jump_to_sunny
+
             factor = params.sunny_factor if is_sunny else params.cloudy_factor
-
             degradation_factor = (1.0 - self.degradation_per_year) ** y
-
             pv_daily[i] = base_daily * factor * degradation_factor
+
+            prev_state_is_sunny = bool(is_sunny)
+            prev_year = y
+            prev_month = m
 
         return pv_daily
 

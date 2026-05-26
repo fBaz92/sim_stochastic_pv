@@ -1,0 +1,16 @@
+{
+  "name": "Pavullo_nel_Frignano",
+  "location_name": "Pavullo nel Frignano, Modena, Italy",
+  "latitude": 44.34,
+  "longitude": 10.83,
+  "elevation_m": 682,
+  "optimal_tilt_degrees": 35.0,
+  "optimal_azimuth_degrees": 180.0,
+  "avg_daily_kwh_per_kwp": [1.46, 2.27, 3.18, 4.09, 5.00, 5.46, 5.46, 4.55, 3.64, 2.73, 1.82, 1.36],
+  "p_sunny": [0.4, 0.45, 0.5, 0.55, 0.6, 0.7, 0.7, 0.65, 0.55, 0.5, 0.45, 0.4],
+  "weather_persistence": [0.35, 0.32, 0.22, 0.20, 0.22, 0.40, 0.45, 0.40, 0.25, 0.25, 0.30, 0.35],
+  "sunny_factor": 1.2,
+  "cloudy_factor": 0.3,
+  "source": "Historical data",
+  "notes": "Northern Italy Apennines, ~1250 kWh/kWp/year. Markov persistence: higher in winter (stable cold fronts/fog) and summer (anticyclonic spells), lower in changeable shoulder seasons."
+}
