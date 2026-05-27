@@ -26,6 +26,7 @@ from ...simulation.prices import (
 )
 from .. import dependencies
 from ..schemas import profiles as profile_schemas
+from ..schemas.profiles import SolarProfileResponse
 
 router = APIRouter(prefix="/api", tags=["profiles"])
 
@@ -159,6 +160,29 @@ def create_load_profile(
     )
 
 
+@router.delete("/profiles/load/{profile_id}")
+def delete_load_profile(
+    profile_id: int,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> dict:
+    """
+    Delete a load profile by ID.
+
+    Args:
+        profile_id: Database primary key of the load profile to delete.
+        persistence: Database persistence service (dependency injected).
+
+    Returns:
+        JSON ``{"ok": true, "id": <profile_id>}`` on success.
+
+    Raises:
+        HTTPException 404: profile not found.
+    """
+    if not persistence.delete_load_profile(profile_id):
+        raise HTTPException(status_code=404, detail=f"Load profile id={profile_id} not found")
+    return {"ok": True, "id": profile_id}
+
+
 @router.get("/profiles/price", response_model=list[profile_schemas.PriceProfileResponse])
 def list_price_profiles(
     persistence: PersistenceService = Depends(dependencies.get_persistence_service),
@@ -264,6 +288,87 @@ def create_price_profile(
         - Updating propagates to all scenarios using this profile ID
     """
     return persistence.upsert_price_profile(payload.name, payload.data)
+
+
+@router.delete("/profiles/price/{profile_id}")
+def delete_price_profile(
+    profile_id: int,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> dict:
+    """
+    Delete a price profile by ID.
+
+    Note: this must be declared *before* the preview routes so that FastAPI
+    does not match ``/profiles/price/preview`` as ``profile_id="preview"``.
+
+    Args:
+        profile_id: Database primary key of the price profile to delete.
+        persistence: Database persistence service (dependency injected).
+
+    Returns:
+        JSON ``{"ok": true, "id": <profile_id>}`` on success.
+
+    Raises:
+        HTTPException 404: profile not found.
+    """
+    if not persistence.delete_price_profile(profile_id):
+        raise HTTPException(status_code=404, detail=f"Price profile id={profile_id} not found")
+    return {"ok": True, "id": profile_id}
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 — solar profile list for the Wizard step 1 ("Luogo")
+# ---------------------------------------------------------------------------
+
+
+@router.get("/profiles/solar", response_model=list[SolarProfileResponse])
+def list_solar_profiles(
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> list[SolarProfileResponse]:
+    """
+    List all solar irradiance profiles stored in the database.
+
+    This endpoint feeds the **Step 1 — Luogo di installazione** dropdown in the
+    Scenario Wizard.  Each profile contains the monthly solar production data
+    and optimal panel orientation for a specific geographic location, enabling
+    the wizard to:
+
+    - Populate the location selector with human-readable names.
+    - Render a read-only weather preview (avg daily production, p_sunny,
+      weather persistence) once the user picks a location.
+    - Pre-fill the tilt/azimuth fields in Step 2 with the optimal values for
+      the chosen site.
+
+    Args:
+        persistence: Database persistence service (dependency injected).
+
+    Returns:
+        List of :class:`SolarProfileResponse` objects, sorted by name
+        (alphabetical ascending).  Contains all seeded locations (Pavullo,
+        Milano, Roma, Napoli, Palermo and any user-created entries).
+
+    Example:
+        ```
+        GET /api/profiles/solar
+        →
+        [
+          {"id": 1, "name": "Milano", "location_name": "Milano, Lombardia, Italy",
+           "latitude": 45.46, "longitude": 9.19, "optimal_tilt_degrees": 35.0,
+           "avg_daily_kwh_per_kwp": [1.3, 2.1, …], "p_sunny": [0.38, 0.42, …], …},
+          …
+        ]
+        ```
+
+    Notes:
+        - Profiles are read-only via this endpoint; creation/update is handled
+          via CLI seeding or direct DB access.
+        - ``weather_persistence`` is ``None`` for profiles seeded before Phase 1;
+          the frontend should treat ``None`` as 0.0 (iid weather, no persistence).
+    """
+    records = persistence.list_solar_profiles()
+    # Sort alphabetically by name for a deterministic dropdown order.
+    records_sorted = sorted(records, key=lambda r: r.name)
+    return [SolarProfileResponse.model_validate(r) for r in records_sorted]
 
 
 # ---------------------------------------------------------------------------

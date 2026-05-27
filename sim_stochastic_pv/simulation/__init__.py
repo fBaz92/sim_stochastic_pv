@@ -27,6 +27,8 @@ from .load_profiles import (
     LoadScenarioBlueprint,
     MonthlyAverageLoadProfile,
     VariableLoadProfile,
+    WeeklyPatternLoadProfile,
+    WEEKLY_PRESETS,
     make_flat_monthly_load_profiles,
 )
 from .monte_carlo import EconomicConfig, MonteCarloResults, MonteCarloSimulator
@@ -62,6 +64,8 @@ __all__ = [
     "HomeAwayLoadProfile",
     "MonthlyAverageLoadProfile",
     "VariableLoadProfile",
+    "WeeklyPatternLoadProfile",
+    "WEEKLY_PRESETS",
     "LoadScenarioBlueprint",
     "make_flat_monthly_load_profiles",
     # Energy system simulator

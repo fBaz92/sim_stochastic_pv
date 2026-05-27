@@ -17,7 +17,7 @@ specification updates propagate to all scenarios using that hardware.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from ...persistence import PersistenceService
 from .. import dependencies
@@ -125,6 +125,33 @@ def create_inverter(
     return persistence.upsert_inverter(payload.model_dump())
 
 
+@router.delete("/inverters/{inverter_id}")
+def delete_inverter(
+    inverter_id: int,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> dict:
+    """
+    Delete an inverter from the hardware catalog by ID.
+
+    Permanently removes the inverter record. Scenarios that reference this
+    inverter by ID will fail to hydrate after deletion — remove those
+    scenarios first if needed.
+
+    Args:
+        inverter_id: Database primary key of the inverter to delete.
+        persistence: Database persistence service (dependency injected).
+
+    Returns:
+        JSON ``{"ok": true, "id": <inverter_id>}`` on success.
+
+    Raises:
+        HTTPException 404: inverter not found.
+    """
+    if not persistence.delete_inverter(inverter_id):
+        raise HTTPException(status_code=404, detail=f"Inverter id={inverter_id} not found")
+    return {"ok": True, "id": inverter_id}
+
+
 @router.get("/panels", response_model=list[hw_schemas.PanelResponse])
 def list_panels(
     persistence: PersistenceService = Depends(dependencies.get_persistence_service),
@@ -217,6 +244,29 @@ def create_panel(
         - Updating propagates to all scenarios using this panel ID
     """
     return persistence.upsert_panel(payload.model_dump())
+
+
+@router.delete("/panels/{panel_id}")
+def delete_panel(
+    panel_id: int,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> dict:
+    """
+    Delete a solar panel from the hardware catalog by ID.
+
+    Args:
+        panel_id: Database primary key of the panel to delete.
+        persistence: Database persistence service (dependency injected).
+
+    Returns:
+        JSON ``{"ok": true, "id": <panel_id>}`` on success.
+
+    Raises:
+        HTTPException 404: panel not found.
+    """
+    if not persistence.delete_panel(panel_id):
+        raise HTTPException(status_code=404, detail=f"Panel id={panel_id} not found")
+    return {"ok": True, "id": panel_id}
 
 
 @router.get("/batteries", response_model=list[hw_schemas.BatteryResponse])
@@ -313,3 +363,26 @@ def create_battery(
         - Updating propagates to all scenarios using this battery ID
     """
     return persistence.upsert_battery(payload.model_dump())
+
+
+@router.delete("/batteries/{battery_id}")
+def delete_battery(
+    battery_id: int,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> dict:
+    """
+    Delete a battery from the hardware catalog by ID.
+
+    Args:
+        battery_id: Database primary key of the battery to delete.
+        persistence: Database persistence service (dependency injected).
+
+    Returns:
+        JSON ``{"ok": true, "id": <battery_id>}`` on success.
+
+    Raises:
+        HTTPException 404: battery not found.
+    """
+    if not persistence.delete_battery(battery_id):
+        raise HTTPException(status_code=404, detail=f"Battery id={battery_id} not found")
+    return {"ok": True, "id": battery_id}

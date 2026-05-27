@@ -10,15 +10,28 @@
      * and a click-to-preview affordance on saved profiles. The user can
      * judge how aggressive a volatility setting is *before* committing to
      * a 20-year economic simulation.
+     *
+     * Edit and delete are supported: each saved profile card exposes ✏️/🗑️
+     * buttons. Edit pre-populates the form and uses the upsert-by-name
+     * endpoint (same POST). Delete shows an inline confirmation before
+     * calling the DELETE endpoint.
      */
 
     let items = [];
     let showForm = false;
 
-    // Default state of the form. We model parameters generically so the
-    // form can carry all three model_type variants (escalating, gbm,
-    // mean_reverting) and we only serialise the relevant subset.
-    let newItem = {
+    /** ID del profilo in editing; null = modalità creazione. */
+    let editingId = null;
+
+    /** ID del profilo con conferma eliminazione in attesa. */
+    let deleteConfirmId = null;
+
+    /**
+     * Factory for a blank form state. All three model_type variants are
+     * carried in the same flat object — we serialise only the relevant
+     * subset in buildDataPayload().
+     */
+    const emptyItem = () => ({
         name: "",
         model_type: "gbm",
         base_price_eur_per_kwh: 0.25,
@@ -37,7 +50,9 @@
         long_term_price_eur_per_kwh: 0.28,
         mean_reversion_speed_annual: 0.3,
         // (volatility_annual reused)
-    };
+    });
+
+    let newItem = emptyItem();
 
     // Live preview state for the form
     let formPreview = null;
@@ -53,6 +68,63 @@
 
     async function load() {
         items = await api.listPriceProfiles();
+    }
+
+    /**
+     * Pre-popola il form con i dati di un profilo esistente.
+     * Ricostruisce lo stato interno del form dalla struttura JSON salvata.
+     */
+    function startEdit(item) {
+        editingId = item.id;
+        deleteConfirmId = null;
+        const d = item.data || {};
+        const f = emptyItem();
+        f.name = item.name;
+        f.model_type = d.model_type ?? "gbm";
+        f.base_price_eur_per_kwh = d.base_price_eur_per_kwh ?? 0.25;
+
+        if (f.model_type === "escalating") {
+            f.annual_escalation = d.annual_escalation ?? 0.025;
+            f.use_stochastic_escalation = d.use_stochastic_escalation ?? true;
+            const pcts = d.escalation_variation_percentiles ?? [-0.05, 0.05];
+            f.escalation_p05 = pcts[0] ?? -0.05;
+            f.escalation_p95 = pcts[1] ?? 0.05;
+        } else if (f.model_type === "gbm") {
+            f.drift_annual = d.drift_annual ?? 0.025;
+            f.volatility_annual = d.volatility_annual ?? 0.10;
+        } else {
+            // mean_reverting
+            f.long_term_price_eur_per_kwh = d.long_term_price_eur_per_kwh ?? 0.28;
+            f.mean_reversion_speed_annual = d.mean_reversion_speed_annual ?? 0.3;
+            f.volatility_annual = d.volatility_annual ?? 0.10;
+        }
+
+        newItem = f;
+        showForm = true;
+        document.getElementById("price-profile-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    function cancelForm() {
+        showForm = false;
+        editingId = null;
+        newItem = emptyItem();
+        formPreview = null;
+        formPreviewError = "";
+    }
+
+    async function handleDelete(id) {
+        try {
+            await api.deletePriceProfile(id);
+            deleteConfirmId = null;
+            // Clear saved-profile preview if we just deleted the selected one
+            if (selectedSavedId === id) {
+                selectedSavedId = null;
+                savedPreview = null;
+            }
+            await load();
+        } catch (e) {
+            alert("Errore nella cancellazione: " + e.message);
+        }
     }
 
     /**
@@ -101,7 +173,7 @@
             name: newItem.name,
             data: buildDataPayload(),
         });
-        showForm = false;
+        cancelForm();
         load();
     }
 
@@ -228,8 +300,9 @@
     }
 
     /**
-     * On click of a saved-profile card, fetch its preview from the backend
-     * (uses the saved data verbatim — useful even when the form is closed).
+     * On click of a saved-profile card body, fetch its preview from the
+     * backend (uses the saved data verbatim — useful even when the form
+     * is closed).
      */
     async function selectSaved(item) {
         selectedSavedId = item.id;
@@ -253,14 +326,21 @@
 
 <div class="manager">
     <div class="toolbar">
-        <h2>Price Profiles</h2>
-        <button class="btn btn-primary" on:click={() => (showForm = !showForm)}>
-            {showForm ? "Cancel" : "Add Profile"}
+        <h2>Profili di prezzo</h2>
+        <button class="btn btn-primary" on:click={() => {
+            if (showForm && editingId === null) { cancelForm(); }
+            else { cancelForm(); showForm = true; }
+        }}>
+            {showForm ? "Annulla" : "+ Aggiungi"}
         </button>
     </div>
 
     {#if showForm}
-        <div class="card form-card">
+        <div id="price-profile-form" class="card form-card">
+            <h3>{editingId ? "Modifica profilo" : "Nuovo profilo"}</h3>
+            {#if editingId}
+                <p class="edit-hint">Il nome identifica univocamente il profilo.</p>
+            {/if}
             <form
                 on:submit={(e) => {
                     e.preventDefault();
@@ -465,30 +545,56 @@
                     {/if}
                 </div>
 
-                <button class="btn btn-primary" type="submit"
-                    >Save Profile</button
-                >
+                <div class="form-actions">
+                    <button type="button" class="btn btn-ghost" on:click={cancelForm}>Annulla</button>
+                    <button class="btn btn-primary" type="submit">
+                        {editingId ? "Aggiorna" : "Salva profilo"}
+                    </button>
+                </div>
             </form>
         </div>
     {/if}
 
-    <div class="list">
-        {#each items as item}
-            <button
-                type="button"
-                class="card item-card item-card-button"
-                class:selected={selectedSavedId === item.id}
-                on:click={() => selectSaved(item)}
-            >
-                <h3>{item.name}</h3>
-                <p class="meta">
-                    {item.data?.model_type ?? "escalating"} · Base €{
-                        item.data?.base_price_eur_per_kwh ?? "?"
-                    }
-                </p>
-            </button>
-        {/each}
-    </div>
+    {#if items.length === 0}
+        <p class="empty">Nessun profilo di prezzo salvato. Aggiungine uno.</p>
+    {:else}
+        <div class="list">
+            {#each items as item (item.id)}
+                <div
+                    class="card item-card"
+                    class:selected={selectedSavedId === item.id}
+                    class:editing={editingId === item.id}
+                >
+                    <!-- Clickable body triggers the fan-chart preview -->
+                    <button
+                        type="button"
+                        class="item-body item-body-btn"
+                        on:click={() => selectSaved(item)}
+                    >
+                        <h3>{item.name}</h3>
+                        <p class="meta">
+                            {item.data?.model_type ?? "escalating"} · Base €{item.data?.base_price_eur_per_kwh ?? "?"}
+                        </p>
+                    </button>
+                    <!-- Action row: edit / delete -->
+                    <div class="item-actions">
+                        {#if deleteConfirmId === item.id}
+                            <span class="confirm-label">Eliminare?</span>
+                            <button class="btn btn-sm btn-danger"
+                                    on:click={() => handleDelete(item.id)}>Sì</button>
+                            <button class="btn btn-sm btn-ghost"
+                                    on:click={() => deleteConfirmId = null}>No</button>
+                        {:else}
+                            <button class="btn btn-sm btn-ghost" title="Modifica"
+                                    on:click={() => startEdit(item)}>✏️</button>
+                            <button class="btn btn-sm btn-ghost btn-del" title="Elimina"
+                                    on:click={() => { deleteConfirmId = item.id; editingId = null; }}>🗑️</button>
+                        {/if}
+                    </div>
+                </div>
+            {/each}
+        </div>
+    {/if}
 
     {#if selectedSavedId}
         <div class="card preview-saved">
@@ -523,26 +629,62 @@
     .item-card {
         padding: 1rem;
         margin-bottom: 1rem;
-    }
-    .item-card-button {
-        display: block;
-        width: 100%;
-        text-align: left;
-        cursor: pointer;
         border: 1px solid var(--color-border, #e2e8f0);
-        background: var(--color-bg, #fff);
         transition: border-color 0.15s;
     }
-    .item-card-button:hover {
-        border-color: var(--color-primary, #0d6efd);
-    }
-    .item-card-button.selected {
+    .item-card.selected {
         border-color: var(--color-primary, #0d6efd);
         box-shadow: 0 0 0 2px rgba(13, 110, 253, 0.15);
     }
+    .item-card.editing {
+        border-color: var(--color-accent, #0d6efd);
+        outline: 2px solid var(--color-accent, #0d6efd);
+        outline-offset: 2px;
+    }
+    /* Clickable body — reset button styles, full width */
+    .item-body-btn {
+        display: block;
+        width: 100%;
+        text-align: left;
+        background: none;
+        border: none;
+        padding: 0;
+        cursor: pointer;
+        color: inherit;
+    }
+    .item-body-btn:hover h3 {
+        color: var(--color-primary, #0d6efd);
+    }
+    .item-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        justify-content: flex-end;
+        border-top: 1px solid var(--color-border, #e2e8f0);
+        padding-top: 0.5rem;
+        margin-top: 0.75rem;
+    }
+    .confirm-label {
+        font-size: 0.82rem;
+        color: var(--color-danger, #dc3545);
+        font-weight: 500;
+    }
+    .btn-sm { padding: 0.2rem 0.5rem; font-size: 0.82rem; }
+    .btn-del:hover { color: var(--color-danger, #dc3545); }
     .form-card {
         padding: 1.5rem;
         margin-bottom: 2rem;
+    }
+    .edit-hint {
+        font-size: 0.82rem;
+        color: var(--color-text-muted, #6c757d);
+        margin: 0 0 1rem;
+    }
+    .form-actions {
+        margin-top: 1rem;
+        display: flex;
+        gap: 0.5rem;
+        justify-content: flex-end;
     }
     .group-2col {
         display: grid;
@@ -583,4 +725,5 @@
     .error {
         color: #dc3545;
     }
+    .empty { color: var(--color-text-muted, #6c757d); font-style: italic; }
 </style>

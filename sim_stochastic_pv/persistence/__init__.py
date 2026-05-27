@@ -194,13 +194,25 @@ class PersistenceService:
         """List all available inverters."""
         return self.hardware.list_inverters()
 
+    def delete_inverter(self, inverter_id: int) -> bool:
+        """Delete an inverter by ID. Returns True if deleted, False if not found."""
+        return self.hardware.delete_inverter(inverter_id)
+
     def list_panels(self) -> list[PanelModel]:
         """List all available panels."""
         return self.hardware.list_panels()
 
+    def delete_panel(self, panel_id: int) -> bool:
+        """Delete a panel by ID. Returns True if deleted, False if not found."""
+        return self.hardware.delete_panel(panel_id)
+
     def list_batteries(self) -> list[BatteryModel]:
         """List all available batteries."""
         return self.hardware.list_batteries()
+
+    def delete_battery(self, battery_id: int) -> bool:
+        """Delete a battery by ID. Returns True if deleted, False if not found."""
+        return self.hardware.delete_battery(battery_id)
 
     # Configuration operations (delegate to ConfigurationRepository)
     def upsert_load_profile(self, name: str, profile_type: str, data: dict) -> LoadProfileModel:
@@ -211,6 +223,10 @@ class PersistenceService:
         """List all saved load profiles."""
         return self.configurations.list_load_profiles()
 
+    def delete_load_profile(self, profile_id: int) -> bool:
+        """Delete a load profile by ID. Returns True if deleted, False if not found."""
+        return self.configurations.delete_load_profile(profile_id)
+
     def upsert_price_profile(self, name: str, data: dict) -> PriceProfileModel:
         """Insert or update a price profile."""
         return self.configurations.upsert_price_profile(name, data)
@@ -218,6 +234,10 @@ class PersistenceService:
     def list_price_profiles(self) -> list[PriceProfileModel]:
         """List all saved price profiles."""
         return self.configurations.list_price_profiles()
+
+    def delete_price_profile(self, profile_id: int) -> bool:
+        """Delete a price profile by ID. Returns True if deleted, False if not found."""
+        return self.configurations.delete_price_profile(profile_id)
 
     def save_configuration(self, name: str, config_type: str, data: dict) -> SavedConfigurationModel:
         """Save or update a configuration (scenario or optimization)."""
@@ -234,6 +254,10 @@ class PersistenceService:
     def get_configuration_by_name(self, name: str) -> SavedConfigurationModel | None:
         """Retrieve a saved configuration by its unique name."""
         return self.configurations.get_configuration_by_name(name)
+
+    def delete_configuration(self, config_id: int) -> bool:
+        """Delete a saved configuration by ID. Returns True if deleted, False if not found."""
+        return self.configurations.delete_configuration(config_id)
 
     # Execution operations (delegate to ExecutionRepository)
     def record_scenario(

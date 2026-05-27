@@ -1,6 +1,8 @@
 <script>
     import { onMount } from "svelte";
+    import { get } from "svelte/store";
     import { api } from "../api";
+    import { pendingRunId } from "../lib/stores";
     import ResultsChart from "../components/ResultsChart.svelte";
 
     let runs = [];
@@ -25,33 +27,59 @@
         activeTab = "overview";
     }
 
-    onMount(loadRuns);
+    onMount(async () => {
+        await loadRuns();
+
+        // Phase 6 — Wizard redirect: if the Scenario Wizard stored a run ID
+        // before redirecting here, auto-select that run and clear the store so
+        // subsequent visits start fresh.
+        const targetId = get(pendingRunId);
+        if (targetId != null) {
+            pendingRunId.set(null);
+            const target = runs.find((r) => r.id === targetId);
+            if (target) selectRun(target);
+        }
+    });
 
     // Chart Helpers
+
+    /**
+     * Build the Chart.js dataset config for the cumulative profit fan chart.
+     *
+     * Returns both ``chartData`` (datasets + labels) and ``chartPlugins``
+     * (the break-even annotation plugin) so the caller can pass them
+     * separately to <ResultsChart>.
+     *
+     * @param {object} data  plots_data from the run summary.
+     * @returns {{ chartData: object, chartPlugins: object[] } | null}
+     */
     function getProfitChart(data) {
         if (!data || !data.profit) return null;
-        return {
-            labels: data.profit.months,
+        const p = data.profit;
+        const chartData = {
+            labels: p.months,
             datasets: [
                 {
-                    label: "Mean Gain (€)",
-                    data: data.profit.mean_gain_eur,
+                    label: "Guadagno medio (€)",
+                    data: p.mean_gain_eur,
                     borderColor: "#198754",
                     backgroundColor: "#198754",
                     type: "line",
+                    pointRadius: 0,
+                    borderWidth: 2.5,
                 },
                 {
                     label: "P05",
-                    data: data.profit.p05_gain_eur,
+                    data: p.p05_gain_eur,
                     borderColor: "transparent",
-                    backgroundColor: "rgba(25, 135, 84, 0.2)",
+                    backgroundColor: "rgba(25, 135, 84, 0.18)",
                     fill: "+1",
                     type: "line",
                     pointRadius: 0,
                 },
                 {
                     label: "P95",
-                    data: data.profit.p95_gain_eur,
+                    data: p.p95_gain_eur,
                     borderColor: "transparent",
                     backgroundColor: "transparent",
                     fill: false,
@@ -60,6 +88,14 @@
                 },
             ],
         };
+        const chartPlugins = [
+            makeBreakEvenPlugin(
+                p.break_even_month_median ?? null,
+                p.break_even_month_p05 ?? null,
+                p.break_even_month_p95 ?? null,
+            ),
+        ];
+        return { chartData, chartPlugins };
     }
 
     function getEnergyChart(data) {
@@ -107,6 +143,103 @@
                     tension: 0.4,
                 },
             ],
+        };
+    }
+
+    // ─── Phase 4 helpers ────────────────────────────────────────────────────
+
+    /**
+     * Format a break-even month count as a human-readable Italian string.
+     *
+     * @param {number|null} months  0-based month index, or null if unknown.
+     * @returns {string}  E.g. "4 anni e 2 mesi" or "—" if null/undefined.
+     */
+    function formatBreakEven(months) {
+        if (months == null) return "—";
+        // month_index is 0-based; add 1 to get the month number.
+        const m = Math.round(months) + 1;
+        const years = Math.floor(m / 12);
+        const rem = m % 12;
+        if (years === 0) return `${rem} mes${rem === 1 ? "e" : "i"}`;
+        if (rem === 0) return `${years} ann${years === 1 ? "o" : "i"}`;
+        return `${years} ann${years === 1 ? "o" : "i"} e ${rem} mes${rem === 1 ? "e" : "i"}`;
+    }
+
+    /**
+     * Format an IRR as a percentage string.
+     *
+     * @param {number|null} irr  Annual IRR as a decimal (e.g. 0.08 = 8 %).
+     * @returns {string}
+     */
+    function formatIrr(irr) {
+        if (irr == null) return "—";
+        return `${(irr * 100).toFixed(1)} %`;
+    }
+
+    /**
+     * Determine the CSS colour class for a probability (0–1) value.
+     * Green ≥ 0.70, orange 0.40–0.69, red below 0.40.
+     *
+     * @param {number|null} p
+     * @returns {string}  One of "text-success", "text-warning", "text-danger".
+     */
+    function probColorClass(p) {
+        if (p == null) return "";
+        if (p >= 0.70) return "text-success";
+        if (p >= 0.40) return "text-warning";
+        return "text-danger";
+    }
+
+    /**
+     * Build a Chart.js inline plugin object that draws:
+     *   1. A shaded vertical band between break_even_month_p05 and
+     *      break_even_month_p95 (light red, semi-transparent).
+     *   2. A dashed vertical line at break_even_month_median (red).
+     *
+     * The plugin is created fresh on each call so that the closure captures
+     * the current break-even values — Chart.js plugins are attached at
+     * creation time and are not updated reactively.
+     *
+     * @param {number|null} median  Median break-even month (0-based index).
+     * @param {number|null} p05     5th-percentile break-even month.
+     * @param {number|null} p95     95th-percentile break-even month.
+     * @returns {object}  Chart.js plugin object.
+     */
+    function makeBreakEvenPlugin(median, p05, p95) {
+        return {
+            id: "breakEvenAnnotation",
+            afterDraw(chart) {
+                if (median == null && p05 == null && p95 == null) return;
+                const { ctx, chartArea, scales } = chart;
+                if (!chartArea || !scales.x) return;
+                const { top, bottom } = chartArea;
+
+                ctx.save();
+
+                // Shaded band (p05 → p95) — drawn first so the median line
+                // sits on top of it.
+                if (p05 != null && p95 != null) {
+                    const xLeft = scales.x.getPixelForValue(p05);
+                    const xRight = scales.x.getPixelForValue(p95);
+                    ctx.fillStyle = "rgba(220, 53, 69, 0.10)";
+                    ctx.fillRect(xLeft, top, xRight - xLeft, bottom - top);
+                }
+
+                // Dashed vertical line at median break-even month.
+                if (median != null) {
+                    const xMed = scales.x.getPixelForValue(median);
+                    ctx.beginPath();
+                    ctx.moveTo(xMed, top);
+                    ctx.lineTo(xMed, bottom);
+                    ctx.strokeStyle = "rgba(220, 53, 69, 0.85)";
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([6, 4]);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
+
+                ctx.restore();
+            },
         };
     }
 
@@ -270,44 +403,110 @@
                 >
             </div>
 
+            <!-- Phase 4 — "Decisione" section: shown only for scenario runs -->
+            {#if selectedRun.result_type === "analysis"}
+                {@const s = selectedRun.summary}
+                <section class="decisione-section">
+                    <h2 class="decisione-title">Decisione</h2>
+                    <div class="decisione-cards">
+                        <!-- Card 1: Probabilità di guadagno -->
+                        <div class="card decisione-card">
+                            <span class="decisione-label">Probabilità di guadagno</span>
+                            <span class={`decisione-value ${probColorClass(s.prob_gain)}`}>
+                                {s.prob_gain != null
+                                    ? `${(s.prob_gain * 100).toFixed(1)} %`
+                                    : "—"}
+                            </span>
+                            <span class="decisione-hint">a fine orizzonte</span>
+                        </div>
+                        <!-- Card 2: Break-even atteso -->
+                        <div class="card decisione-card">
+                            <span class="decisione-label">Break-even atteso</span>
+                            <span class="decisione-value">
+                                {formatBreakEven(s.break_even_month_median)}
+                            </span>
+                            {#if s.break_even_month_p05 != null && s.break_even_month_p95 != null}
+                                <span class="decisione-hint">
+                                    banda 5°–95°:
+                                    {formatBreakEven(s.break_even_month_p05)} –
+                                    {formatBreakEven(s.break_even_month_p95)}
+                                </span>
+                            {:else}
+                                <span class="decisione-hint">nessun percorso in pareggio</span>
+                            {/if}
+                        </div>
+                        <!-- Card 3: IRR atteso -->
+                        <div class="card decisione-card">
+                            <span class="decisione-label">IRR atteso</span>
+                            <span class="decisione-value">
+                                {formatIrr(s.irr_mean)}
+                            </span>
+                            <span class="decisione-hint">media annuale</span>
+                        </div>
+                        <!-- Card 4: NPV mediano -->
+                        <div class="card decisione-card">
+                            <span class="decisione-label">NPV mediano</span>
+                            <span class={`decisione-value ${s.npv_median_eur != null && s.npv_median_eur >= 0 ? "text-success" : "text-danger"}`}>
+                                {s.npv_median_eur != null
+                                    ? `€ ${s.npv_median_eur.toFixed(0)}`
+                                    : "—"}
+                            </span>
+                            <span class="decisione-hint">nominale, fine orizzonte</span>
+                        </div>
+                    </div>
+                </section>
+            {/if}
+
             <div class="tab-content">
                 {#if activeTab === "overview"}
+                    <!-- Secondary summary cards (mean/real gain detail) -->
                     <div class="stat-cards">
                         <div class="card stat">
-                            <h3>Prob. Gain</h3>
+                            <h3>Guadagno medio</h3>
                             <p class="value text-specs">
-                                {(selectedRun.summary.prob_gain * 100).toFixed(
-                                    1,
-                                )}%
+                                €{selectedRun.summary.final_gain_mean_eur?.toFixed(0)}
                             </p>
                         </div>
                         <div class="card stat">
-                            <h3>Mean Gain</h3>
+                            <h3>Guadagno reale</h3>
                             <p class="value text-specs">
-                                €{selectedRun.summary.final_gain_mean_eur?.toFixed(
-                                    0,
-                                )}
+                                €{selectedRun.summary.final_gain_real_mean_eur?.toFixed(0)}
                             </p>
                         </div>
-                        <div class="card stat">
-                            <h3>Real Gain</h3>
-                            <p class="value text-specs">
-                                €{selectedRun.summary.final_gain_real_mean_eur?.toFixed(
-                                    0,
-                                )}
-                            </p>
-                        </div>
+                        {#if selectedRun.summary.prob_break_even_within_horizon != null}
+                            <div class="card stat">
+                                <h3>Prob. break-even</h3>
+                                <p class="value text-specs {probColorClass(selectedRun.summary.prob_break_even_within_horizon)}">
+                                    {(selectedRun.summary.prob_break_even_within_horizon * 100).toFixed(1)} %
+                                </p>
+                            </div>
+                        {/if}
                     </div>
 
                     {#if selectedRun.summary.plots_data}
+                        {@const profitChart = getProfitChart(selectedRun.summary.plots_data)}
                         <div class="card chart-section">
-                            <h3>Financial Projection</h3>
-                            <ResultsChart
-                                type="line"
-                                data={getProfitChart(
-                                    selectedRun.summary.plots_data,
-                                )}
-                            />
+                            <h3>Proiezione finanziaria</h3>
+                            {#if selectedRun.summary.break_even_month_median != null}
+                                <p class="muted">
+                                    Linea tratteggiata rossa = break-even mediano
+                                    ({formatBreakEven(selectedRun.summary.break_even_month_median)}).
+                                    Area rossa = banda p05–p95 del break-even.
+                                </p>
+                            {/if}
+                            {#if profitChart}
+                                <ResultsChart
+                                    type="line"
+                                    data={profitChart.chartData}
+                                    plugins={profitChart.chartPlugins}
+                                    options={{
+                                        scales: {
+                                            x: { title: { display: true, text: "Mese dall'inizio" } },
+                                            y: { title: { display: true, text: "Guadagno cumulato (€)" } },
+                                        },
+                                    }}
+                                />
+                            {/if}
                         </div>
                     {/if}
                 {:else if activeTab === "energy"}
@@ -405,6 +604,62 @@
 </div>
 
 <style>
+    /* ── Phase 4 — Decisione section ─────────────────────────────────────── */
+    .decisione-section {
+        margin-bottom: 2rem;
+        padding: 1.25rem 1.5rem 1rem;
+        border: 1.5px solid var(--color-accent, #0d6efd);
+        border-radius: var(--radius-sm, 6px);
+        background: linear-gradient(
+            135deg,
+            rgba(13, 110, 253, 0.04) 0%,
+            transparent 60%
+        );
+    }
+    .decisione-title {
+        font-size: 0.75rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--color-accent, #0d6efd);
+        margin: 0 0 1rem;
+    }
+    .decisione-cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 1rem;
+    }
+    .decisione-card {
+        display: flex;
+        flex-direction: column;
+        gap: 0.3rem;
+        padding: 1rem 1.2rem;
+        text-align: center;
+    }
+    .decisione-label {
+        font-size: 0.78rem;
+        color: var(--color-text-muted, #6c757d);
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+    }
+    .decisione-value {
+        font-size: 1.75rem;
+        font-weight: 700;
+        line-height: 1.1;
+        color: var(--color-text, inherit);
+    }
+    .decisione-hint {
+        font-size: 0.72rem;
+        color: var(--color-text-muted, #6c757d);
+    }
+
+    /* ── Colour helpers ─────────────────────────────────────────────────── */
+    .text-success { color: var(--color-success, #198754) !important; }
+    .text-warning { color: var(--color-warning, #ffc107) !important; }
+    .text-danger  { color: var(--color-danger,  #dc3545) !important; }
+
+    /* ── Layout ─────────────────────────────────────────────────────────── */
     .dashboard {
         display: grid;
         grid-template-columns: 300px 1fr;
@@ -481,5 +736,10 @@
     .chart-section {
         margin-bottom: 2rem;
         min-height: 400px;
+    }
+    .muted {
+        font-size: 0.82rem;
+        color: var(--color-text-muted, #6c757d);
+        margin: 0 0 0.75rem;
     }
 </style>

@@ -13,6 +13,29 @@ from ..db.models import BatteryModel, InverterModel, PanelModel
 from ._utils import asdict_safe
 
 
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def _delete_by_id(session_factory, model_class, record_id: int) -> bool:
+    """
+    Delete a single record of *model_class* by primary-key *record_id*.
+
+    Args:
+        session_factory: SQLAlchemy session factory.
+        model_class: The ORM model class to delete from.
+        record_id: Primary-key value of the record to delete.
+
+    Returns:
+        True if a record was found and deleted, False if not found.
+    """
+    with session_factory() as session:
+        record = session.get(model_class, record_id)
+        if record is None:
+            return False
+        session.delete(record)
+        session.commit()
+        return True
+
+
 class HardwareRepository:
     """
     Repository for hardware component persistence (inverters, panels, batteries).
@@ -56,12 +79,26 @@ class HardwareRepository:
                 )
                 session.add(record)
             else:
+                record.manufacturer = payload.get("manufacturer")
+                record.model_number = payload.get("model_number")
                 record.datasheet = payload.get("datasheet")
                 record.specs = payload
                 record.nominal_power_kw = payload.get("p_ac_max_kw")
             session.flush()
             session.commit()
             return record
+
+    def delete_inverter(self, inverter_id: int) -> bool:
+        """
+        Delete an inverter record by primary key.
+
+        Args:
+            inverter_id: Primary-key ID of the inverter to delete.
+
+        Returns:
+            True if the record was found and deleted, False if not found.
+        """
+        return _delete_by_id(self._session_factory, InverterModel, inverter_id)
 
     def upsert_panel(self, panel_data: Any) -> PanelModel | None:
         """
@@ -90,12 +127,26 @@ class HardwareRepository:
                 )
                 session.add(record)
             else:
+                record.manufacturer = payload.get("manufacturer")
+                record.model_number = payload.get("model_number")
                 record.datasheet = payload.get("datasheet")
                 record.specs = payload
                 record.power_w = payload.get("power_w")
             session.flush()
             session.commit()
             return record
+
+    def delete_panel(self, panel_id: int) -> bool:
+        """
+        Delete a panel record by primary key.
+
+        Args:
+            panel_id: Primary-key ID of the panel to delete.
+
+        Returns:
+            True if the record was found and deleted, False if not found.
+        """
+        return _delete_by_id(self._session_factory, PanelModel, panel_id)
 
     def upsert_battery(self, battery_data: Any) -> BatteryModel | None:
         """
@@ -127,12 +178,26 @@ class HardwareRepository:
                 )
                 session.add(record)
             else:
+                record.manufacturer = payload.get("manufacturer")
+                record.model_number = payload.get("model_number")
                 record.capacity_kwh = capacity
                 record.datasheet = payload.get("datasheet")
                 record.specs = payload
             session.flush()
             session.commit()
             return record
+
+    def delete_battery(self, battery_id: int) -> bool:
+        """
+        Delete a battery record by primary key.
+
+        Args:
+            battery_id: Primary-key ID of the battery to delete.
+
+        Returns:
+            True if the record was found and deleted, False if not found.
+        """
+        return _delete_by_id(self._session_factory, BatteryModel, battery_id)
 
     def list_inverters(self) -> list[InverterModel]:
         """List all available inverters."""

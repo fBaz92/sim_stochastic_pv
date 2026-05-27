@@ -15,7 +15,7 @@ by ID, ensuring that specification updates propagate automatically.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from ...persistence import PersistenceService
 from .. import dependencies
@@ -280,3 +280,33 @@ def list_scenarios(
         - Consider migrating to /configurations for saved scenarios
     """
     return persistence.list_scenarios()
+
+
+@router.delete("/configurations/{config_id}")
+def delete_configuration(
+    config_id: int,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> dict:
+    """
+    Delete a saved configuration (scenario or campaign) by ID.
+
+    Permanently removes the configuration record. Run results that reference
+    this configuration by ID are not affected (they store a snapshot of the
+    summary JSON).
+
+    Args:
+        config_id: Database primary key of the configuration to delete.
+        persistence: Database persistence service (dependency injected).
+
+    Returns:
+        JSON ``{"ok": true, "id": <config_id>}`` on success.
+
+    Raises:
+        HTTPException 404: configuration not found.
+    """
+    if not persistence.delete_configuration(config_id):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Configuration id={config_id} not found",
+        )
+    return {"ok": True, "id": config_id}

@@ -363,6 +363,113 @@ Nessuna fase attivamente in corso.
 
 ### ✅ Completate
 
+**Fase 6 — Riorganizzazione UI come wizard** — chiusa 2026-05-27.
+
+Consegnato:
+- `ScenarioBuilder.svelte` completamente riscritto come wizard a 6 passi con
+  stepper orizzontale cliccabile: Luogo → Impianto → Carico → Mercato →
+  Investimento → Riepilogo & Esegui.
+- **Step 1 — Luogo**: dropdown dei profili solari DB (nuovo endpoint
+  `GET /api/profiles/solar`); preview read-only della tabella meteo mensile
+  (avg daily kWh/kWp, p_sunny, weather_persistence per i 12 mesi), tilt e
+  azimuth ottimali del sito.
+- **Step 2 — Impianto**: kWp, degrado pannelli (%/anno), override opzionale
+  tilt/azimuth (pre-compilato dal profilo luogo), dropdown inverter DB o
+  manuale, dropdown batteria DB o manuale, n_batteries, cicli di vita
+  (modello degrado batteria). Tooltip su ogni parametro.
+- **Step 3 — Carico**: radio "Dal database / Personalizzato"; se DB → dropdown
+  profili salvati + preview read-only; se inline → selettore tipo
+  (ARERA / media mensile / 24h / weekly) con editor condizionato
+  (MonthInput, MonthlyProfileEditor, WeeklyPatternEditor); sliders
+  giorni-a-casa sempre editabili.
+- **Step 4 — Mercato**: dropdown modello prezzo (escalating / GBM /
+  mean-reverting) con form condizionato per ciascun modello; descrizione
+  testuale inline del significato di ogni modalità e dei parametri; tooltip
+  su drift, volatilità, κ, livello di equilibrio.
+- **Step 5 — Investimento**: investimento totale, orizzonte anni, campioni
+  MC con stima del tempo di calcolo; nome scenario.
+- **Step 6 — Riepilogo**: tabella riassuntiva di tutte le scelte; pulsante
+  "Salva scenario" (apre modal) + pulsante primario "Esegui analisi MC".
+- **Redirect post-analisi**: `triggerAnalysis` ritorna ora `run_id`; il
+  wizard scrive l'ID nello store Svelte `pendingRunId` e reindirizza a `/#/`;
+  la Dashboard legge lo store su mount e auto-seleziona il run appena creato.
+- **Backend minimale**:
+  - Nuovo endpoint `GET /api/profiles/solar` (route in `profiles.py`,
+    schema `SolarProfileResponse` in `schemas/profiles.py`).
+  - `AnalysisResponse` esteso con campo opzionale `run_id: int | None`.
+  - `application.py`: `record_run_result` restituisce il record; il suo `.id`
+    viene inserito nel summary e quindi nel JSON di risposta.
+  - Nuovo store `frontend/src/lib/stores.js` (`pendingRunId`).
+  - `api.js`: aggiunto `listSolarProfiles()`.
+  - `Dashboard.svelte`: legge `pendingRunId` su mount e seleziona il run.
+- 2 test nuovi in `test_api.py`:
+  - `test_solar_profiles_endpoint_returns_list`: GET `/api/profiles/solar`
+    → 200 con lista e schema atteso (12 valori per campo).
+  - `test_analysis_response_includes_run_id`: POST `/api/analysis` →
+    `run_id` non-null presente in risposta e listabile via `/api/runs`.
+- Suite 184/184 verde.
+
+**Fase 5 — Profilo di carico settimanale** — chiusa 2026-05-27.
+
+Consegnato:
+- Nuova classe `WeeklyPatternLoadProfile(LoadProfile)` in
+  `simulation/load_profiles/weekly.py`. Accetta una baseline `(12, 24)` W e
+  un pattern di modulazione `(7, 24)` W. Normalizza per colonna così che la
+  media settimanale dei pesi per ogni ora valga 1.0 — il budget energetico
+  mensile è preservato per costruzione.
+- Tre preset in `WEEKLY_PRESETS`: `residential_typical` (famiglia con adulti
+  pendolari, basso diurno feriale / alto weekend), `smart_worker` (lavoro da
+  casa Mon–Ven, basso weekend), `commuter` (picco tardivo feriale 20–22h,
+  alto tutto il giorno nel weekend).
+- Export da `simulation/load_profiles/__init__.py` e
+  `simulation/__init__.py`; import aggiunto in `scenario_builder.py`.
+- `_build_single_load_profile_factory` esteso con il ramo `type="weekly"`:
+  richiede `weekly_pattern_w` + una delle baseline (`monthly_24h_w` o
+  `monthly_w`).
+- `build_default_load_profile` riconosce `kind: "weekly"` come profilo
+  standalone (non home/away).
+- 9 nuovi test in `TestPhase5WeeklyLoadProfile` (`test_simulation_models.py`):
+  validazione shape, invariante media mensile (tutti e 3 i preset × 12 mesi
+  × 24 ore), distinzione feriale/weekend per residential_typical, distinzione
+  mattino/sera per commuter, forma preset, round-trip builder subprofile
+  home_away, round-trip builder standalone, colonna zero → non NaN.
+- Frontend: nuovo `WeeklyPatternEditor.svelte` con dropdown preset e tab
+  giornaliero 7×24 (riusa `HourlyInput`); `LoadProfileManager.svelte`
+  aggiornato con opzione `"weekly"` nei selettori lato home/away.
+- Suite 173/173 verde.
+
+**Fase 4 — Break-even visibile e KPI "investimento conviene?"** — chiusa 2026-05-27.
+
+Consegnato:
+- `MonteCarloResults` esteso con 7 campi opzionali: `break_even_month_per_path`
+  (shape `(n_mc,)`, -1 = mai in pareggio), `prob_break_even_within_horizon`,
+  `break_even_month_median`, `break_even_month_p05`, `break_even_month_p95`,
+  `npv_median_eur`, `irr_mean`. Tutti opzionali per retro-compatibilità.
+- `MonteCarloSimulator.run()` calcola break-even per path con formula
+  vettoriale (`argmax` su maschera booleana) + statistiche aggregate post-loop.
+- `application.py` espone i 6 KPI nel summary di `run_analysis()` e aggiunge
+  i tre valori di annotazione break-even nel blocco `plots_data.profit`.
+- `AnalysisResponse` (Pydantic) aggiornato con i 6 nuovi campi optional.
+- `ResultsChart.svelte` accetta una nuova prop `plugins` (array di plugin
+  inline Chart.js) senza rompere i siti di uso esistenti.
+- `Dashboard.svelte`:
+  - Sezione **"Decisione"** in cima (solo per run di tipo `analysis`) con
+    4 card large: Probabilità di guadagno (con colore verde/arancione/rosso),
+    Break-even atteso (con banda p05–p95 in formato leggibile italiano),
+    IRR atteso, NPV mediano.
+  - Grafico profitto: linea verticale tratteggiata rossa al break-even mediano
+    + area rossa semi-trasparente dalla p05 alla p95, implementata via plugin
+    inline Chart.js `afterDraw` (nessuna dipendenza npm aggiuntiva).
+  - Tab "overview": card secondarie aggiornate (guadagno medio + reale +
+    prob. break-even); assi etichettati in italiano.
+- 11 test nuovi:
+  - 9 in `TestPhase4BreakEven` (`test_monte_carlo.py`): shape, valori validi,
+    investment=0 → mese 0, investment huge → -1, coerenza prob/statistiche,
+    NPV mediano finito, IRR mean esclude nan, retro-compat costruzione manuale.
+  - 2 in `test_simulation_models.py`: summary espone KPI break-even,
+    `plots_data.profit` contiene campi di annotazione.
+- Suite 173/173 verde.
+
 **Fase 9 — Modalità "semplificata" per dimensionamento stringhe + inverter** — chiusa 2026-05-27.
 
 Consegnato (parte backend completa; UI toggle nel CampaignBuilder
@@ -551,12 +658,6 @@ commit. Per CI futuro basta un workflow che esegua `pytest tests/ -q`
 sul push a `main`.
 
 ### 📋 Da fare
-
-Pianificate (in ordine non vincolato):
-
-- [ ] Fase 4 — Break-even visibile e KPI "investimento conviene?"
-- [ ] Fase 5 — Profilo di carico settimanale (granularità weekday/weekend)
-- [ ] Fase 6 — Riorganizzazione UI come wizard
 
 Aggiunte 2026-05-27 dopo prima sessione di prova manuale dell'app:
 

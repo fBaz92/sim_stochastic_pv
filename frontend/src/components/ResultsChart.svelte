@@ -5,6 +5,20 @@
     export let type = 'bar';
     export let data = {};
     export let options = {};
+    /**
+     * Optional array of Chart.js inline plugin objects (chart-level, not
+     * global).  Useful for custom drawing hooks such as the break-even
+     * annotation line added in Phase 4 of the roadmap.  Each element must
+     * be a plain object with an `id` string and at least one Chart.js plugin
+     * lifecycle method (e.g. `afterDraw`).
+     *
+     * NOTE: plugins are attached at chart-creation time and are not
+     * updated reactively — if you need the plugin to read changing data,
+     * capture those values inside a closure that is rebuilt each time you
+     * reconstruct the chart (i.e. each time a new run is selected in
+     * Dashboard.svelte).
+     */
+    export let plugins = [];
 
     let canvas;
     let chart;
@@ -15,6 +29,7 @@
         chart = new Chart(ctx, {
             type: type,
             data: data,
+            plugins: plugins,
             options: {
                 responsive: true,
                 maintainAspectRatio: false,

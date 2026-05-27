@@ -10,6 +10,17 @@ from sqlalchemy.orm import Session
 from ..db.models import LoadProfileModel, PriceProfileModel, SavedConfigurationModel
 
 
+def _delete_by_id(session_factory, model_class, record_id: int) -> bool:
+    """Delete a record by primary key. Returns True if deleted, False if not found."""
+    with session_factory() as session:
+        record = session.get(model_class, record_id)
+        if record is None:
+            return False
+        session.delete(record)
+        session.commit()
+        return True
+
+
 class ConfigurationRepository:
     """
     Repository for configuration persistence (scenarios, optimizations, profiles).
@@ -57,6 +68,18 @@ class ConfigurationRepository:
             stmt = select(LoadProfileModel).order_by(LoadProfileModel.name)
             return list(session.execute(stmt).scalars().all())
 
+    def delete_load_profile(self, profile_id: int) -> bool:
+        """
+        Delete a load profile by primary key.
+
+        Args:
+            profile_id: Primary-key ID of the load profile to delete.
+
+        Returns:
+            True if the record was found and deleted, False if not found.
+        """
+        return _delete_by_id(self._session_factory, LoadProfileModel, profile_id)
+
     def upsert_price_profile(self, name: str, data: dict) -> PriceProfileModel:
         """
         Insert or update a price profile.
@@ -85,6 +108,18 @@ class ConfigurationRepository:
         with self._session_factory() as session:
             stmt = select(PriceProfileModel).order_by(PriceProfileModel.name)
             return list(session.execute(stmt).scalars().all())
+
+    def delete_price_profile(self, profile_id: int) -> bool:
+        """
+        Delete a price profile by primary key.
+
+        Args:
+            profile_id: Primary-key ID of the price profile to delete.
+
+        Returns:
+            True if the record was found and deleted, False if not found.
+        """
+        return _delete_by_id(self._session_factory, PriceProfileModel, profile_id)
 
     def save_configuration(self, name: str, config_type: str, data: dict) -> SavedConfigurationModel:
         """
@@ -141,6 +176,18 @@ class ConfigurationRepository:
         with self._session_factory() as session:
             stmt = select(SavedConfigurationModel).where(SavedConfigurationModel.id == config_id)
             return session.execute(stmt).scalar_one_or_none()
+
+    def delete_configuration(self, config_id: int) -> bool:
+        """
+        Delete a saved configuration (scenario or campaign) by primary key.
+
+        Args:
+            config_id: Primary-key ID of the configuration to delete.
+
+        Returns:
+            True if the record was found and deleted, False if not found.
+        """
+        return _delete_by_id(self._session_factory, SavedConfigurationModel, config_id)
 
     def get_configuration_by_name(self, name: str) -> SavedConfigurationModel | None:
         """

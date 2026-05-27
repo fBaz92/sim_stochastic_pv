@@ -576,6 +576,114 @@ def test_application_summary_exposes_price_block() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Phase 4 — break-even KPIs in application summary
+# ---------------------------------------------------------------------------
+
+
+def test_application_summary_exposes_break_even_kpis() -> None:
+    """
+    Phase 4.1: ``SimulationApplication.run_analysis`` must include the
+    break-even KPI keys in the top-level summary dict.
+
+    Checked keys:
+        - ``prob_break_even_within_horizon``  – fraction of paths in [0, 1]
+        - ``break_even_month_median``          – None or non-negative float
+        - ``break_even_month_p05``             – None or non-negative float
+        - ``break_even_month_p95``             – None or non-negative float
+        - ``npv_median_eur``                   – finite float
+        - ``irr_mean``                         – None or finite float
+    """
+    from sim_stochastic_pv.application import SimulationApplication
+
+    app = SimulationApplication(save_outputs=False, persistence=None)
+    scenario = {
+        "scenario_name": "phase4_test",
+        "load_profile": {"home_profile_type": "arera"},
+        "solar": {
+            "solar_profile_id": None,
+            "pv_kwp": 2.0,
+            "degradation_per_year": 0.007,
+        },
+        "energy": {
+            "n_years": 3,
+            "pv_kwp": 2.0,
+            "battery_specs": {"capacity_kwh": 1.0, "cycles_life": 1000},
+            "n_batteries": 0,
+            "inverter_p_ac_max_kw": 2.0,
+        },
+        "price": {
+            "base_price_eur_per_kwh": 0.25,
+            "annual_escalation": 0.02,
+            "use_stochastic_escalation": False,
+        },
+        "economic": {"investment_eur": 5000.0, "n_mc": 10},
+    }
+    summary = app.run_analysis(scenario_data=scenario, seed=42)
+
+    # Top-level break-even KPIs must be present
+    assert "prob_break_even_within_horizon" in summary
+    assert "break_even_month_median" in summary
+    assert "break_even_month_p05" in summary
+    assert "break_even_month_p95" in summary
+    assert "npv_median_eur" in summary
+    assert "irr_mean" in summary
+
+    # Value ranges
+    pbe = summary["prob_break_even_within_horizon"]
+    if pbe is not None:
+        assert 0.0 <= pbe <= 1.0
+
+    npv = summary["npv_median_eur"]
+    assert npv is None or (isinstance(npv, float) and np.isfinite(npv))
+
+    irr = summary["irr_mean"]
+    assert irr is None or (isinstance(irr, float) and np.isfinite(irr))
+
+
+def test_profit_plots_data_contains_break_even_fields() -> None:
+    """
+    Phase 4.2: the ``plots_data.profit`` block must include the three
+    break-even annotation fields used by the Dashboard chart plugin.
+
+    Checked keys:
+        - ``break_even_month_median``
+        - ``break_even_month_p05``
+        - ``break_even_month_p95``
+    """
+    from sim_stochastic_pv.application import SimulationApplication
+
+    app = SimulationApplication(save_outputs=False, persistence=None)
+    scenario = {
+        "scenario_name": "phase4_chart_test",
+        "load_profile": {"home_profile_type": "arera"},
+        "solar": {
+            "solar_profile_id": None,
+            "pv_kwp": 2.0,
+            "degradation_per_year": 0.007,
+        },
+        "energy": {
+            "n_years": 2,
+            "pv_kwp": 2.0,
+            "battery_specs": {"capacity_kwh": 1.0, "cycles_life": 1000},
+            "n_batteries": 0,
+            "inverter_p_ac_max_kw": 2.0,
+        },
+        "price": {
+            "base_price_eur_per_kwh": 0.25,
+            "annual_escalation": 0.0,
+            "use_stochastic_escalation": False,
+        },
+        "economic": {"investment_eur": 100.0, "n_mc": 10},
+    }
+    summary = app.run_analysis(scenario_data=scenario, seed=7)
+
+    profit_block = summary["plots_data"]["profit"]
+    assert "break_even_month_median" in profit_block
+    assert "break_even_month_p05" in profit_block
+    assert "break_even_month_p95" in profit_block
+
+
+# ---------------------------------------------------------------------------
 # Phase 8 — load profile with kind:"home_away" + scenario-level min/max days
 # ---------------------------------------------------------------------------
 
@@ -951,3 +1059,251 @@ def test_optimization_advanced_mode_passes_panel_counts_through() -> None:
     }
     req = build_default_optimization_request(cfg)
     assert req.panel_count_options == [10, 12, 14]
+
+
+# =============================================================================
+# Phase 5 — WeeklyPatternLoadProfile
+# =============================================================================
+
+class TestPhase5WeeklyLoadProfile:
+    """Tests for WeeklyPatternLoadProfile and scenario-builder integration."""
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _flat_baseline_w(value_w: float = 200.0) -> np.ndarray:
+        """Return a (12, 24) baseline array with constant value_w Watts."""
+        return np.full((12, 24), value_w, dtype=float)
+
+    @staticmethod
+    def _asymmetric_pattern() -> np.ndarray:
+        """
+        Return a (7, 24) pattern where:
+        - Mon (0): all values = 1.0  (average days)
+        - Tue–Sun (1-6): all values = 1.0  (uniform → trivial normalization)
+        For a non-trivial weekday test we use a custom per-test pattern.
+        """
+        return np.ones((7, 24), dtype=float)
+
+    # ------------------------------------------------------------------
+    # 1. Shape validation
+    # ------------------------------------------------------------------
+
+    def test_bad_baseline_shape_raises(self) -> None:
+        """Constructor raises ValueError for baseline not shaped (12, 24)."""
+        from sim_stochastic_pv.simulation.load_profiles import WeeklyPatternLoadProfile
+
+        bad_baseline = np.ones((10, 24))
+        pattern = np.ones((7, 24))
+        with pytest.raises(ValueError, match=r"monthly_profiles_w.*shape"):
+            WeeklyPatternLoadProfile(bad_baseline, pattern)
+
+    def test_bad_pattern_shape_raises(self) -> None:
+        """Constructor raises ValueError for pattern not shaped (7, 24)."""
+        from sim_stochastic_pv.simulation.load_profiles import WeeklyPatternLoadProfile
+
+        baseline = self._flat_baseline_w(200.0)
+        bad_pattern = np.ones((5, 24))
+        with pytest.raises(ValueError, match=r"weekly_pattern_w.*shape"):
+            WeeklyPatternLoadProfile(baseline, bad_pattern)
+
+    # ------------------------------------------------------------------
+    # 2. Monthly average preservation (key invariant)
+    # ------------------------------------------------------------------
+
+    def test_weekly_mean_equals_baseline(self) -> None:
+        """
+        For every (month, hour) the mean load across all 7 weekdays equals the
+        monthly baseline — i.e. the normalization preserves the energy budget.
+
+        This is the core mathematical invariant of Phase 5.
+        """
+        from sim_stochastic_pv.simulation.load_profiles import (
+            WeeklyPatternLoadProfile,
+            WEEKLY_PRESETS,
+        )
+
+        baseline_w = self._flat_baseline_w(250.0)
+        for preset_name, pattern in WEEKLY_PRESETS.items():
+            load = WeeklyPatternLoadProfile(baseline_w, pattern)
+            for m in range(12):
+                for h in range(24):
+                    weekly_mean = np.mean(
+                        [load.get_hourly_load_kw(0, m, 0, h, d) for d in range(7)]
+                    )
+                    expected_kw = 250.0 / 1000.0
+                    assert weekly_mean == pytest.approx(expected_kw, rel=1e-9), (
+                        f"Preset '{preset_name}', month {m}, hour {h}: "
+                        f"weekly mean {weekly_mean:.6f} ≠ baseline {expected_kw:.6f}"
+                    )
+
+    # ------------------------------------------------------------------
+    # 3. Weekday/weekend distinction
+    # ------------------------------------------------------------------
+
+    def test_residential_typical_weekday_lt_weekend_daytime(self) -> None:
+        """
+        For 'residential_typical', weekday daytime load at hour 12 should be
+        strictly less than Saturday load — the pattern captures that the family
+        is away Mon–Fri during working hours.
+        """
+        from sim_stochastic_pv.simulation.load_profiles import (
+            WeeklyPatternLoadProfile,
+            WEEKLY_PRESETS,
+        )
+
+        baseline_w = self._flat_baseline_w(300.0)
+        load = WeeklyPatternLoadProfile(baseline_w, WEEKLY_PRESETS["residential_typical"])
+
+        # Monday noon (weekday, should be low)
+        mon_noon = load.get_hourly_load_kw(0, 5, 0, 12, 0)   # weekday=0 Monday
+        # Saturday noon (weekend, should be high)
+        sat_noon = load.get_hourly_load_kw(0, 5, 5, 12, 5)   # weekday=5 Saturday
+
+        assert mon_noon < sat_noon, (
+            f"Expected weekday noon ({mon_noon:.3f} kW) < weekend noon ({sat_noon:.3f} kW)"
+        )
+
+    def test_commuter_weekday_daytime_lt_evening(self) -> None:
+        """
+        For 'commuter', weekday daytime (hour 12) load should be strictly less
+        than weekday evening (hour 20) load — commuter returns late.
+        """
+        from sim_stochastic_pv.simulation.load_profiles import (
+            WeeklyPatternLoadProfile,
+            WEEKLY_PRESETS,
+        )
+
+        baseline_w = self._flat_baseline_w(300.0)
+        load = WeeklyPatternLoadProfile(baseline_w, WEEKLY_PRESETS["commuter"])
+
+        wed_noon    = load.get_hourly_load_kw(0, 5, 0, 12, 2)   # Wed, 12h
+        wed_evening = load.get_hourly_load_kw(0, 5, 0, 20, 2)   # Wed, 20h
+
+        assert wed_noon < wed_evening, (
+            f"Commuter: noon ({wed_noon:.3f} kW) should be < evening ({wed_evening:.3f} kW)"
+        )
+
+    # ------------------------------------------------------------------
+    # 4. Preset catalogue
+    # ------------------------------------------------------------------
+
+    def test_presets_have_correct_shape(self) -> None:
+        """All entries in WEEKLY_PRESETS are (7, 24) float arrays."""
+        from sim_stochastic_pv.simulation.load_profiles import WEEKLY_PRESETS
+
+        expected_keys = {"residential_typical", "smart_worker", "commuter"}
+        assert set(WEEKLY_PRESETS.keys()) == expected_keys
+
+        for name, arr in WEEKLY_PRESETS.items():
+            assert isinstance(arr, np.ndarray), f"Preset '{name}' must be ndarray"
+            assert arr.shape == (7, 24), f"Preset '{name}' must be (7, 24), got {arr.shape}"
+            assert arr.dtype == float, f"Preset '{name}' must be float dtype"
+            assert (arr >= 0).all(), f"Preset '{name}' has negative values"
+
+    # ------------------------------------------------------------------
+    # 5. scenario_builder round-trip — sub-profile inside home_away
+    # ------------------------------------------------------------------
+
+    def test_builder_weekly_subprofile_in_home_away(self) -> None:
+        """
+        '_build_single_load_profile_factory' correctly instantiates a
+        WeeklyPatternLoadProfile when home or away sub-profile has
+        type='weekly' + monthly_w + weekly_pattern_w.
+        """
+        from sim_stochastic_pv.simulation.load_profiles import WeeklyPatternLoadProfile
+        from sim_stochastic_pv.scenario_builder import build_default_load_profile
+
+        pattern = [[float(d + h) for h in range(24)] for d in range(7)]
+        # Add small offset to avoid zero columns
+        pattern_shifted = [[v + 1.0 for v in row] for row in pattern]
+
+        scenario = {
+            "load_profile": {
+                "kind": "home_away",
+                "home": {
+                    "type": "weekly",
+                    "monthly_w": [200.0] * 12,
+                    "weekly_pattern_w": pattern_shifted,
+                },
+                "away": {"type": "arera"},
+            },
+            "min_days_home": [20] * 12,
+            "max_days_home": [25] * 12,
+        }
+
+        profile = build_default_load_profile(scenario)
+        # Should not raise; result must be a LoadProfile
+        assert profile is not None
+        # Spot-check: calling get_hourly_load_kw with weekday works
+        rng = np.random.default_rng(42)
+        profile.reset_for_run(rng=rng, n_years=1)
+        kw = profile.get_hourly_load_kw(0, 0, 0, 12, 3)
+        assert kw >= 0.0
+
+    # ------------------------------------------------------------------
+    # 6. scenario_builder round-trip — standalone kind="weekly"
+    # ------------------------------------------------------------------
+
+    def test_builder_standalone_weekly_kind(self) -> None:
+        """
+        'build_default_load_profile' returns a WeeklyPatternLoadProfile directly
+        when load_profile.kind == 'weekly'.
+        """
+        from sim_stochastic_pv.simulation.load_profiles import WeeklyPatternLoadProfile
+        from sim_stochastic_pv.scenario_builder import build_default_load_profile
+        from sim_stochastic_pv.simulation.load_profiles import WEEKLY_PRESETS
+
+        scenario = {
+            "load_profile": {
+                "kind": "weekly",
+                "type": "weekly",
+                "monthly_w": [250.0] * 12,
+                "weekly_pattern_w": WEEKLY_PRESETS["smart_worker"].tolist(),
+            },
+        }
+
+        profile = build_default_load_profile(scenario)
+        assert isinstance(profile, WeeklyPatternLoadProfile), (
+            f"Expected WeeklyPatternLoadProfile, got {type(profile).__name__}"
+        )
+        # Verify baseline was stored
+        assert profile.monthly_profiles_kw.shape == (12, 24)
+        assert profile.weekly_pattern_w.shape == (7, 24)
+
+    # ------------------------------------------------------------------
+    # 7. Degenerate pattern (all zeros → passthrough)
+    # ------------------------------------------------------------------
+
+    def test_zero_column_produces_no_nan(self) -> None:
+        """
+        A column in weekly_pattern_w where all 7 values are 0 should produce
+        exactly 0.0 kW (no load at that hour) rather than NaN.
+
+        Explanation: when all pattern values for an hour are 0, the column mean
+        is also 0.  The safe-mean fallback substitutes 1.0 to avoid division by
+        zero, giving weight = 0/1 = 0.  The load is therefore baseline * 0 = 0.
+        This is semantically correct: the user said "zero load at hour 5 for all
+        days", so the result is indeed 0 — the baseline is not consulted because
+        the user's intent is explicit.
+        """
+        from sim_stochastic_pv.simulation.load_profiles import WeeklyPatternLoadProfile
+
+        baseline_w = self._flat_baseline_w(150.0)
+        pattern = np.ones((7, 24), dtype=float)
+        pattern[:, 5] = 0.0  # hour 5: all zeros
+
+        load = WeeklyPatternLoadProfile(baseline_w, pattern)
+
+        for d in range(7):
+            kw = load.get_hourly_load_kw(0, 0, 0, 5, d)
+            assert not np.isnan(kw), f"Weekday {d}, hour 5: expected finite value, got NaN"
+            assert kw == pytest.approx(0.0, abs=1e-12), (
+                f"Weekday {d}, hour 5 with zero column: expected 0.0 kW, got {kw}"
+            )
+
+        # Other hours remain unaffected (weight = 1.0 for all-ones column)
+        kw_h12 = load.get_hourly_load_kw(0, 0, 0, 12, 3)
+        assert kw_h12 == pytest.approx(150.0 / 1000.0, rel=1e-9)

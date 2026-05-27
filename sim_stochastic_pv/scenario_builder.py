@@ -23,6 +23,8 @@ from sim_stochastic_pv.simulation import (
     PanelOption,
     PriceModel,
     SolarModel,
+    WeeklyPatternLoadProfile,
+    WEEKLY_PRESETS,
     make_default_solar_params_for_pavullo,
 )
 DEFAULT_SCENARIO_PATH = Path(__file__).resolve().parent / "examples" / "home_away_default.json"
@@ -138,6 +140,16 @@ def _build_single_load_profile_factory(sub_cfg: Mapping[str, Any]) -> "callable"
     3. ``{"monthly_w": [12 values]}`` → returns
        :class:`MonthlyAverageLoadProfile` with a flat monthly pattern
        expanded to 12×24 (each month constant across hours).
+    4. ``{"type": "weekly", "weekly_pattern_w": [[...7 rows × 24...]],
+         "monthly_24h_w": [...] | "monthly_w": [...] | "preset": name}``
+       → returns :class:`WeeklyPatternLoadProfile`.
+       The ``preset`` key selects one of :data:`WEEKLY_PRESETS` as the
+       pattern; explicit ``weekly_pattern_w`` overrides it.  One of
+       ``monthly_24h_w``, ``monthly_w``, or ``preset`` must provide the
+       baseline.  When ``preset`` is the only source the pattern *and* a
+       flat 200 W baseline are both taken from the preset name — this is
+       only useful as a stand-alone profile; real scenarios should supply
+       an explicit baseline.
 
     Args:
         sub_cfg: Sub-profile configuration dict.
@@ -147,11 +159,62 @@ def _build_single_load_profile_factory(sub_cfg: Mapping[str, Any]) -> "callable"
 
     Raises:
         ValueError: If none of the supported keys is present.
+        ValueError: If ``type="weekly"`` is used but neither a pattern nor a
+            recognised preset name is supplied.
+        ValueError: If ``type="weekly"`` is used but no monthly baseline is
+            supplied (and no preset name is given to derive a flat one from).
     """
     sub_type = str(sub_cfg.get("type", "")).lower()
     if sub_type == "arera":
         return lambda: AreraLoadProfile()
 
+    # -- Phase 5: weekly pattern sub-profile ----------------------------------
+    if sub_type == "weekly" or "weekly_pattern_w" in sub_cfg:
+        # Resolve the modulation pattern.
+        if "weekly_pattern_w" in sub_cfg:
+            raw_pattern = np.array(sub_cfg["weekly_pattern_w"], dtype=float)
+            if raw_pattern.shape != (7, 24):
+                raise ValueError(
+                    f"weekly_pattern_w must have shape (7, 24), got {raw_pattern.shape}"
+                )
+        elif "preset" in sub_cfg:
+            preset_name = str(sub_cfg["preset"]).lower()
+            if preset_name not in WEEKLY_PRESETS:
+                raise ValueError(
+                    f"Unknown weekly preset '{preset_name}'. "
+                    f"Available: {sorted(WEEKLY_PRESETS)}"
+                )
+            raw_pattern = WEEKLY_PRESETS[preset_name]
+        else:
+            raise ValueError(
+                "Sub-profile with type='weekly' requires either "
+                "'weekly_pattern_w' (7×24 array) or 'preset' (name string)."
+            )
+
+        # Resolve the monthly baseline.
+        if "monthly_24h_w" in sub_cfg:
+            baseline = np.array(sub_cfg["monthly_24h_w"], dtype=float)
+            if baseline.shape != (12, 24):
+                raise ValueError(
+                    f"monthly_24h_w must have shape (12, 24), got {baseline.shape}"
+                )
+        elif "monthly_w" in sub_cfg:
+            flat = np.array(sub_cfg["monthly_w"], dtype=float)
+            if flat.ndim != 1 or flat.size != 12:
+                raise ValueError(
+                    f"monthly_w must be a length-12 list, got shape {flat.shape}"
+                )
+            baseline = np.tile(flat[:, np.newaxis], (1, 24))
+        else:
+            raise ValueError(
+                "Sub-profile with type='weekly' requires a monthly baseline: "
+                "supply 'monthly_24h_w' (12×24) or 'monthly_w' (12 values)."
+            )
+
+        # Capture loop variables in default args to avoid closure capture.
+        return lambda p=raw_pattern, b=baseline: WeeklyPatternLoadProfile(b, p)
+
+    # -- Existing types -------------------------------------------------------
     if "monthly_24h_w" in sub_cfg:
         arr = np.array(sub_cfg["monthly_24h_w"], dtype=float)
         if arr.shape != (12, 24):
@@ -170,7 +233,8 @@ def _build_single_load_profile_factory(sub_cfg: Mapping[str, Any]) -> "callable"
         return lambda m=matrix: MonthlyAverageLoadProfile(m)
 
     raise ValueError(
-        "Sub-profile must contain one of: type='arera', monthly_24h_w, monthly_w"
+        "Sub-profile must contain one of: type='arera', type='weekly', "
+        "monthly_24h_w, monthly_w"
     )
 
 
@@ -305,7 +369,15 @@ def build_default_load_profile(scenario_data: Mapping[str, Any] | str | Path | N
         )
     )
 
-    if str(load_cfg.get("kind", "")).lower() == "home_away":
+    load_kind = str(load_cfg.get("kind", "")).lower()
+
+    if load_kind == "weekly":
+        # Phase 5 — standalone weekly-pattern profile (no home/away split).
+        # The scenario's occupancy parameters are ignored; the profile is
+        # used as-is for all hours of the simulation.
+        return _build_single_load_profile_factory(load_cfg)()
+
+    if load_kind == "home_away":
         # Phase 8 schema — explicit home / away sub-profiles.
         if "home" not in load_cfg or "away" not in load_cfg:
             raise ValueError(
@@ -518,10 +590,12 @@ def _solar_model_from_db_record(profile, pv_kwp, degradation_per_year, panel_til
 def build_default_energy_config(scenario_data: Mapping[str, Any] | str | Path | None = None) -> EnergySystemConfig:
     data = load_scenario_data(scenario_data)
     energy_cfg = data["energy"]
-    battery_specs_data = energy_cfg.get("battery_specs", {"capacity_kwh": 0.0, "cycles_life": 0})
+    battery_specs_data = energy_cfg.get("battery_specs", {"capacity_kwh": 0.0, "cycles_life": 6000})
     battery_specs = BatterySpecs(
         capacity_kwh=battery_specs_data.get("capacity_kwh", 0.0),
-        cycles_life=battery_specs_data.get("cycles_life", 0),
+        # Guard against explicit null stored in DB specs (treat null the same as
+        # missing key — fall back to the BatterySpecs class default of 6000).
+        cycles_life=battery_specs_data.get("cycles_life") or 6000,
     )
     return EnergySystemConfig(
         n_years=energy_cfg.get("n_years", 20),

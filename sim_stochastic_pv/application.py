@@ -222,6 +222,13 @@ class SimulationApplication:
             "final_gain_mean_eur": float(results.df_profit["mean_gain_eur"].iloc[-1]),
             "final_gain_real_mean_eur": float(results.df_profit["mean_gain_real_eur"].iloc[-1]),
             "prob_gain": float(results.df_profit["prob_gain"].iloc[-1]),
+            # Phase 4 — break-even KPIs and aggregate financial metrics.
+            "prob_break_even_within_horizon": results.prob_break_even_within_horizon,
+            "break_even_month_median": results.break_even_month_median,
+            "break_even_month_p05": results.break_even_month_p05,
+            "break_even_month_p95": results.break_even_month_p95,
+            "npv_median_eur": results.npv_median_eur,
+            "irr_mean": results.irr_mean,
             "plots_data": {
                 "profit": {
                     "months": results.df_profit["month_index"].tolist(),
@@ -229,6 +236,12 @@ class SimulationApplication:
                     "p05_gain_eur": results.df_profit["p05_gain_eur"].tolist(),
                     "p95_gain_eur": results.df_profit["p95_gain_eur"].tolist(),
                     "mean_gain_real_eur": results.df_profit["mean_gain_real_eur"].tolist(),
+                    # Phase 4 — break-even annotation data for the profit chart.
+                    # The frontend uses these values to draw a dashed vertical
+                    # line at the median and a shaded band between p05 and p95.
+                    "break_even_month_median": results.break_even_month_median,
+                    "break_even_month_p05": results.break_even_month_p05,
+                    "break_even_month_p95": results.break_even_month_p95,
                 },
                 "energy_monthly": {
                     "months": results.df_energy["month_index"].tolist(),
@@ -270,12 +283,16 @@ class SimulationApplication:
                     "scenario_name": scenario_name,
                 },
             )
-            self.persistence.record_run_result(
+            # Phase 6: capture the run record to expose run_id in the API
+            # response so the Scenario Wizard can redirect directly to the
+            # newly created run in the Dashboard.
+            run_record = self.persistence.record_run_result(
                 "analysis",
                 summary,
                 scenario=scenario_record,
                 output_dir=str(output_dir) if output_dir else None,
             )
+            summary["run_id"] = run_record.id if run_record is not None else None
 
         summary["output_dir"] = str(output_dir) if output_dir else None
         return summary

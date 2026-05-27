@@ -248,3 +248,80 @@ def test_hardware_updates_propagate_to_saved_scenarios(persistence: PersistenceS
     assert run_resp.status_code == 200
     # The scenario should now be running with the updated 5.0 kW inverter
     # This is the key benefit of the DB-driven workflow!
+
+
+# ── Phase 6 — Wizard UI tests ────────────────────────────────────────────────
+
+
+def test_solar_profiles_endpoint_returns_list(persistence: PersistenceService):
+    """
+    GET /api/profiles/solar must return a non-empty list with the expected
+    schema fields so the wizard Step 1 dropdown can populate correctly.
+
+    Seeds one solar profile directly via the persistence layer and then
+    exercises the API endpoint, verifying both the HTTP status and the
+    JSON structure.
+    """
+    # Seed a minimal solar profile into the test DB.
+    persistence.upsert_solar_profile({
+        "name": "TestCity",
+        "location_name": "Test City, Italy",
+        "latitude": 45.0,
+        "longitude": 9.0,
+        "elevation_m": 100.0,
+        "optimal_tilt_degrees": 35.0,
+        "optimal_azimuth_degrees": 180.0,
+        "avg_daily_kwh_per_kwp": [1.5, 2.0, 3.0, 4.0, 5.0, 5.5,
+                                    6.0, 5.5, 4.5, 3.0, 2.0, 1.5],
+        "p_sunny": [0.4, 0.45, 0.5, 0.55, 0.6, 0.7,
+                    0.75, 0.7, 0.6, 0.5, 0.4, 0.42],
+        "sunny_factor": 1.2,
+        "cloudy_factor": 0.3,
+        "source": "Test",
+        "notes": "Minimal test profile",
+    })
+
+    client = create_test_client(persistence)
+    resp = client.get("/api/profiles/solar")
+    assert resp.status_code == 200
+    profiles = resp.json()
+    assert isinstance(profiles, list)
+    assert len(profiles) >= 1
+
+    # Verify the expected schema fields are present in each item.
+    required_fields = {
+        "id", "name", "location_name", "latitude", "longitude",
+        "optimal_tilt_degrees", "optimal_azimuth_degrees",
+        "avg_daily_kwh_per_kwp", "p_sunny",
+    }
+    for profile in profiles:
+        missing = required_fields - set(profile.keys())
+        assert not missing, f"Solar profile missing fields: {missing}"
+        assert len(profile["avg_daily_kwh_per_kwp"]) == 12
+        assert len(profile["p_sunny"]) == 12
+
+
+def test_analysis_response_includes_run_id(
+    persistence: PersistenceService, simple_scenario_data: dict
+):
+    """
+    POST /api/analysis must include a non-null ``run_id`` in the response so
+    the Scenario Wizard can redirect the user directly to the newly created
+    run in the Dashboard (Phase 6 redirect feature).
+    """
+    client = create_test_client(persistence)
+    resp = client.post(
+        "/api/analysis",
+        json={"n_mc": 1, "seed": 42, "scenario": simple_scenario_data},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "run_id" in data, "AnalysisResponse must include 'run_id'"
+    assert data["run_id"] is not None, "run_id must not be None when persistence is active"
+    assert isinstance(data["run_id"], int), f"run_id must be int, got {type(data['run_id'])}"
+
+    # Cross-check: the run must be listable via /api/runs
+    runs_resp = client.get("/api/runs")
+    assert runs_resp.status_code == 200
+    run_ids = [r["id"] for r in runs_resp.json()]
+    assert data["run_id"] in run_ids, "The run_id returned by /api/analysis must appear in /api/runs"

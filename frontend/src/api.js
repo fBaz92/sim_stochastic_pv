@@ -13,31 +13,41 @@ async function request(endpoint, options = {}) {
         const error = await response.json().catch(() => ({ detail: response.statusText }));
         throw new Error(error.detail || 'API Request Failed');
     }
+    // 204 No Content: return null instead of calling .json() (which would throw)
+    if (response.status === 204) return null;
     return response.json();
 }
 
 export const api = {
-    // Hardware
+    // ── Hardware ──────────────────────────────────────────────────────────
     listInverters: () => request('/inverters'),
     createInverter: (data) => request('/inverters', { method: 'POST', body: JSON.stringify(data) }),
+    deleteInverter: (id) => request(`/inverters/${id}`, { method: 'DELETE' }),
 
     listPanels: () => request('/panels'),
     createPanel: (data) => request('/panels', { method: 'POST', body: JSON.stringify(data) }),
+    deletePanel: (id) => request(`/panels/${id}`, { method: 'DELETE' }),
 
     listBatteries: () => request('/batteries'),
-    async createBattery(data) {
-        return request('/batteries', { method: 'POST', body: JSON.stringify(data) });
-    },
+    createBattery: (data) => request('/batteries', { method: 'POST', body: JSON.stringify(data) }),
+    deleteBattery: (id) => request(`/batteries/${id}`, { method: 'DELETE' }),
 
-    // Profiles
+    // ── Profiles ──────────────────────────────────────────────────────────
+
+    // Phase 6: solar profiles feed the Wizard "Luogo di installazione" step.
+    async listSolarProfiles() { return request('/profiles/solar'); },
+
     async listLoadProfiles() { return request('/profiles/load'); },
     async createLoadProfile(data) {
         return request('/profiles/load', { method: 'POST', body: JSON.stringify(data) });
     },
+    deleteLoadProfile: (id) => request(`/profiles/load/${id}`, { method: 'DELETE' }),
+
     async listPriceProfiles() { return request('/profiles/price'); },
     async createPriceProfile(data) {
         return request('/profiles/price', { method: 'POST', body: JSON.stringify(data) });
     },
+    deletePriceProfile: (id) => request(`/profiles/price/${id}`, { method: 'DELETE' }),
 
     // Phase 10: Monte Carlo preview of a price profile (fan chart in DB UI)
     async previewPriceProfileById(id, { n_paths = 200, n_years = 20, seed = 42 } = {}) {
@@ -52,7 +62,7 @@ export const api = {
         });
     },
 
-    // Configurations
+    // ── Configurations ────────────────────────────────────────────────────
     async listConfigurations(type) {
         const url = type ? `/configurations?type=${type}` : '/configurations';
         return request(url);
@@ -60,13 +70,14 @@ export const api = {
     async createConfiguration(data) {
         return request('/configurations', { method: 'POST', body: JSON.stringify(data) });
     },
+    deleteConfiguration: (id) => request(`/configurations/${id}`, { method: 'DELETE' }),
 
-    // Scenarios (Execution History)
+    // ── Scenarios (Execution History) ─────────────────────────────────────
     async listScenarios() {
         return request('/scenarios');
     },
 
-    // Simulation
+    // ── Simulation ────────────────────────────────────────────────────────
     async triggerAnalysis(payload) {
         return request('/analysis', { method: 'POST', body: JSON.stringify(payload) });
     },
@@ -101,4 +112,3 @@ export const api = {
         return request('/runs');
     },
 };
-

@@ -157,6 +157,57 @@ class AnalysisResponse(BaseModel):
     prob_gain: float = Field(..., ge=0.0, le=1.0, description="Probability of positive return (0-1)")
     output_dir: Optional[str] = Field(None, description="Output directory path (if saved)")
     plots_data: Optional[Dict[str, Any]] = Field(None, description="Embedded plot data for visualization")
+    # Phase 6 — the DB run ID is returned so the wizard can redirect the user
+    # directly to this run in the Dashboard without requiring a separate list
+    # call or a manual selection step.
+    run_id: Optional[int] = Field(None, description="Database ID of the persisted RunResultRecord (None if persistence is disabled)")
+    # Phase 4 — break-even and aggregate KPIs.  Optional so that runs stored
+    # in the DB before this release still deserialise correctly (their summary
+    # JSON lacks these keys, and Pydantic will default them to None).
+    prob_break_even_within_horizon: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Fraction of Monte Carlo paths that break even within the "
+            "simulation horizon (0–1)."
+        ),
+    )
+    break_even_month_median: Optional[float] = Field(
+        None,
+        description=(
+            "Median break-even month (0-based) across paths that break even. "
+            "None if no path breaks even."
+        ),
+    )
+    break_even_month_p05: Optional[float] = Field(
+        None,
+        description=(
+            "5th-percentile break-even month (optimistic tail). "
+            "None if no path breaks even."
+        ),
+    )
+    break_even_month_p95: Optional[float] = Field(
+        None,
+        description=(
+            "95th-percentile break-even month (pessimistic tail). "
+            "None if no path breaks even."
+        ),
+    )
+    npv_median_eur: Optional[float] = Field(
+        None,
+        description=(
+            "Median final cumulative profit across all paths at end of "
+            "simulation horizon (nominal EUR)."
+        ),
+    )
+    irr_mean: Optional[float] = Field(
+        None,
+        description=(
+            "Mean annual IRR across paths with a valid finite IRR solution. "
+            "None if no valid IRR exists (e.g. investment never recovered)."
+        ),
+    )
 
 
 class OptimizationRequest(BaseModel):

@@ -5,16 +5,24 @@
     let inverters = [];
     let loading = false;
     let showForm = false;
-    
-    // New Inverter Form Data
-    let newItem = {
+
+    /** ID dell'inverter in editing; null = modalità creazione. */
+    let editingId = null;
+
+    /** ID dell'inverter con conferma eliminazione in attesa; null = nessuna. */
+    let deleteConfirmId = null;
+
+    /** Stato vuoto del form — usato anche per il reset. */
+    const emptyForm = () => ({
         name: '',
         manufacturer: '',
         model_number: '',
         p_ac_max_kw: 0,
         datasheet: '',
-        specs: {}
-    };
+        specs: {},
+    });
+
+    let formData = emptyForm();
 
     async function loadItems() {
         loading = true;
@@ -22,21 +30,54 @@
             inverters = await api.listInverters();
         } catch (e) {
             console.error(e);
-            alert('Error loading inverters');
+            alert('Errore nel caricamento degli inverter');
         } finally {
             loading = false;
         }
     }
 
+    /** Pre-popola il form con i dati di un inverter esistente per la modifica. */
+    function startEdit(item) {
+        editingId = item.id;
+        formData = {
+            name: item.name ?? '',
+            manufacturer: item.manufacturer ?? '',
+            model_number: item.model_number ?? '',
+            p_ac_max_kw: item.p_ac_max_kw ?? item.nominal_power_kw ?? 0,
+            datasheet: item.datasheet ?? '',
+            specs: item.specs ?? {},
+        };
+        showForm = true;
+        deleteConfirmId = null;
+        // Scroll verso il form
+        document.getElementById('inverter-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function cancelForm() {
+        showForm = false;
+        editingId = null;
+        formData = emptyForm();
+    }
+
     async function handleSubmit() {
         try {
-            await api.createInverter(newItem);
-            showForm = false;
-            newItem = { name: '', manufacturer: '', model_number: '', p_ac_max_kw: 0, datasheet: '', specs: {} };
+            await api.createInverter(formData);   // upsert-by-name: funziona sia per create che update
+            cancelForm();
             await loadItems();
         } catch (e) {
             console.error(e);
-            alert('Error creating inverter: ' + e.message);
+            alert('Errore: ' + e.message);
+        }
+    }
+
+    async function handleDelete(id) {
+        try {
+            await api.deleteInverter(id);
+            deleteConfirmId = null;
+            await loadItems();
+        } catch (e) {
+            console.error(e);
+            alert('Errore nella cancellazione: ' + e.message);
         }
     }
 
@@ -45,54 +86,86 @@
 
 <div>
     <div class="header-actions">
-        <h2>Inverters</h2>
-        <button class="btn btn-primary" on:click={() => showForm = !showForm}>
-            {showForm ? 'Cancel' : 'Add Inverter'}
+        <h2>Inverter</h2>
+        <button class="btn btn-primary" on:click={() => {
+            if (showForm && editingId === null) { cancelForm(); }
+            else { cancelForm(); showForm = true; }
+        }}>
+            {showForm ? 'Annulla' : '+ Aggiungi'}
         </button>
     </div>
 
     {#if showForm}
-        <div class="card form-card">
-            <h3>New Inverter</h3>
+        <div id="inverter-form" class="card form-card">
+            <h3>{editingId ? 'Modifica inverter' : 'Nuovo inverter'}</h3>
+            {#if editingId}
+                <p class="edit-hint">
+                    Il nome identifica univocamente l'inverter — modificarlo crea un duplicato.
+                </p>
+            {/if}
             <form on:submit={(e) => { e.preventDefault(); handleSubmit(); }}>
                 <div class="form-group">
-                    <label class="label" for="new-inverter-name">Name</label>
-                    <input id="new-inverter-name" class="input" bind:value={newItem.name} required />
+                    <label class="label" for="inv-name">Nome *</label>
+                    <input id="inv-name" class="input" bind:value={formData.name} required />
                 </div>
                 <div class="form-group">
-                    <label class="label" for="new-inverter-power">Specify Max Power (kW)</label>
-                    <input id="new-inverter-power" class="input" type="number" step="0.1" bind:value={newItem.p_ac_max_kw} required />
+                    <label class="label" for="inv-power">Potenza AC max (kW) *</label>
+                    <input id="inv-power" class="input" type="number" step="0.1" min="0"
+                           bind:value={formData.p_ac_max_kw} required />
                 </div>
                 <div class="form-group">
-                    <label class="label" for="new-inverter-manufacturer">Manufacturer</label>
-                    <input id="new-inverter-manufacturer" class="input" bind:value={newItem.manufacturer} />
+                    <label class="label" for="inv-manufacturer">Produttore</label>
+                    <input id="inv-manufacturer" class="input" bind:value={formData.manufacturer} />
                 </div>
                 <div class="form-group">
-                    <label class="label" for="new-inverter-model">Model Number</label>
-                    <input id="new-inverter-model" class="input" bind:value={newItem.model_number} />
+                    <label class="label" for="inv-model">Numero modello</label>
+                    <input id="inv-model" class="input" bind:value={formData.model_number} />
                 </div>
                 <div class="form-group">
-                    <label class="label" for="new-inverter-datasheet">Datasheet URL</label>
-                    <input id="new-inverter-datasheet" class="input" bind:value={newItem.datasheet} />
+                    <label class="label" for="inv-datasheet">URL scheda tecnica</label>
+                    <input id="inv-datasheet" class="input" bind:value={formData.datasheet} />
                 </div>
                 <div class="form-actions">
-                    <button type="submit" class="btn btn-primary">Save</button>
+                    <button type="button" class="btn btn-ghost" on:click={cancelForm}>Annulla</button>
+                    <button type="submit" class="btn btn-primary">
+                        {editingId ? 'Aggiorna' : 'Salva'}
+                    </button>
                 </div>
             </form>
         </div>
     {/if}
 
     {#if loading}
-        <p>Loading...</p>
+        <p>Caricamento…</p>
+    {:else if inverters.length === 0}
+        <p class="empty">Nessun inverter nel catalogo. Aggiungine uno.</p>
     {:else}
         <div class="grid">
-            {#each inverters as inverter}
-                <div class="card item-card">
-                    <h4>{inverter.name}</h4>
-                    <p class="specs">{inverter.p_ac_max_kw || inverter.nominal_power_kw} kW</p>
-                    {#if inverter.manufacturer}
-                        <p class="meta">{inverter.manufacturer} {inverter.model_number || ''}</p>
-                    {/if}
+            {#each inverters as item (item.id)}
+                <div class="card item-card" class:editing={editingId === item.id}>
+                    <div class="item-body">
+                        <h4>{item.name}</h4>
+                        <p class="specs">{item.p_ac_max_kw ?? item.nominal_power_kw} kW</p>
+                        {#if item.manufacturer}
+                            <p class="meta">{item.manufacturer}{item.model_number ? ' · ' + item.model_number : ''}</p>
+                        {/if}
+                    </div>
+                    <div class="item-actions">
+                        {#if deleteConfirmId === item.id}
+                            <span class="confirm-label">Eliminare?</span>
+                            <button class="btn btn-sm btn-danger"
+                                    on:click={() => handleDelete(item.id)}>Sì</button>
+                            <button class="btn btn-sm btn-ghost"
+                                    on:click={() => deleteConfirmId = null}>No</button>
+                        {:else}
+                            <button class="btn btn-sm btn-ghost"
+                                    title="Modifica"
+                                    on:click={() => startEdit(item)}>✏️</button>
+                            <button class="btn btn-sm btn-ghost btn-del"
+                                    title="Elimina"
+                                    on:click={() => { deleteConfirmId = item.id; editingId = null; }}>🗑️</button>
+                        {/if}
+                    </div>
                 </div>
             {/each}
         </div>
@@ -108,25 +181,55 @@
     }
     .grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+        grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
         gap: 1rem;
     }
     .form-card {
         margin-bottom: 2rem;
-        background-color: var(--color-bg-tertiary); /* Slightly different to stand out */
+        background-color: var(--color-bg-tertiary);
     }
+    .edit-hint {
+        font-size: 0.82rem;
+        color: var(--color-text-muted, #6c757d);
+        margin: 0 0 1rem;
+    }
+    .item-card {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+    .item-card.editing {
+        border-color: var(--color-accent, #0d6efd);
+        outline: 2px solid var(--color-accent, #0d6efd);
+        outline-offset: 2px;
+    }
+    .item-body { flex: 1; }
+    .item-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        justify-content: flex-end;
+        border-top: 1px solid var(--color-border, #e2e8f0);
+        padding-top: 0.5rem;
+    }
+    .confirm-label {
+        font-size: 0.82rem;
+        color: var(--color-danger, #dc3545);
+        font-weight: 500;
+    }
+    .btn-sm { padding: 0.2rem 0.5rem; font-size: 0.82rem; }
+    .btn-del:hover { color: var(--color-danger, #dc3545); }
     .specs {
         font-size: 1.2rem;
         font-weight: bold;
         color: var(--color-accent);
     }
-    .meta {
-        color: var(--color-text-secondary);
-        font-size: 0.9rem;
-    }
+    .meta { color: var(--color-text-secondary); font-size: 0.9rem; }
     .form-actions {
         margin-top: 1rem;
         display: flex;
+        gap: 0.5rem;
         justify-content: flex-end;
     }
+    .empty { color: var(--color-text-muted, #6c757d); font-style: italic; }
 </style>

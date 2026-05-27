@@ -1,9 +1,10 @@
 """
-Load and price profile schemas for API validation.
+Load, price, and solar profile schemas for API validation.
 
-This module contains Pydantic models for electricity profiles:
+This module contains Pydantic models for electricity and solar profiles:
 - Load Profiles: Electricity consumption patterns for homes
 - Price Profiles: Electricity pricing models and escalation
+- Solar Profiles: Geographic solar irradiance data for PV simulation
 
 Profiles can be saved and reused across multiple scenarios, enabling
 consistent modeling and easy comparison of different configurations.
@@ -11,7 +12,7 @@ consistent modeling and easy comparison of different configurations.
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -214,3 +215,91 @@ class PriceProfileCreate(BaseModel):
 
     name: str = Field(..., min_length=1, description="Unique profile name")
     data: Dict[str, Any] = Field(..., description="Price model configuration")
+
+
+class SolarProfileResponse(BaseModel):
+    """
+    Solar irradiance profile response schema.
+
+    Represents a stored geographic solar profile used to parameterise the
+    PV production model for a specific installation location.  The frontend
+    wizard reads this endpoint at Step 1 ("Luogo di installazione") to
+    populate the location dropdown and to render the read-only monthly
+    weather preview.
+
+    Attributes:
+        id: Unique database identifier.
+        name: Short machine-friendly identifier (e.g. "Milano", "Palermo").
+        location_name: Full human-readable description
+            (e.g. "Milano, Lombardia, Italy").
+        latitude: Decimal latitude in degrees (−90 to +90).
+        longitude: Decimal longitude in degrees (−180 to +180).
+        elevation_m: Elevation above sea level in metres (optional).
+        optimal_tilt_degrees: Recommended panel tilt angle for this location
+            (typically close to latitude).  Pre-fills the wizard tilt field.
+        optimal_azimuth_degrees: Recommended panel azimuth (180° = south).
+        avg_daily_kwh_per_kwp: Monthly average daily production per kWp
+            (12 floats, kWh/kWp/day).
+        p_sunny: Monthly long-term probability of a sunny day (12 floats, 0–1).
+        weather_persistence: Monthly weather-state persistence factor
+            (12 floats or None for legacy records).
+        sunny_factor: Production multiplier on sunny days (typically 1.2).
+        cloudy_factor: Production multiplier on cloudy days (typically 0.3).
+        source: Data source attribution (e.g. "PVGIS").
+        notes: Free-text metadata.
+
+    Example:
+        ```python
+        # GET /api/profiles/solar
+        [
+            {
+                "id": 1,
+                "name": "Milano",
+                "location_name": "Milano, Lombardia, Italy",
+                "latitude": 45.46,
+                "longitude": 9.19,
+                "elevation_m": 120.0,
+                "optimal_tilt_degrees": 35.0,
+                "optimal_azimuth_degrees": 180.0,
+                "avg_daily_kwh_per_kwp": [1.3, 2.1, 3.4, 4.5, 5.3, 5.9,
+                                          6.1, 5.6, 4.3, 2.9, 1.6, 1.1],
+                "p_sunny": [0.38, 0.42, 0.48, 0.53, 0.58, 0.68,
+                            0.73, 0.68, 0.58, 0.48, 0.38, 0.40],
+                "weather_persistence": [0.3, 0.25, 0.2, 0.2, 0.2, 0.25,
+                                        0.3, 0.3, 0.25, 0.2, 0.25, 0.3],
+                "sunny_factor": 1.2,
+                "cloudy_factor": 0.3,
+                "source": "PVGIS",
+                "notes": "35° tilt, south-facing"
+            },
+            ...
+        ]
+        ```
+
+    Notes:
+        - This endpoint is read-only from the wizard's perspective (profiles
+          are seeded or managed via CLI/admin tools).
+        - ``avg_daily_kwh_per_kwp`` and ``p_sunny`` always contain exactly 12
+          values (one per calendar month, January = index 0).
+        - ``weather_persistence`` may be ``None`` for legacy records created
+          before Phase 1; the simulator treats ``None`` identically to ``0.0``
+          (iid Bernoulli, no weather memory).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int = Field(..., description="Primary key")
+    name: str = Field(..., description="Short identifier (e.g. 'Milano')")
+    location_name: str = Field(..., description="Full human-readable location")
+    latitude: float = Field(..., description="Decimal latitude (°)")
+    longitude: float = Field(..., description="Decimal longitude (°)")
+    elevation_m: Optional[float] = Field(None, description="Elevation (m a.s.l.)")
+    optimal_tilt_degrees: float = Field(..., description="Optimal panel tilt (°)")
+    optimal_azimuth_degrees: float = Field(180.0, description="Optimal panel azimuth (°, 180=south)")
+    avg_daily_kwh_per_kwp: List[float] = Field(..., description="Monthly avg daily production (kWh/kWp/day, 12 values)")
+    p_sunny: List[float] = Field(..., description="Monthly probability of sunny day (0–1, 12 values)")
+    weather_persistence: Optional[List[float]] = Field(None, description="Monthly weather persistence factor (0–1, 12 values or None)")
+    sunny_factor: float = Field(1.2, description="Production multiplier on sunny days")
+    cloudy_factor: float = Field(0.3, description="Production multiplier on cloudy days")
+    source: Optional[str] = Field(None, description="Data source attribution")
+    notes: Optional[str] = Field(None, description="Free-text metadata")

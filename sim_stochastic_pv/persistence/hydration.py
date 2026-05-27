@@ -99,8 +99,12 @@ def hydrate_scenario(
 
         hydrated["energy"]["battery_specs"] = {
             "capacity_kwh": battery.capacity_kwh or 0.0,
+            # Use `or` to treat both missing key and explicit None as "use default".
+            # specs.get("cycles_life", 0) would return None when the key exists
+            # but its stored value is null (e.g. battery created without the field),
+            # which later causes a TypeError in BatteryModel._update_soh.
             "cycles_life": (
-                battery.specs.get("cycles_life", 0) if battery.specs else 0
+                battery.specs.get("cycles_life") or 6000 if battery.specs else 6000
             ),
         }
 
@@ -224,7 +228,7 @@ def hydrate_optimization(
                     "name": bat.name,
                     "specs": {
                         "capacity_kwh": bat.capacity_kwh or 0.0,
-                        "cycles_life": bat.specs.get("cycles_life") if bat.specs else 5000,
+                        "cycles_life": bat.specs.get("cycles_life") or 6000 if bat.specs else 6000,
                     },
                     "price_eur": bat.specs.get("price_eur") if bat.specs else None,
                     "manufacturer": bat.manufacturer,

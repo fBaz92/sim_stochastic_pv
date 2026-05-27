@@ -190,6 +190,39 @@ class MonteCarloResults:
             Internal rate of return (annualized) for each path.
             Shape: (n_mc,). Contains np.nan for paths with no valid IRR.
 
+        break_even_month_per_path: First month index where cumulative profit
+            turns non-negative, per path (ndarray). Shape: (n_mc,).
+            Value -1 signals the path never breaks even within the horizon.
+            Month index 0 = first simulation month.
+            Added in Phase 4 of the roadmap; defaults to None for
+            backward-compatible manual construction.
+
+        prob_break_even_within_horizon: Fraction of paths that reach
+            break-even at any point within the simulation horizon (float, 0–1).
+            Added in Phase 4; defaults to None.
+
+        break_even_month_median: Median break-even month across paths that
+            actually break even (float, or None if no path breaks even).
+            Added in Phase 4; defaults to None.
+
+        break_even_month_p05: 5th-percentile break-even month (optimistic
+            tail, i.e. the earliest break-even scenario). None if fewer
+            than one path breaks even. Added in Phase 4; defaults to None.
+
+        break_even_month_p95: 95th-percentile break-even month (pessimistic
+            tail, i.e. the slowest-to-break-even scenario). None if no
+            path breaks even. Added in Phase 4; defaults to None.
+
+        npv_median_eur: Median final cumulative profit (nominal EUR) across
+            all paths at the end of the simulation horizon. Equals
+            np.median(profit_cum_paths[:, -1]) and is distinct from
+            mean_gain_eur (which is the mean, not the median). Added in
+            Phase 4; defaults to None.
+
+        irr_mean: Mean annual IRR across paths that yield a valid finite
+            IRR (excluding np.nan paths). None if no valid IRR exists.
+            Added in Phase 4; defaults to None.
+
     Example:
         ```python
         from sim_stochastic_pv.simulation.monte_carlo import MonteCarloSimulator
@@ -236,6 +269,16 @@ class MonteCarloResults:
     irr_annual_paths: np.ndarray
     df_price: Optional[pd.DataFrame] = None
     price_paths_eur_per_kwh: Optional[np.ndarray] = None
+    # Phase 4 — break-even and aggregate KPI fields.  All optional so that
+    # legacy code and tests that construct MonteCarloResults by hand continue
+    # to work without providing these values.
+    break_even_month_per_path: Optional[np.ndarray] = None
+    prob_break_even_within_horizon: Optional[float] = None
+    break_even_month_median: Optional[float] = None
+    break_even_month_p05: Optional[float] = None
+    break_even_month_p95: Optional[float] = None
+    npv_median_eur: Optional[float] = None
+    irr_mean: Optional[float] = None
 
 
 class MonteCarloSimulator:
@@ -683,6 +726,47 @@ class MonteCarloSimulator:
             }
         )
 
+        # Phase 4 — break-even analysis per path.
+        #
+        # For each Monte Carlo path find the first month_index at which the
+        # cumulative nominal profit turns non-negative (≥ 0).  A path that
+        # never recovers the investment within the simulation horizon receives
+        # value -1 so that callers can distinguish it from "month 0" (which
+        # would mean savings covered the investment in the very first month,
+        # theoretically possible only when investment_eur = 0).
+        #
+        # Vectorised strategy:
+        #   be_mask          – boolean (n_mc × n_months), True = profitable
+        #   ever_break_even  – (n_mc,) True = the path breaks even at some point
+        #   np.argmax along axis=1 returns the first True index for rows that
+        #   have at least one True; for rows with no True it returns 0 (wrong),
+        #   but those rows are masked away by np.where.
+        be_mask = profit_cum_paths >= 0.0  # shape (n_mc, n_months)
+        ever_break_even: np.ndarray = be_mask.any(axis=1)  # shape (n_mc,)
+        first_be_month_raw: np.ndarray = np.argmax(be_mask, axis=1)
+        break_even_month_per_path: np.ndarray = np.where(
+            ever_break_even, first_be_month_raw, -1
+        ).astype(np.int64)
+
+        prob_break_even_within_horizon: float = float(ever_break_even.mean())
+
+        valid_be_months = break_even_month_per_path[ever_break_even]
+        if len(valid_be_months) > 0:
+            break_even_month_median: Optional[float] = float(np.median(valid_be_months))
+            break_even_month_p05: Optional[float] = float(np.percentile(valid_be_months, 5))
+            break_even_month_p95: Optional[float] = float(np.percentile(valid_be_months, 95))
+        else:
+            break_even_month_median = None
+            break_even_month_p05 = None
+            break_even_month_p95 = None
+
+        # Median final cumulative profit across all paths (nominal EUR).
+        npv_median_eur: float = float(np.median(profit_cum_paths[:, -1]))
+
+        # Mean annual IRR, excluding paths where no valid IRR was found.
+        valid_irr = irr_annual_paths[~np.isnan(irr_annual_paths)]
+        irr_mean: Optional[float] = float(valid_irr.mean()) if len(valid_irr) > 0 else None
+
         return MonteCarloResults(
             df_profit=df_profit,
             df_energy=df_energy,
@@ -694,6 +778,14 @@ class MonteCarloSimulator:
             monthly_load_kwh_paths=load_kwh_paths,
             price_paths_eur_per_kwh=price_paths,
             irr_annual_paths=irr_annual_paths,
+            # Phase 4 — break-even and aggregate KPIs
+            break_even_month_per_path=break_even_month_per_path,
+            prob_break_even_within_horizon=prob_break_even_within_horizon,
+            break_even_month_median=break_even_month_median,
+            break_even_month_p05=break_even_month_p05,
+            break_even_month_p95=break_even_month_p95,
+            npv_median_eur=npv_median_eur,
+            irr_mean=irr_mean,
         )
 
     # ---------- plotting utilities ----------
