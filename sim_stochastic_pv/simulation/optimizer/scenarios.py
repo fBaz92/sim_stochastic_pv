@@ -82,7 +82,7 @@ class ScenarioDefinition:
         Returns:
             Total investment cost in EUR.
         """
-        total = self.inverter.price_eur + self.inverter.installation_cost()
+        total = self.inverter.total_cost_eur
         total += self.panel.price_eur * self.panel_count
         if self.battery_option and self.battery_count > 0:
             total += self.battery_option.price_eur * self.battery_count

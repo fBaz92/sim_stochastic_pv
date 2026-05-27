@@ -231,3 +231,50 @@ def run_saved_optimization(
         scenario_data=hydrated_scenario,
     )
     return sim_schemas.OptimizationResponse(**summary)
+
+
+@router.post(
+    "/campaigns/{campaign_id}/run",
+    response_model=sim_schemas.OptimizationResponse,
+    summary="Run a saved campaign (preferred path)",
+    description=(
+        "Phase 7 alias for `POST /optimizations/{optimization_id}/run`. "
+        "The two paths are equivalent and accept the same query parameters. "
+        "Use `/campaigns/...` going forward — the `/optimizations/...` path "
+        "is kept as a backward-compat alias and may be deprecated in a "
+        "future release."
+    ),
+)
+def run_saved_campaign(
+    campaign_id: int,
+    seed: int | None = None,
+    n_mc: int | None = None,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+    app_service: SimulationApplication = Depends(dependencies.get_application_service),
+) -> sim_schemas.OptimizationResponse:
+    """
+    Run a saved *campaign* (Phase 7 terminology) by DB id.
+
+    A campaign is a multi-scenario design exploration — under the hood it
+    is still stored as a ``SavedConfigurationModel.config_type == "optimization"``
+    record. This route simply forwards to :func:`run_saved_optimization`
+    so the UI can speak the new vocabulary while we honour the legacy DB
+    column values.
+
+    Args:
+        campaign_id: DB id of the saved campaign (formerly "optimization").
+        seed: Optional master RNG seed, default 123.
+        n_mc: Optional Monte Carlo path count per scenario.
+        persistence: Injected DB service.
+        app_service: Injected simulation service.
+
+    Returns:
+        Same shape as the legacy route.
+    """
+    return run_saved_optimization(
+        optimization_id=campaign_id,
+        seed=seed,
+        n_mc=n_mc,
+        persistence=persistence,
+        app_service=app_service,
+    )

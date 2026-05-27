@@ -120,7 +120,7 @@ class ResultBuilder:
         if not evaluations:
             raise ValueError("No evaluations available to build results.")
 
-        run_dir = _create_run_directory(request_name, self.output_root)
+        run_dir = create_run_directory(request_name, self.output_root)
         comparison_dir = run_dir / "comparison"
         comparison_dir.mkdir(parents=True, exist_ok=True)
 

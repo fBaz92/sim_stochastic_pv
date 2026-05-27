@@ -4,8 +4,20 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
 
-from .simulation.monte_carlo import EconomicConfig, MonteCarloSimulator
+import numpy as np
+
+from .simulation.monte_carlo import (
+    EconomicConfig,
+    MonteCarloResults,
+    MonteCarloSimulator,
+)
 from .simulation.optimizer import ScenarioOptimizer, ScenarioEvaluation
+
+# Number of full price trajectories returned to the UI for fan-chart rendering.
+# Capped to keep the JSON response light: a fan chart loses visual value beyond
+# a few dozen lines anyway, and the bands (mean/p05/p95) carry the statistical
+# story already.
+_PRICE_SAMPLE_PATHS_LIMIT: int = 20
 from .persistence import PersistenceService
 from .output import ResultBuilder
 from .scenario_builder import (
@@ -41,6 +53,86 @@ def _build_summary(evaluation: ScenarioEvaluation) -> Dict[str, Any]:
         "final_gain_real_mean_eur": float(final_row["mean_gain_real_eur"]),
         "prob_gain": float(final_row["prob_gain"]),
         "break_even_month": evaluation.break_even_month,
+    }
+
+
+def _build_price_plot_payload(
+    results: MonteCarloResults,
+    sample_paths_limit: int = _PRICE_SAMPLE_PATHS_LIMIT,
+) -> Dict[str, Any]:
+    """
+    Build the JSON-friendly price block of the analysis response.
+
+    Produces the data needed by the Dashboard "Prezzo energia" tab:
+
+    * Per-month statistics across all Monte Carlo paths (mean, p05, p95)
+      to draw the uncertainty band as a filled area.
+    * A capped sample of full trajectories so the Dashboard can overlay
+      a fan chart of representative paths on top of the band.
+
+    The sample is selected via a deterministic stride
+    ``stride = max(1, n_mc // sample_paths_limit)`` so the chosen paths
+    are spread across the index space and the result is reproducible
+    when the Monte Carlo seed is fixed.
+
+    Args:
+        results: The MonteCarloResults bundle from
+            :meth:`MonteCarloSimulator.run`.
+        sample_paths_limit: Maximum number of full paths to include in
+            the response. Hard-capped to a reasonable visualisation
+            density. Defaults to ``_PRICE_SAMPLE_PATHS_LIMIT`` (20).
+
+    Returns:
+        Dictionary with the following keys:
+
+        - ``months``: list[int], 0-based month indices
+        - ``mean_eur_per_kwh``: list[float], mean price per month
+        - ``p05_eur_per_kwh``: list[float], 5th-percentile price per month
+        - ``p95_eur_per_kwh``: list[float], 95th-percentile price per month
+        - ``sample_paths``: list[list[float]] — each inner list is one
+          full ``(n_months,)`` price trajectory in EUR/kWh.
+
+    Example:
+        ```python
+        payload = _build_price_plot_payload(results)
+        # In the frontend (Chart.js / Svelte):
+        # - render the (p05, p95) band as a filled area dataset
+        # - render `mean_eur_per_kwh` as a solid line on top
+        # - render each `sample_paths[i]` as a thin semi-transparent line
+        ```
+
+    Notes:
+        - For deterministic price models (volatility=0, escalation no-jitter)
+          the band collapses to a line and the sample paths are all
+          identical: the fan chart visually degenerates, which is the
+          correct signal that the model has no uncertainty.
+        - The function is intentionally pure (no I/O); callers control
+          where the payload is serialised (API response, file, etc.).
+    """
+    df_price = results.df_price
+    months = df_price["month_index"].tolist()
+    mean = df_price["price_mean_eur_per_kwh"].tolist()
+    p05 = df_price["price_p05_eur_per_kwh"].tolist()
+    p95 = df_price["price_p95_eur_per_kwh"].tolist()
+
+    paths = results.price_paths_eur_per_kwh
+    n_mc, _n_months = paths.shape
+    if n_mc <= sample_paths_limit:
+        selected_idx = np.arange(n_mc)
+    else:
+        stride = max(1, n_mc // sample_paths_limit)
+        selected_idx = np.arange(0, n_mc, stride)[:sample_paths_limit]
+
+    sample_paths: List[List[float]] = [
+        paths[i, :].tolist() for i in selected_idx
+    ]
+
+    return {
+        "months": months,
+        "mean_eur_per_kwh": mean,
+        "p05_eur_per_kwh": p05,
+        "p95_eur_per_kwh": p95,
+        "sample_paths": sample_paths,
     }
 
 
@@ -85,6 +177,23 @@ class SimulationApplication:
             Summary dictionary with economic metrics and optional output path.
         """
         scenario_payload = load_scenario_data(scenario_data)
+        # Phase 8: if the scenario references DB entities by ID (load_profile_id,
+        # price_profile_id, inverter_id, …) expand them into full specs before
+        # the builders try to read inline blocks. Safe no-op when no IDs are
+        # present in the payload.
+        if self.persistence is not None and any(
+            key in scenario_payload
+            for key in (
+                "load_profile_id",
+                "price_profile_id",
+                "inverter_id",
+                "panel_id",
+                "battery_id",
+            )
+        ):
+            scenario_payload = self.persistence.hydrate_scenario_from_ids(
+                scenario_payload
+            )
         load_profile = build_default_load_profile(scenario_payload)
         solar_model = build_default_solar_model(scenario_payload)
         energy_cfg = build_default_energy_config(scenario_payload)
@@ -105,6 +214,8 @@ class SimulationApplication:
 
         results = mc.run(seed=seed)
         scenario_name = scenario_payload.get("scenario_name", "custom_scenario")
+
+        price_plot = _build_price_plot_payload(results)
 
         summary = {
             "scenario": scenario_name,
@@ -135,7 +246,8 @@ class SimulationApplication:
                         }
                         for m in range(12)
                     ]
-                }
+                },
+                "price": price_plot,
             }
         }
 

@@ -109,6 +109,79 @@
             ],
         };
     }
+
+    /**
+     * Build the fan chart datasets for the simulated electricity prices.
+     *
+     * Layered rendering, from back to front:
+     *   1. p05 line (transparent border, filled toward p95 above it).
+     *   2. p95 line (transparent border, anchor for the fill area).
+     *   3. A handful of sample Monte Carlo trajectories (thin, semi-transparent).
+     *   4. The cross-path mean as a thick solid line on top.
+     *
+     * For deterministic price models all sample paths and the band collapse to
+     * the mean line — by design, since there is no uncertainty to depict.
+     */
+    function getPriceChart(data) {
+        if (!data || !data.price) return null;
+        const p = data.price;
+
+        const datasets = [
+            // p05 / p95 band (drawn as two transparent lines with a fill between them)
+            {
+                label: "P05",
+                data: p.p05_eur_per_kwh,
+                borderColor: "transparent",
+                backgroundColor: "rgba(13, 110, 253, 0.18)",
+                fill: "+1",
+                pointRadius: 0,
+                type: "line",
+                order: 3,
+            },
+            {
+                label: "P95",
+                data: p.p95_eur_per_kwh,
+                borderColor: "transparent",
+                backgroundColor: "transparent",
+                fill: false,
+                pointRadius: 0,
+                type: "line",
+                order: 3,
+            },
+        ];
+
+        // Sample trajectories: very thin, semi-transparent grey strokes so the
+        // user perceives the breadth of the simulation without visual clutter.
+        const samplePaths = Array.isArray(p.sample_paths) ? p.sample_paths : [];
+        for (let i = 0; i < samplePaths.length; i++) {
+            datasets.push({
+                label: i === 0 ? "Path simulati" : `_path_${i}`, // legend shown only once
+                data: samplePaths[i],
+                borderColor: "rgba(108, 117, 125, 0.35)",
+                backgroundColor: "transparent",
+                borderWidth: 1,
+                fill: false,
+                pointRadius: 0,
+                type: "line",
+                order: 2,
+            });
+        }
+
+        // Cross-path mean as the dominant series
+        datasets.push({
+            label: "Prezzo medio (€/kWh)",
+            data: p.mean_eur_per_kwh,
+            borderColor: "#0d6efd",
+            backgroundColor: "#0d6efd",
+            borderWidth: 2.5,
+            fill: false,
+            pointRadius: 0,
+            type: "line",
+            order: 1,
+        });
+
+        return { labels: p.months, datasets };
+    }
 </script>
 
 <div class="container dashboard">
@@ -131,7 +204,11 @@
                     >
                         <div class="run-header">
                             <span class={`type ${run.result_type ?? ""}`}
-                                >{run.result_type}</span
+                                >{run.result_type === "analysis"
+                                    ? "Scenario"
+                                    : run.result_type === "optimization"
+                                      ? "Campagna"
+                                      : run.result_type}</span
                             >
                             <span class="date"
                                 >{new Date(
@@ -156,7 +233,11 @@
                 <div>
                     <h1>Run #{selectedRun.id}</h1>
                     <span class={`badge ${selectedRun.result_type ?? ""}`}
-                        >{selectedRun.result_type}</span
+                        >{selectedRun.result_type === "analysis"
+                            ? "Scenario"
+                            : selectedRun.result_type === "optimization"
+                              ? "Campagna"
+                              : selectedRun.result_type}</span
                     >
                 </div>
             </div>
@@ -176,6 +257,11 @@
                     class="tab-btn"
                     class:active={activeTab === "soc"}
                     on:click={() => (activeTab = "soc")}>Battery SoC</button
+                >
+                <button
+                    class="tab-btn"
+                    class:active={activeTab === "price"}
+                    on:click={() => (activeTab = "price")}>Prezzo energia</button
                 >
                 <button
                     class="tab-btn"
@@ -257,6 +343,48 @@
                         </div>
                     {:else}
                         <p>No SoC data available.</p>
+                    {/if}
+                {:else if activeTab === "price"}
+                    {#if selectedRun.summary.plots_data && selectedRun.summary.plots_data.price}
+                        <div class="card chart-section">
+                            <h3>Traiettorie simulate del prezzo dell'energia</h3>
+                            <p class="muted">
+                                Banda 5°–95° percentile (area chiara), media
+                                Monte Carlo (linea blu) e
+                                {selectedRun.summary.plots_data.price.sample_paths?.length ?? 0}
+                                traiettorie campione. Con modelli deterministici
+                                la banda collassa sulla media.
+                            </p>
+                            <ResultsChart
+                                type="line"
+                                data={getPriceChart(
+                                    selectedRun.summary.plots_data,
+                                )}
+                                options={{
+                                    plugins: {
+                                        legend: {
+                                            labels: {
+                                                // hide every "_path_N" entry
+                                                filter: (item) =>
+                                                    !item.text.startsWith(
+                                                        "_path_",
+                                                    ),
+                                            },
+                                        },
+                                    },
+                                    scales: {
+                                        x: { title: { display: true, text: "Mese dall'inizio" } },
+                                        y: { title: { display: true, text: "EUR/kWh" } },
+                                    },
+                                }}
+                            />
+                        </div>
+                    {:else}
+                        <p>
+                            Nessuna traiettoria di prezzo disponibile per
+                            questo run (il backend potrebbe essere una versione
+                            precedente alla Fase 3).
+                        </p>
                     {/if}
                 {:else if activeTab === "raw"}
                     <div class="raw-data">

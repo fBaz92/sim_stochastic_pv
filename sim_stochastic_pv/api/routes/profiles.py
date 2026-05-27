@@ -13,9 +13,17 @@ by ID in scenarios.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from dataclasses import asdict
+from typing import Any, Dict, Optional
+
+from fastapi import APIRouter, Depends, HTTPException
 
 from ...persistence import PersistenceService
+from ...scenario_builder import build_default_price_model
+from ...simulation.prices import (
+    PricePreviewResult,
+    simulate_price_preview,
+)
 from .. import dependencies
 from ..schemas import profiles as profile_schemas
 
@@ -256,3 +264,122 @@ def create_price_profile(
         - Updating propagates to all scenarios using this profile ID
     """
     return persistence.upsert_price_profile(payload.name, payload.data)
+
+
+# ---------------------------------------------------------------------------
+# Phase 10 — preview routes for the Database section of the UI
+# ---------------------------------------------------------------------------
+
+
+def _preview_payload(result: PricePreviewResult) -> Dict[str, Any]:
+    """Convert the dataclass result to the same JSON shape used in Phase 3."""
+    return asdict(result)
+
+
+@router.get("/profiles/price/{profile_id}/preview")
+def preview_saved_price_profile(
+    profile_id: int,
+    n_paths: int = 200,
+    n_years: int = 20,
+    seed: int = 42,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> Dict[str, Any]:
+    """
+    Run a stand-alone Monte Carlo preview of a *saved* price profile and
+    return the fan-chart payload (mean / p05 / p95 / sample paths).
+
+    This route lets the Database UI show what a stored price profile
+    actually looks like in simulation, without having to wire it into a
+    full scenario first.
+
+    Args:
+        profile_id: DB primary key of the price profile.
+        n_paths: Monte Carlo paths to draw (capped server-side at 1000 to
+            avoid pathological JSON sizes).
+        n_years: Simulation horizon. Capped at 50 years.
+        seed: Master seed for reproducibility.
+        persistence: Injected DB service.
+
+    Returns:
+        JSON payload with the same shape used by the Dashboard
+        `plots_data.price` block (Phase 3 schema):
+        ``{months, mean_eur_per_kwh, p05_eur_per_kwh, p95_eur_per_kwh,
+        sample_paths}``.
+
+    Raises:
+        HTTPException 404: profile not found.
+        HTTPException 422: parameter values out of allowed range.
+    """
+    n_paths = min(max(int(n_paths), 1), 1000)
+    n_years = min(max(int(n_years), 1), 50)
+
+    profiles = persistence.list_price_profiles()
+    record = next((p for p in profiles if p.id == profile_id), None)
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Price profile id={profile_id} not found",
+        )
+
+    # Reuse the scenario_builder dispatcher: it already understands
+    # model_type ∈ {escalating, gbm, mean_reverting} and applies defaults.
+    price_model = build_default_price_model(
+        scenario_data={"price": record.data}
+    )
+    result = simulate_price_preview(
+        price_model=price_model,
+        n_years=n_years,
+        n_paths=n_paths,
+        seed=seed,
+    )
+    return _preview_payload(result)
+
+
+@router.post("/profiles/price/preview")
+def preview_price_parameters(
+    payload: profile_schemas.PriceProfileCreate,
+    n_paths: int = 200,
+    n_years: int = 20,
+    seed: int = 42,
+) -> Dict[str, Any]:
+    """
+    Same as :func:`preview_saved_price_profile` but for *unsaved* parameters
+    — drives the live preview in the price-profile create/edit form.
+
+    The ``payload`` follows the regular price-profile create schema; only
+    the ``data`` field matters for the preview (``name`` is accepted to
+    keep the schema reuse straightforward).
+
+    Args:
+        payload: Pricing parameters in the same shape as
+            ``POST /api/profiles/price``.
+        n_paths: Capped at 1000 server-side.
+        n_years: Capped at 50 server-side.
+        seed: Master seed for reproducibility.
+
+    Returns:
+        Same JSON shape as :func:`preview_saved_price_profile`.
+
+    Notes:
+        - This endpoint is stateless: nothing is written to the DB.
+        - Validation errors from the model constructors (e.g. negative
+          volatility) surface as HTTP 422 via FastAPI's automatic
+          ValueError→422 mapping.
+    """
+    n_paths = min(max(int(n_paths), 1), 1000)
+    n_years = min(max(int(n_years), 1), 50)
+
+    try:
+        price_model = build_default_price_model(
+            scenario_data={"price": payload.data}
+        )
+        result = simulate_price_preview(
+            price_model=price_model,
+            n_years=n_years,
+            n_paths=n_paths,
+            seed=seed,
+        )
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return _preview_payload(result)

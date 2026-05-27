@@ -5,6 +5,24 @@ Letto prima di ogni sessione, aggiornato quando le regole del progetto cambiano.
 
 ---
 
+## Glossario rapido
+
+Termini ricorrenti e cosa significano *in questa codebase*. Tenere allineata
+la terminologia in codice, docstring, schemi API, e UI.
+
+| Termine | Significato | Note |
+|---|---|---|
+| **Scenario** | Analisi economica di **una** configurazione hardware specifica (uno scelto: inverter, batteria, kWp, profilo di carico, modello di prezzo). L'unica stocasticità è il Monte Carlo (meteo, carico, prezzo). | DB: `SavedConfigurationModel.config_type = "scenario"`. UI: "Scenario". |
+| **Campagna** | Esplorazione **di design**: un set di scenari su griglie di alternative (più inverter, più kWp, più batterie) per individuare la configurazione ottimale. | DB: `SavedConfigurationModel.config_type = "optimization"` (nome storico, da rinominare *solo* a livello UI/API docs). UI: "Campagna". |
+| **Run** | Singola esecuzione del Monte Carlo per uno scenario o una campagna. Persistita in `RunResultRecord`. | Tipi: `analysis` (singolo scenario), `optimization` (campagna). |
+| **Profilo (load/price/solar)** | Oggetto DB riutilizzabile riferito via ID in scenari/campagne. | Es. `LoadProfileModel.kind = "home_away"`. |
+| **Hardware** | Inverter, pannello, batteria — entità DB con specs. | `InverterModel`, `PanelModel`, `BatteryModel`. |
+| **Modalità simplified vs advanced (sizing)** | (Fase 9) modalità di calcolo n. pannelli/stringhe. Simplified = "minimo numero di pannelli per dare DC overcap %"; advanced = utente specifica `n_panels_per_string`. | Default simplified. |
+
+> **Importante**: i `config_type` lato DB (`scenario` / `optimization`) restano
+> i nomi storici per non rompere i record già salvati. La rinomina vive solo
+> a livello UI/API-docs/dizionario utente.
+
 ## 1. Obiettivo del progetto
 
 `sim_stochastic_pv` è un **toolkit Monte Carlo per la valutazione economica
@@ -118,6 +136,10 @@ banali (es. `_clip_to_range`). Tutto il resto è verbose.
 
 ### 2.6 Test obbligatori per il codice nuovo
 
+**Regola fondamentale: una feature non è "fatta" finché `pytest tests/ -q`
+non passa completamente, suite verde. Scrivere i test è parte integrante
+dell'implementazione, non un'aggiunta opzionale.**
+
 - Ogni nuovo modulo `sim_stochastic_pv/<area>/<modulo>.py` ha un
   corrispondente `tests/test_<modulo>.py`.
 - Test deterministici (sempre `np.random.default_rng(seed)`).
@@ -126,6 +148,17 @@ banali (es. `_clip_to_range`). Tutto il resto è verbose.
   non sui singoli valori.
 - Test fast: nessun test deve durare > 5 secondi. Per Monte Carlo
   pesante, usa `n_mc` piccolo e un seed fisso.
+- **Mai lasciare test rossi su `main`.** Se un refactoring rompe test
+  esistenti, sistemare i test (o il codice) prima di considerare la
+  sessione conclusa. Il branch principale è sempre verde.
+- **I test devono testare l'interfaccia reale**, non un'interfaccia
+  immaginata. Se il test passa argomenti o chiama metodi che non
+  esistono nell'implementazione, il test è sbagliato — va allineato
+  all'implementazione attuale (o viceversa, se l'implementazione è
+  cambiata senza intenzione).
+- Quando si modifica una classe/funzione pubblica, controllare subito
+  se i test esistenti la coprono ancora: firma, nomi dei parametri,
+  valori di ritorno.
 
 ---
 
@@ -185,26 +218,57 @@ tests/               # pytest
 
 ---
 
-## 4. Come aggiungere una feature — workflow standard
+## 4. ROADMAP.md è un documento vivente
 
-1. **Leggi `ROADMAP.md`** e individua la fase di riferimento.
-2. **Estendi il modello di dominio** in `simulation/` o `db/models.py`
+`ROADMAP.md` **non è un piano scritto una volta e abbandonato**. È un
+artefatto di tracking dello stato dell'implementazione. Le sue regole:
+
+- **All'inizio di una fase**: marca la fase come `🚧 in corso` nella sezione
+  *Stato*, indicando data di avvio. Se cambi scope rispetto alla descrizione
+  originale, aggiorna anche il blocco *Deliverable* della fase per
+  riflettere quello che davvero stai facendo.
+- **Durante la fase**: se scopri vincoli o opportunità che cambiano il
+  design (es. "il modello prezzo deve esporre anche un sample di path
+  per il fan chart"), aggiorna il blocco *Deliverable* prima di scrivere
+  il codice — così il prossimo che legge non si chiede perché il codice
+  fa più di quello che la roadmap promette.
+- **A fine fase**: marca `✅ completata` con data e un riepilogo di una
+  riga su cosa è stato consegnato (nome dei moduli/classi nuove,
+  modifiche di schema DB, numero di test aggiunti, evidenza end-to-end
+  raccolta). Sposta i task aperti che sono stati spostati nelle fasi
+  successive in modo che restino tracciati.
+- **Quando aggiungi una fase nuova**: numerala con il prossimo intero
+  libero e descrivi `Problema → Deliverable → Out of scope` come per le
+  esistenti. Aggiorna la sezione *Dipendenze fra fasi* se serve.
+
+La verità del progetto vive in `ROADMAP.md`. Se ti accorgi che il codice
+è più avanti o più indietro della roadmap, **la roadmap è il bug**:
+aggiornala prima di continuare.
+
+## 5. Come aggiungere una feature — workflow standard
+
+1. **Leggi `ROADMAP.md`** e individua la fase di riferimento. Se non
+   esiste, aggiungine una (vedi §4) prima di scrivere il codice.
+2. **Marca la fase come in corso** nella sezione *Stato* del ROADMAP.
+3. **Estendi il modello di dominio** in `simulation/` o `db/models.py`
    (con docstring verbosi, test associati).
-3. **Estendi `scenario_builder.py`** se la feature è esposta come parametro
+4. **Estendi `scenario_builder.py`** se la feature è esposta come parametro
    di scenario.
-4. **Estendi gli schema Pydantic** in `api/schemas/` per esporla via API.
-5. **Estendi le route** in `api/routes/` se servono nuovi endpoint, oppure
+5. **Estendi gli schema Pydantic** in `api/schemas/` per esporla via API.
+6. **Estendi le route** in `api/routes/` se servono nuovi endpoint, oppure
    arricchisci il payload di quelle esistenti.
-6. **Estendi il frontend** in `frontend/src/` (form input nel
+7. **Estendi il frontend** in `frontend/src/` (form input nel
    ScenarioBuilder, visualizzazione in Dashboard).
-7. **Aggiorna `validation.py`** se introduci nuovi vincoli.
-8. **Aggiorna i seed JSON** in `seed_data/` se la feature ha valori
+8. **Aggiorna `validation.py`** se introduci nuovi vincoli.
+9. **Aggiorna i seed JSON** in `seed_data/` se la feature ha valori
    di default per luogo/profilo.
-9. **Test**: aggiungi un caso in `tests/`. Tutto verde.
-10. **Documenta**: aggiorna `README.md` se cambia l'interfaccia utente,
+10. **Test**: aggiungi un caso in `tests/`. Tutto verde.
+11. **Documenta**: aggiorna `README.md` se cambia l'interfaccia utente,
     aggiorna `CHANGELOG.md` con la voce della modifica.
+12. **Chiudi la fase nel ROADMAP**: marca `✅ completata` con un riepilogo
+    (vedi §4).
 
-### 4.1 Migrazioni database
+### 5.1 Migrazioni database
 
 Il progetto usa SQLite/PostgreSQL via SQLAlchemy con `create_all()` in
 [db/session.py:init_db](sim_stochastic_pv/db/session.py). Non c'è Alembic.
@@ -224,7 +288,7 @@ Alembic.
 
 ---
 
-## 5. Cosa non fare
+## 6. Cosa non fare
 
 - **Non** introdurre fallback impliciti che mascherano errori
   (es. `try/except: return None`). Lascia esplodere e gestisci all'esterno.
@@ -244,7 +308,7 @@ Alembic.
 
 ---
 
-## 6. Quando in dubbio
+## 7. Quando in dubbio
 
 - **Sulla decisione**: chiedi all'utente. Meglio una domanda corta che
   un commit da rifare.

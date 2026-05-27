@@ -38,7 +38,12 @@ from .optimizer import (
     ScenarioEvaluation,
     ScenarioOptimizer,
 )
-from .prices import EscalatingPriceModel, PriceModel
+from .prices import (
+    EscalatingPriceModel,
+    GBMPriceModel,
+    MeanRevertingPriceModel,
+    PriceModel,
+)
 from .pv_model import PVModelSingleDiode
 from .solar import SolarModel, SolarMonthParams, make_default_solar_params_for_pavullo
 
@@ -68,6 +73,8 @@ __all__ = [
     "MonteCarloSimulator",
     "PriceModel",
     "EscalatingPriceModel",
+    "GBMPriceModel",
+    "MeanRevertingPriceModel",
     # Optimization helpers
     "ScenarioOptimizer",
     "ScenarioEvaluation",

@@ -4,9 +4,12 @@ Monthly average load profile implementation.
 
 from __future__ import annotations
 
+from typing import List, Optional
+
 import numpy as np
 
 from .base import LoadProfile
+from ...calendar_utils import MONTH_LENGTHS
 
 
 class MonthlyAverageLoadProfile(LoadProfile):
@@ -73,25 +76,37 @@ class MonthlyAverageLoadProfile(LoadProfile):
         - Typical use: 12 months × 24 hours = 288 unique values
     """
 
-    def __init__(self, monthly_profiles_w: np.ndarray) -> None:
+    def __init__(
+        self,
+        monthly_profiles_w: Optional[np.ndarray] = None,
+        *,
+        monthly_avg_kwh: Optional[List[float]] = None,
+    ) -> None:
         """
         Initialize monthly average load profile with fixed diurnal patterns.
 
+        Accepts two mutually exclusive interfaces:
+
+        1. ``monthly_profiles_w`` (detailed): a (12, 24) Watts array giving the
+           exact hourly load for each month.  Full control over the diurnal shape.
+        2. ``monthly_avg_kwh`` (simple): a list of 12 total kWh values — one per
+           month.  Each month is automatically converted to a *flat* (constant)
+           24-hour profile using the actual number of days in that month.
+
         Args:
             monthly_profiles_w: Hourly load profiles in Watts (shape: 12 × 24).
-                Array structure:
-                - Rows (12): Months (Jan=0, Feb=1, ..., Dec=11)
-                - Columns (24): Hours (0=midnight-1am, ..., 23=11pm-midnight)
-                - Values: Load in Watts (non-negative floats)
-
-                Typical residential values: 50-500W per hour.
-                Examples:
-                - 100W: Standby consumption (refrigerator, routers)
-                - 250W: Light usage (lighting, small appliances)
-                - 500W+: Active usage (cooking, heating, AC)
+                Rows: months (Jan=0 … Dec=11). Columns: hours (0…23).
+                Mutually exclusive with *monthly_avg_kwh*.
+            monthly_avg_kwh: Total energy consumed in each calendar month (kWh).
+                List of 12 non-negative floats (Jan first). The hourly load is
+                derived as ``kWh * 1000 / (days_in_month * 24)`` Watts, spread
+                uniformly across all 24 hours and all days in the month.
+                Mutually exclusive with *monthly_profiles_w*.
 
         Raises:
+            ValueError: If neither or both arguments are provided.
             ValueError: If monthly_profiles_w is not shape (12, 24).
+            ValueError: If monthly_avg_kwh does not have exactly 12 elements.
 
         Example:
             ```python
@@ -101,37 +116,45 @@ class MonthlyAverageLoadProfile(LoadProfile):
                 make_flat_monthly_load_profiles
             )
 
-            # Option 1: Constant load (150W)
+            # Simple interface – 300 kWh/month flat profile
+            model_simple = MonthlyAverageLoadProfile(
+                monthly_avg_kwh=[300.0] * 12
+            )
+
+            # Detailed interface – constant 150 W all day every month
             profiles_flat = make_flat_monthly_load_profiles(base_load_w=150.0)
             model_flat = MonthlyAverageLoadProfile(profiles_flat)
-
-            # Option 2: Custom seasonal pattern
-            profiles_custom = np.zeros((12, 24))
-            # Winter months (higher heating load)
-            for month in [0, 1, 11]:  # Jan, Feb, Dec
-                profiles_custom[month, :] = 300.0
-            # Summer months (moderate)
-            for month in [5, 6, 7]:  # Jun, Jul, Aug
-                profiles_custom[month, :] = 150.0
-            # Spring/Fall (lower)
-            for month in [2, 3, 4, 8, 9, 10]:
-                profiles_custom[month, :] = 200.0
-
-            model_seasonal = MonthlyAverageLoadProfile(profiles_custom)
-
-            # Option 3: Load from external source (utility data)
-            # profiles_measured = np.load('measured_profiles.npy')
-            # model_measured = MonthlyAverageLoadProfile(profiles_measured)
             ```
 
         Notes:
-            - Profiles stored internally in kW (converted from input Watts)
-            - No validation of value ranges (negative loads allowed but illogical)
-            - Profile array is NOT copied (stores reference for efficiency)
+            - Profiles stored internally in kW (converted from input Watts).
+            - When monthly_avg_kwh is used, the resulting flat per-hour load in
+              Watts is ``monthly_avg_kwh[m] * 1000 / (MONTH_LENGTHS[m] * 24)``.
+            - The ``monthly_avg_kwh`` attribute is set only when that interface
+              is used; it is not back-calculated from ``monthly_profiles_w``.
         """
-        if monthly_profiles_w.shape != (12, 24):
-            raise ValueError("monthly_profiles_w must have shape (12, 24)")
-        self.monthly_profiles_kw = monthly_profiles_w / 1000.0
+        if monthly_avg_kwh is not None and monthly_profiles_w is not None:
+            raise ValueError(
+                "Provide either monthly_profiles_w or monthly_avg_kwh, not both."
+            )
+        if monthly_avg_kwh is not None:
+            if len(monthly_avg_kwh) != 12:
+                raise ValueError("monthly_avg_kwh must have exactly 12 elements.")
+            profiles_w = np.zeros((12, 24), dtype=float)
+            for m, kwh in enumerate(monthly_avg_kwh):
+                hours_in_month = MONTH_LENGTHS[m] * 24
+                profiles_w[m, :] = kwh * 1000.0 / hours_in_month
+            self.monthly_avg_kwh: Optional[List[float]] = list(monthly_avg_kwh)
+            self.monthly_profiles_kw = profiles_w / 1000.0
+        elif monthly_profiles_w is not None:
+            if monthly_profiles_w.shape != (12, 24):
+                raise ValueError("monthly_profiles_w must have shape (12, 24)")
+            self.monthly_avg_kwh = None
+            self.monthly_profiles_kw = monthly_profiles_w / 1000.0
+        else:
+            raise ValueError(
+                "One of monthly_profiles_w or monthly_avg_kwh must be provided."
+            )
 
     def get_hourly_load_kw(
         self,

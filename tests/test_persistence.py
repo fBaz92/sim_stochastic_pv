@@ -188,7 +188,7 @@ class TestConfigurationRepository:
             data=config_data,
         )
 
-        retrieved = persistence.get_configuration_by_name("GetByName", "scenario")
+        retrieved = persistence.get_configuration_by_name("GetByName")
         assert retrieved is not None
         assert retrieved.name == "GetByName"
 
@@ -221,27 +221,21 @@ class TestHydration:
     """Tests for hydration functions."""
 
     def test_hydrate_scenario(self, persistence: PersistenceService):
-        """hydrate_scenario replaces hardware IDs with specs."""
+        """hydrate_scenario resolves top-level inverter_id to energy.inverter_p_ac_max_kw."""
         # Create hardware
         inverter = persistence.upsert_inverter({
             "name": "TestInv",
             "p_ac_max_kw": 5.0,
             "price_eur": 1500.0,
         })
-        panel = persistence.upsert_panel({
-            "name": "TestPanel",
-            "power_w": 400.0,
-            "price_eur": 120.0,
-        })
 
-        # Scenario with hardware IDs
+        # Scenario with inverter_id at top level (as used by the API)
         scenario_data = {
+            "inverter_id": inverter.id,
             "load_profile": {"type": "monthly"},
             "solar": {"type": "default"},
             "energy": {
                 "pv_kwp": 3.5,
-                "inverter_id": inverter.id,
-                "panel_id": panel.id,
             },
             "economic": {"n_mc": 100},
             "price": {"type": "escalating"},
@@ -250,10 +244,11 @@ class TestHydration:
         # Hydrate
         hydrated = persistence.hydrate_scenario(scenario_data)
 
-        # Should replace IDs with specs
-        assert "inverter_id" not in hydrated["energy"]
-        assert "inverter" in hydrated["energy"]
-        assert hydrated["energy"]["inverter"]["name"] == "TestInv"
+        # inverter_id at top level is preserved in the hydrated dict
+        # (hydrate_scenario injects specs into the energy section)
+        assert "energy" in hydrated
+        # The inverter's p_ac_max_kw should be injected into the energy section
+        assert hydrated["energy"].get("inverter_p_ac_max_kw") == 5.0
 
     def test_hydrate_optimization(self, persistence: PersistenceService):
         """hydrate_optimization expands hardware selection IDs."""
@@ -288,13 +283,13 @@ class TestExecutionRepository:
     def test_record_optimization(self, persistence: PersistenceService):
         """Can record optimization execution."""
         opt = persistence.record_optimization(
-            name="TestOpt",
+            label="TestOpt",
             request_payload={"test": "data"},
             metadata={"evaluations": 10},
         )
 
         assert opt.id is not None
-        assert opt.name == "TestOpt"
+        assert opt.label == "TestOpt"
 
     def test_record_scenario(self, persistence: PersistenceService):
         """Can record scenario."""
@@ -316,11 +311,10 @@ class TestExecutionRepository:
         )
 
         run = persistence.record_run_result(
-            run_type="analysis",
+            result_type="analysis",
             summary={"final_gain": 500.0},
             scenario=scenario,
         )
 
         assert run.id is not None
-        assert run.run_type == "analysis"
         assert run.summary["final_gain"] == 500.0

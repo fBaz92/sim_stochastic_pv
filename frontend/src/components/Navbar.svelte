@@ -14,13 +14,17 @@
             <li>
                 <a
                     href="#/scenario"
-                    class:active={$currentRoute === "/scenario"}>Scenario</a
+                    class:active={$currentRoute === "/scenario"}
+                    title="Analizza UNA configurazione di impianto"
+                    >Scenario</a
                 >
             </li>
             <li>
                 <a
                     href="#/campaign"
-                    class:active={$currentRoute === "/campaign"}>Campaign</a
+                    class:active={$currentRoute === "/campaign"}
+                    title="Esplora più configurazioni per trovare il design ottimale"
+                    >Campagna</a
                 >
             </li>
             <li>

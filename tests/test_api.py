@@ -111,6 +111,7 @@ def test_save_and_run_scenario_with_ids(persistence: PersistenceService):
             "economic": {
                 "n_mc": 1,
                 "investment_eur": 6000.0,
+                "n_years": 20,
             },
         },
     }
@@ -148,10 +149,10 @@ def test_save_and_run_campaign_with_ids(persistence: PersistenceService):
         json={"name": "Bat1", "capacity_kwh": 5.0, "cycles_life": 5000, "price_eur": 5000.0},
     ).json()
 
-    # Create a campaign with hardware IDs
+    # Create an optimization with hardware IDs
     campaign_config = {
         "name": "Test Campaign with IDs",
-        "config_type": "campaign",
+        "config_type": "optimization",
         "data": {
             "hardware_selections": {
                 "inverter_ids": [inv1["id"], inv2["id"]],
@@ -193,8 +194,8 @@ def test_save_and_run_campaign_with_ids(persistence: PersistenceService):
     assert save_resp.status_code == 200
     saved = save_resp.json()
 
-    # Run the saved campaign - it should hydrate hardware from DB
-    run_resp = client.post(f"/api/campaigns/{saved['id']}/run?seed=123&n_mc=1")
+    # Run the saved campaign (optimization) - it should hydrate hardware from DB
+    run_resp = client.post(f"/api/optimizations/{saved['id']}/run?seed=123&n_mc=1")
     assert run_resp.status_code == 200
     result = run_resp.json()
     assert result["evaluations"] > 0
@@ -225,7 +226,7 @@ def test_hardware_updates_propagate_to_saved_scenarios(persistence: PersistenceS
             "solar": {"pv_kwp": 3.0},
             "energy": {"n_years": 20, "pv_kwp": 3.0},
             "price": {"base_price_eur_per_kwh": 0.20},
-            "economic": {"n_mc": 1},
+            "economic": {"n_mc": 1, "n_years": 20},
         },
     }
     save_resp = client.post("/api/configurations", json=scenario_config)

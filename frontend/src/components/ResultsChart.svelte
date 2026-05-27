@@ -1,5 +1,5 @@
 <script>
-    import { onMount } from 'svelte';
+    import { onMount, onDestroy } from 'svelte';
     import Chart from 'chart.js/auto';
 
     export let type = 'bar';
@@ -8,6 +8,7 @@
 
     let canvas;
     let chart;
+    let mounted = false;
 
     onMount(() => {
         const ctx = canvas.getContext('2d');
@@ -20,13 +21,27 @@
                 ...options
             }
         });
-
-        return () => {
-            if (chart) chart.destroy();
-        };
+        mounted = true;
     });
-    
-    // Watch for data changes if needed, but for now assumption is static mount
+
+    onDestroy(() => {
+        if (chart) chart.destroy();
+    });
+
+    // Reactivity: when ``data`` (or options) change after mount,
+    // mutate the chart in place rather than recreating it. This lets
+    // consumers drive live previews (Phase 10) cheaply.
+    $: if (mounted && chart && data) {
+        chart.data = data;
+        // Some option subtrees (e.g. legend filters) are read on render,
+        // so reassigning the whole config is the safest path.
+        chart.options = {
+            responsive: true,
+            maintainAspectRatio: false,
+            ...options,
+        };
+        chart.update('none');
+    }
 </script>
 
 <div class="chart-container">

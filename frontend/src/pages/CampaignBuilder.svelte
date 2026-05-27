@@ -225,7 +225,13 @@
 
 <div class="container">
     <div class="header">
-        <h1>Campaign Builder</h1>
+        <h1>Campagna — esplorazione di design</h1>
+        <p class="page-subtitle">
+            Confronta più alternative di impianto (PV, batteria, inverter)
+            per individuare la configurazione ottimale. Per analizzare un
+            <em>singolo</em> impianto già definito usa la pagina
+            <a href="#/scenario">Scenario</a>.
+        </p>
         <div class="header-actions">
             <div class="load-group">
                 <select class="select sm" bind:value={selectedSavedCampaignId}>
@@ -424,3 +430,11 @@
         </div>
     {/if}
 </div>
+
+<style>
+    .page-subtitle {
+        color: var(--color-text-secondary);
+        margin-top: 0.25rem;
+        font-size: 0.95rem;
+    }
+</style>

@@ -8,7 +8,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Tuple
+from typing import Callable, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -155,6 +155,18 @@ class MonteCarloResults:
             - soh_p95: 95th percentile SoH (best case)
             Shape: (n_months, 6 columns)
 
+        df_price: Electricity price statistics over the Monte Carlo run
+            (DataFrame). One row per simulation month with mean and tail
+            percentiles of the price drawn from the underlying price model.
+            Columns:
+            - month_index, year, month_in_year: Time indices
+            - price_mean_eur_per_kwh: Mean price across all paths (EUR/kWh)
+            - price_p05_eur_per_kwh: 5th percentile (pessimistic tail)
+            - price_p95_eur_per_kwh: 95th percentile (optimistic tail)
+            Shape: (n_months, 6 columns). For deterministic price models
+            (legacy ``EscalatingPriceModel`` with stochastic flag off, or
+            GBM with volatility=0) the three series coincide.
+
         monthly_savings_eur_paths: Raw monthly savings for each path (ndarray).
             Nominal EUR savings per month per Monte Carlo path.
             Shape: (n_mc, n_months). Useful for custom statistical analysis.
@@ -166,6 +178,13 @@ class MonteCarloResults:
         monthly_load_kwh_paths: Monthly electricity consumption (ndarray).
             Total load per month per path. Shape: (n_mc, n_months).
             Varies stochastically due to occupancy patterns.
+
+        price_paths_eur_per_kwh: Raw electricity price paths (ndarray).
+            One row per Monte Carlo path, one column per simulation month.
+            Shape: (n_mc, n_months). Captures the full stochastic price
+            trajectory of every path, enabling downstream consumers to
+            draw fan charts, compute custom percentiles, or sample a
+            handful of representative trajectories for visualisation.
 
         irr_annual_paths: Annual IRR for each simulation path (ndarray).
             Internal rate of return (annualized) for each path.
@@ -215,6 +234,8 @@ class MonteCarloResults:
     monthly_savings_real_eur_paths: np.ndarray
     monthly_load_kwh_paths: np.ndarray
     irr_annual_paths: np.ndarray
+    df_price: Optional[pd.DataFrame] = None
+    price_paths_eur_per_kwh: Optional[np.ndarray] = None
 
 
 class MonteCarloSimulator:
@@ -474,6 +495,10 @@ class MonteCarloSimulator:
         savings_eur_paths = np.zeros((n_mc, n_months))
         savings_real_eur_paths = np.zeros((n_mc, n_months))
         load_kwh_paths = np.zeros((n_mc, n_months))
+        # Capture the price drawn from the price model for every (path, month):
+        # this is what makes the fan chart of simulated prices in the UI
+        # possible (Phase 3 of the roadmap).
+        price_paths = np.zeros((n_mc, n_months))
 
         profit_cum_real_paths = np.zeros((n_mc, n_months))
         soh_paths = np.zeros((n_mc, n_months))
@@ -519,6 +544,7 @@ class MonteCarloSimulator:
                 year = m // 12
                 month_in_year_idx = m % 12
                 price = self.price_model.get_price(year, month_in_year_idx)
+                price_paths[i, m] = price
                 monthly_savings_eur[m] = monthly_savings_kwh[m] * price
 
             profit_cum = -cfg.investment_eur + np.cumsum(monthly_savings_eur)
@@ -643,14 +669,30 @@ class MonteCarloSimulator:
             }
         )
 
+        # Phase 3 — price path statistics (mean ± p05/p95) per simulation
+        # month. For deterministic price models the three columns coincide.
+        price_mean, price_p05, price_p95 = stats(price_paths)
+        df_price = pd.DataFrame(
+            {
+                "month_index": months,
+                "year": years,
+                "month_in_year": month_in_year,
+                "price_mean_eur_per_kwh": price_mean,
+                "price_p05_eur_per_kwh": price_p05,
+                "price_p95_eur_per_kwh": price_p95,
+            }
+        )
+
         return MonteCarloResults(
             df_profit=df_profit,
             df_energy=df_energy,
             df_soc=df_soc,
             df_soh=df_soh,
+            df_price=df_price,
             monthly_savings_eur_paths=savings_eur_paths,
             monthly_savings_real_eur_paths=savings_real_eur_paths,
             monthly_load_kwh_paths=load_kwh_paths,
+            price_paths_eur_per_kwh=price_paths,
             irr_annual_paths=irr_annual_paths,
         )
 

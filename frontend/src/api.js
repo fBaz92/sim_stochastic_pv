@@ -39,6 +39,19 @@ export const api = {
         return request('/profiles/price', { method: 'POST', body: JSON.stringify(data) });
     },
 
+    // Phase 10: Monte Carlo preview of a price profile (fan chart in DB UI)
+    async previewPriceProfileById(id, { n_paths = 200, n_years = 20, seed = 42 } = {}) {
+        const q = new URLSearchParams({ n_paths, n_years, seed }).toString();
+        return request(`/profiles/price/${id}/preview?${q}`);
+    },
+    async previewPriceParameters(payload, { n_paths = 200, n_years = 20, seed = 42 } = {}) {
+        const q = new URLSearchParams({ n_paths, n_years, seed }).toString();
+        return request(`/profiles/price/preview?${q}`, {
+            method: 'POST',
+            body: JSON.stringify(payload),
+        });
+    },
+
     // Configurations
     async listConfigurations(type) {
         const url = type ? `/configurations?type=${type}` : '/configurations';
@@ -78,6 +91,9 @@ export const api = {
         if (seed !== undefined) queryParams.append('seed', seed);
         if (n_mc !== undefined) queryParams.append('n_mc', n_mc);
         const query = queryParams.toString() ? `?${queryParams.toString()}` : '';
+        // Phase 7: backend exposes both `/campaigns/{id}/run` (preferred) and
+        // the legacy `/optimizations/{id}/run` as aliases. We hit the new
+        // path for terminology consistency with the rest of the UI.
         return request(`/campaigns/${campaignId}/run${query}`, { method: 'POST' });
     },
 

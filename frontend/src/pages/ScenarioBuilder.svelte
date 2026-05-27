@@ -12,6 +12,13 @@
     let batteries = [];
     // let panels = []; // Assuming we might want to pick panels later, but currently ScenarioBuilder uses simple pv_kwp
 
+    // Load profiles available in the DB. Selecting one of them switches the
+    // form into "use a saved profile" mode (Phase 8): the home/away inline
+    // editor disappears, replaced by a read-only summary; min/max days_home
+    // remain editable because they describe how the user *uses* the building.
+    let loadProfiles = [];
+    let selectedLoadProfileId = ""; // "" means "inline custom"
+
     // Selection state
     let selectedInverterIndex = -1;
     let selectedBatteryIndex = -1;
@@ -40,6 +47,7 @@
                 Array(24).fill(100),
             ),
             min_days_home: Array(12).fill(25),
+            max_days_home: Array(12).fill(28),
         },
         solar: {
             pv_kwp: 3.0,
@@ -66,21 +74,83 @@
         },
     };
 
-    // Load hardware on mount
+    // Load hardware + load profiles + saved scenarios on mount
     onMount(async () => {
         try {
-            const [inv, bat, configs] = await Promise.all([
+            const [inv, bat, lp, configs] = await Promise.all([
                 api.listInverters(),
                 api.listBatteries(),
+                api.listLoadProfiles(),
                 api.listConfigurations("scenario"),
             ]);
             inverters = inv;
             batteries = bat;
+            loadProfiles = lp;
             savedScenarios = configs;
         } catch (e) {
             console.error(e);
         }
     });
+
+    /**
+     * Friendly summary line for a load profile in the dropdown / preview.
+     * Shape varies by profile_type — keep it tolerant.
+     */
+    function describeLoadProfile(item) {
+        if (!item) return "";
+        if (item.profile_type === "home_away") {
+            const homeKind = item.data?.home?.type === "arera"
+                ? "ARERA"
+                : item.data?.home?.monthly_24h_w
+                  ? "24h"
+                  : "media mensile";
+            const awayKind = item.data?.away?.type === "arera"
+                ? "ARERA"
+                : item.data?.away?.monthly_24h_w
+                  ? "24h"
+                  : "media mensile";
+            return `${item.name} — home: ${homeKind}, away: ${awayKind}`;
+        }
+        return `${item.name} (${item.profile_type})`;
+    }
+
+    /**
+     * Build the actual payload's load_profile slot.
+     *
+     * Two modes:
+     *   1. A saved profile is selected → drop the inline ``load_profile``
+     *      block and put ``load_profile_id`` at scenario root + lift
+     *      min/max days_home there (the new mental model from Phase 8).
+     *   2. No saved profile selected → keep the legacy inline block as-is,
+     *      after the small ``custom_24h`` → ``custom`` mapping the
+     *      backend expects.
+     *
+     * Mutates and returns the provided scenario clone for convenience.
+     */
+    function applyLoadProfileToPayload(scenarioClone) {
+        if (selectedLoadProfileId) {
+            // Saved profile mode
+            scenarioClone.load_profile_id = Number(selectedLoadProfileId);
+            // Lift days arrays to scenario root (new schema)
+            scenarioClone.min_days_home = scenarioClone.load_profile.min_days_home;
+            scenarioClone.max_days_home = scenarioClone.load_profile.max_days_home;
+            // Drop the inline load_profile block — hydration will fill it
+            delete scenarioClone.load_profile;
+        } else {
+            // Inline custom mode — pre-existing logic
+            if (scenarioClone.load_profile.home_profile_type === "custom_24h") {
+                scenarioClone.load_profile.home_profile_type = "custom";
+                scenarioClone.load_profile.home_profiles_w =
+                    scenarioClone.load_profile.home_profiles_24h;
+            }
+            if (scenarioClone.load_profile.away_profile === "custom_24h") {
+                scenarioClone.load_profile.away_profile = "custom";
+                scenarioClone.load_profile.away_profiles_w =
+                    scenarioClone.load_profile.away_profiles_24h;
+            }
+        }
+        return scenarioClone;
+    }
 
     // Cost Calculation Logic - Removed as per new code
     // $: {
@@ -159,19 +229,9 @@
             // Note: $state objects can be cloned via structuredClone or JSON parse/stringify
             const finalScenario = JSON.parse(JSON.stringify(scenario));
 
-            // Map the selected profile data to the 'home_profiles_w' field expected by backend
-            if (finalScenario.load_profile.home_profile_type === "custom_24h") {
-                finalScenario.load_profile.home_profile_type = "custom";
-                // Backend expects (12, 24) array or (12,) or (24,).
-                // Our new home_profiles_24h is (12, 24).
-                finalScenario.load_profile.home_profiles_w =
-                    scenario.load_profile.home_profiles_24h;
-            }
-            if (finalScenario.load_profile.away_profile === "custom_24h") {
-                finalScenario.load_profile.away_profile = "custom";
-                finalScenario.load_profile.away_profiles_w =
-                    scenario.load_profile.away_profiles_24h;
-            }
+            // Phase 8: route either to "saved profile" mode (load_profile_id)
+            // or to the inline custom block, depending on the dropdown choice.
+            applyLoadProfileToPayload(finalScenario);
 
             const payload = {
                 n_mc: scenario.economic.n_mc,
@@ -248,6 +308,9 @@
             // Build scenario data with hardware IDs instead of embedded values
             const scenarioData = JSON.parse(JSON.stringify(scenario));
 
+            // Phase 8: same routing as handleRun — saved profile vs inline.
+            applyLoadProfileToPayload(scenarioData);
+
             // Add hardware IDs to the scenario data for database-driven workflow
             if (selectedInverterId) {
                 scenarioData.inverter_id = selectedInverterId;
@@ -277,7 +340,12 @@
 
 <div class="container">
     <div class="header">
-        <h1 class="page-title">Scenario Builder</h1>
+        <h1 class="page-title">Scenario — analisi di una configurazione</h1>
+        <p class="page-subtitle">
+            Valuta l'economia di <strong>un</strong> impianto specifico
+            (inverter, batteria, kWp scelti). Per esplorare più alternative
+            di design vai sulla pagina <a href="#/campaign">Campagna</a>.
+        </p>
         <div class="header-actions">
             <div
                 class="load-group"
@@ -351,78 +419,128 @@
         <!-- Column 1 -->
         <div class="col">
             <div class="card section">
-                <h2 class="section-title">Load Profiles</h2>
+                <h2 class="section-title">Profilo di carico</h2>
 
-                <!-- Home Profile -->
+                <!-- Phase 8: pick a saved load profile from the DB or stay in
+                     inline-custom mode. The inline editor is hidden when a
+                     saved profile is selected; only days at home remain
+                     editable because they belong to the scenario. -->
                 <div class="form-group">
-                    <label class="label" for="scenario-home-profile-type"
-                        >Home Profile Type</label
+                    <label class="label" for="scenario-load-profile-id"
+                        >Profilo dal database</label
                     >
                     <select
-                        id="scenario-home-profile-type"
+                        id="scenario-load-profile-id"
                         class="select"
-                        bind:value={scenario.load_profile.home_profile_type}
+                        bind:value={selectedLoadProfileId}
                     >
-                        <option value="arera">ARERA (Standard)</option>
-                        <option value="custom">Flat Monthly Average (W)</option>
-                        <option value="custom_24h"
-                            >Custom 24h Profile (W)</option
+                        <option value=""
+                            >Custom (definito qui sotto)</option
                         >
+                        {#each loadProfiles as lp}
+                            <option value={String(lp.id)}
+                                >{describeLoadProfile(lp)}</option
+                            >
+                        {/each}
                     </select>
+                    <p class="hint">
+                        Un profilo salvato descrive come consumi <em>quando sei
+                        a casa</em> e <em>quando sei via</em>. Quanti giorni
+                        sei effettivamente a casa lo decidi qui sotto.
+                    </p>
                 </div>
-                {#if scenario.load_profile.home_profile_type === "custom"}
-                    <MonthInput
-                        label="Monthly Power (W)"
-                        bind:values={scenario.load_profile.home_profiles_w}
-                    />
-                {:else if scenario.load_profile.home_profile_type === "custom_24h"}
-                    <MonthlyProfileEditor
-                        label="Home 24h Profile (W)"
-                        bind:values={scenario.load_profile.home_profiles_24h}
-                    />
-                {/if}
 
-                <!-- Away Profile -->
-                {#if scenario.load_profile.home_profile_type !== "arera"}
-                    <!-- Show Away profile options only if user might want to customize, or always show?
-                     Usually 'Away' is simpler, but user asked for flexibility.
-                     Let's keep it visible.
-                -->
-                {/if}
-
-                <div class="form-group" style="margin-top: 1rem;">
-                    <label class="label" for="scenario-away-profile-type"
-                        >Away Profile Type</label
-                    >
-                    <select
-                        id="scenario-away-profile-type"
-                        class="select"
-                        bind:value={scenario.load_profile.away_profile}
-                    >
-                        <option value="arera">ARERA (Standard)</option>
-                        <option value="custom">Flat Monthly Average (W)</option>
-                        <option value="custom_24h"
-                            >Custom 24h Profile (W)</option
+                {#if !selectedLoadProfileId}
+                    <!-- Inline custom editor (legacy path) -->
+                    <div class="form-group">
+                        <label class="label" for="scenario-home-profile-type"
+                            >Home Profile Type</label
                         >
-                    </select>
-                </div>
-                {#if scenario.load_profile.away_profile === "custom"}
-                    <MonthInput
-                        label="Monthly Power (W)"
-                        bind:values={scenario.load_profile.away_profiles_w}
-                    />
-                {:else if scenario.load_profile.away_profile === "custom_24h"}
-                    <MonthlyProfileEditor
-                        label="Away 24h Profile (W)"
-                        bind:values={scenario.load_profile.away_profiles_24h}
-                    />
+                        <select
+                            id="scenario-home-profile-type"
+                            class="select"
+                            bind:value={scenario.load_profile.home_profile_type}
+                        >
+                            <option value="arera">ARERA (Standard)</option>
+                            <option value="custom"
+                                >Flat Monthly Average (W)</option
+                            >
+                            <option value="custom_24h"
+                                >Custom 24h Profile (W)</option
+                            >
+                        </select>
+                    </div>
+                    {#if scenario.load_profile.home_profile_type === "custom"}
+                        <MonthInput
+                            label="Monthly Power (W)"
+                            bind:values={scenario.load_profile.home_profiles_w}
+                        />
+                    {:else if scenario.load_profile.home_profile_type === "custom_24h"}
+                        <MonthlyProfileEditor
+                            label="Home 24h Profile (W)"
+                            bind:values={scenario.load_profile.home_profiles_24h}
+                        />
+                    {/if}
+
+                    <div class="form-group" style="margin-top: 1rem;">
+                        <label class="label" for="scenario-away-profile-type"
+                            >Away Profile Type</label
+                        >
+                        <select
+                            id="scenario-away-profile-type"
+                            class="select"
+                            bind:value={scenario.load_profile.away_profile}
+                        >
+                            <option value="arera">ARERA (Standard)</option>
+                            <option value="custom"
+                                >Flat Monthly Average (W)</option
+                            >
+                            <option value="custom_24h"
+                                >Custom 24h Profile (W)</option
+                            >
+                        </select>
+                    </div>
+                    {#if scenario.load_profile.away_profile === "custom"}
+                        <MonthInput
+                            label="Monthly Power (W)"
+                            bind:values={scenario.load_profile.away_profiles_w}
+                        />
+                    {:else if scenario.load_profile.away_profile === "custom_24h"}
+                        <MonthlyProfileEditor
+                            label="Away 24h Profile (W)"
+                            bind:values={scenario.load_profile.away_profiles_24h}
+                        />
+                    {/if}
+                {:else}
+                    <!-- Read-only summary of the chosen DB profile -->
+                    <div class="card subtle preview">
+                        <strong>Profilo selezionato:</strong>
+                        {describeLoadProfile(
+                            loadProfiles.find(
+                                (p) => String(p.id) === selectedLoadProfileId,
+                            ),
+                        )}
+                        <p class="hint">
+                            Per modificare i pattern home/away apri la pagina
+                            <em>Database → Load Profiles</em>.
+                        </p>
+                    </div>
                 {/if}
 
                 <div class="divider"></div>
                 <MonthInput
-                    label="Min Days Home / Month"
+                    label="Giorni minimi a casa / mese"
                     bind:values={scenario.load_profile.min_days_home}
                 />
+                <MonthInput
+                    label="Giorni massimi a casa / mese"
+                    bind:values={scenario.load_profile.max_days_home}
+                />
+                <p class="hint">
+                    Per ogni mese il simulatore estrae uniformemente un numero
+                    di giorni a casa nell'intervallo [min, max], poi sceglie
+                    casualmente <em>quali</em> giorni.
+                </p>
             </div>
 
             <div class="card section">
@@ -668,3 +786,24 @@
         </div>
     </div>
 </div>
+
+<style>
+    .page-subtitle {
+        color: var(--color-text-secondary);
+        margin-top: 0.25rem;
+        font-size: 0.95rem;
+    }
+    .hint {
+        color: var(--color-text-secondary);
+        font-size: 0.85rem;
+        margin-top: 0.25rem;
+    }
+    .subtle {
+        background: var(--color-bg-secondary, #f8f9fa);
+        border: 1px dashed var(--color-border, #e2e8f0);
+    }
+    .preview {
+        padding: 0.75rem 1rem;
+        margin-bottom: 0.75rem;
+    }
+</style>

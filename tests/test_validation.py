@@ -123,17 +123,22 @@ class TestValidateScenario:
         errors = validate_scenario(scenario)
         assert any("economic.n_years must be positive" in e for e in errors)
 
-    def test_price_validation(self):
-        """Price section validation."""
+    def test_price_validation_empty_block_defaults_to_escalating(self):
+        """
+        Phase 2: an empty ``price`` block is legal — the scenario builder
+        defaults to ``model_type='escalating'``. The validator should NOT
+        report errors against the price block in this case.
+        """
         scenario = {
             "load_profile": {"type": "home_away"},
             "solar": {"type": "default"},
             "energy": {"pv_kwp": 3.5},
             "economic": {"n_mc": 100},
-            "price": {},  # Missing type
+            "price": {},
         }
         errors = validate_scenario(scenario)
-        assert any("price.type is required" in e for e in errors)
+        price_errors = [e for e in errors if e.lower().startswith("price")]
+        assert price_errors == []
 
 
 class TestValidateOptimization:
@@ -313,3 +318,58 @@ class TestValidateOptimization:
         assert any("Missing required section" in e for e in errors)
         assert any("inverter_options cannot be empty" in e for e in errors)
         assert any("panel_options must be a list" in e for e in errors)
+
+
+class TestValidatePriceModel:
+    """Tests for validate_scenario's dispatch on price.model_type (Phase 2)."""
+
+    def _scenario_with_price(self, price_block: dict) -> dict:
+        return {
+            "load_profile": {"type": "home_away"},
+            "solar": {"type": "default"},
+            "energy": {"pv_kwp": 3.0},
+            "economic": {"n_mc": 50, "n_years": 20},
+            "price": price_block,
+        }
+
+    def test_unknown_price_model_type_is_rejected(self):
+        scenario = self._scenario_with_price({"model_type": "garch"})
+        errors = validate_scenario(scenario)
+        assert any("model_type='garch'" in e for e in errors)
+
+    def test_gbm_negative_volatility_is_rejected(self):
+        scenario = self._scenario_with_price(
+            {"model_type": "gbm", "volatility_annual": -0.01}
+        )
+        errors = validate_scenario(scenario)
+        assert any("volatility_annual" in e for e in errors)
+
+    def test_ou_requires_mean_reversion_speed(self):
+        scenario = self._scenario_with_price({"model_type": "mean_reverting"})
+        errors = validate_scenario(scenario)
+        assert any("mean_reversion_speed_annual is required" in e for e in errors)
+
+    def test_ou_rejects_negative_long_term_price(self):
+        scenario = self._scenario_with_price(
+            {
+                "model_type": "mean_reverting",
+                "mean_reversion_speed_annual": 0.3,
+                "long_term_price_eur_per_kwh": -0.1,
+            }
+        )
+        errors = validate_scenario(scenario)
+        assert any("long_term_price_eur_per_kwh" in e for e in errors)
+
+    def test_valid_gbm_block_passes(self):
+        scenario = self._scenario_with_price(
+            {
+                "model_type": "gbm",
+                "base_price_eur_per_kwh": 0.25,
+                "drift_annual": 0.025,
+                "volatility_annual": 0.10,
+            }
+        )
+        errors = validate_scenario(scenario)
+        # Only the unrelated load_profile/solar/price.type errors are allowed
+        price_errors = [e for e in errors if "price" in e.lower()]
+        assert price_errors == []

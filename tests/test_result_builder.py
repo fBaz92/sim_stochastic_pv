@@ -65,14 +65,26 @@ def _make_stub_evaluation() -> ScenarioEvaluation:
             "soh_p95": [1.0],
         }
     )
+    df_price = pd.DataFrame(
+        {
+            "month_index": [0],
+            "year": [0],
+            "month_in_year": [0],
+            "price_mean_eur_per_kwh": [0.25],
+            "price_p05_eur_per_kwh": [0.24],
+            "price_p95_eur_per_kwh": [0.26],
+        }
+    )
     results = MonteCarloResults(
         df_profit=df_profit,
         df_energy=df_energy,
         df_soc=df_soc,
         df_soh=df_soh,
+        df_price=df_price,
         monthly_savings_eur_paths=np.zeros((1, 1)),
         monthly_savings_real_eur_paths=np.zeros((1, 1)),
         monthly_load_kwh_paths=np.zeros((1, 1)),
+        price_paths_eur_per_kwh=np.full((1, 1), 0.25),
         irr_annual_paths=np.array([0.05]),
     )
     econ_cfg = EconomicConfig(investment_eur=500.0, n_mc=1)
@@ -106,7 +118,7 @@ def test_result_builder_build_analysis(tmp_path, monkeypatch):
     def fake_generate_report(**kwargs):
         return fake_dir
 
-    monkeypatch.setattr("sim_stochastic_pv.result_builder.generate_report", fake_generate_report)
+    monkeypatch.setattr("sim_stochastic_pv.output.result_builder.generate_report", fake_generate_report)
     output = builder.build_analysis(
         "scenario-test",
         results=evaluation.results,
@@ -123,16 +135,16 @@ def test_result_builder_build_optimization_bundle(tmp_path, monkeypatch):
     price_model = EscalatingPriceModel()
     builder = ResultBuilder(output_root=tmp_path)
 
-    monkeypatch.setattr("sim_stochastic_pv.result_builder._plot_profit_curves", lambda *args, **kwargs: None)
-    monkeypatch.setattr("sim_stochastic_pv.result_builder._plot_final_profit_distribution", lambda *a, **k: None)
-    monkeypatch.setattr("sim_stochastic_pv.result_builder._plot_break_even_vs_gain", lambda *a, **k: None)
+    monkeypatch.setattr("sim_stochastic_pv.output.result_builder._plot_profit_curves", lambda *args, **kwargs: None)
+    monkeypatch.setattr("sim_stochastic_pv.output.result_builder._plot_final_profit_distribution", lambda *a, **k: None)
+    monkeypatch.setattr("sim_stochastic_pv.output.result_builder._plot_break_even_vs_gain", lambda *a, **k: None)
 
     def fake_generate_report(**kwargs):
         output_root = Path(kwargs["output_root"])
         output_root.mkdir(parents=True, exist_ok=True)
         return output_root
 
-    monkeypatch.setattr("sim_stochastic_pv.result_builder.generate_report", fake_generate_report)
+    monkeypatch.setattr("sim_stochastic_pv.output.result_builder.generate_report", fake_generate_report)
 
     run_dir = builder.build_optimization_bundle("batch_test", [evaluation], price_model)
 

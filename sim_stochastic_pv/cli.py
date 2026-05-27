@@ -30,6 +30,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     analyze.add_argument(
         "--scenario-file",
+        "--file",
+        dest="scenario_file",
         type=str,
         default=None,
         help="Percorso a un file JSON con la definizione dello scenario",
@@ -40,6 +42,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=None,
         help="Numero di simulazioni Monte Carlo da eseguire",
     )
+    analyze.add_argument(
+        "--seed",
+        type=int,
+        default=123,
+        help="Seed RNG per la riproducibilità (default: 123)",
+    )
 
     optimize = sub.add_parser("optimize", help="Esegui ottimizzazione multi scenario")
     optimize.add_argument(
@@ -49,6 +57,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     optimize.add_argument(
         "--scenario-file",
+        "--file",
+        dest="scenario_file",
         type=str,
         default=None,
         help="Percorso a un file JSON con la definizione dello scenario",
@@ -58,6 +68,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Numero di simulazioni Monte Carlo per scenario durante l'ottimizzazione",
+    )
+    optimize.add_argument(
+        "--seed",
+        type=int,
+        default=123,
+        help="Seed RNG per la riproducibilità (default: 123)",
     )
 
     # Hardware management
@@ -309,9 +325,23 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.command == "analyze":
         if app.save_outputs and app.result_builder is None:
             app.result_builder = ResultBuilder()
+        scenario_path = getattr(args, "scenario_file", None)
+        if scenario_path:
+            scenario_data = _load_json_file(scenario_path)
+            # Validate before running so errors are reported with exit code 1
+            from .validation import validate_scenario
+            errors = validate_scenario(scenario_data)
+            if errors:
+                print("❌ Errori di configurazione:", file=sys.stderr)
+                for err in errors:
+                    print(f"  • {err}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            scenario_data = None
         summary = app.run_analysis(
             n_mc=getattr(args, "n_mc", None),
-            scenario_data=getattr(args, "scenario_file", None),
+            seed=getattr(args, "seed", 123),
+            scenario_data=scenario_data,
         )
         _print_json(summary)
         return
@@ -319,9 +349,23 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.command == "optimize":
         if app.save_outputs and app.result_builder is None:
             app.result_builder = ResultBuilder()
+        scenario_path = getattr(args, "scenario_file", None)
+        if scenario_path:
+            scenario_data = _load_json_file(scenario_path)
+            # Validate before running so errors are reported with exit code 1
+            from .validation import validate_optimization
+            errors = validate_optimization(scenario_data)
+            if errors:
+                print("❌ Errori di configurazione:", file=sys.stderr)
+                for err in errors:
+                    print(f"  • {err}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            scenario_data = None
         summary = app.run_optimization(
             n_mc=getattr(args, "n_mc", None),
-            scenario_data=getattr(args, "scenario_file", None),
+            seed=getattr(args, "seed", 123),
+            scenario_data=scenario_data,
         )
         _print_json(summary)
         return
