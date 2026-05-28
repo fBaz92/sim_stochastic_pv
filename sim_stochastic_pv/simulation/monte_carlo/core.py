@@ -6,9 +6,9 @@ from __future__ import annotations
 
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional, Tuple
+from typing import Callable, Literal, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -19,6 +19,142 @@ from ..energy_simulator import EnergySystemSimulator
 from ..prices import PriceModel
 
 from .finance import _npv, _compute_irr_monthly, _compute_irr_annual
+
+
+@dataclass
+class TaxBonusConfig:
+    """
+    Tax bonus configuration for PV system economic analysis (Phase 11).
+
+    Models the Italian "Detrazione fiscale" (tax credit) for PV
+    investments: a fraction of the upfront CAPEX is returned to the user
+    as an annual income for a fixed number of years. By convention each
+    yearly instalment is paid out at the end of the corresponding year
+    (December of year 1, December of year 2, ...). For the simulator,
+    this means a non-zero cash inflow at months 11, 23, 35, ...
+
+    When ``enabled=False`` (the default) the simulation behaves exactly
+    as if no bonus existed: all downstream maths is unchanged. This makes
+    the feature strictly additive and back-compatible.
+
+    Attributes:
+        enabled: Whether the tax bonus applies (bool).
+            If False, ``fraction_of_investment`` and ``duration_years``
+            are ignored entirely. Default: False.
+        fraction_of_investment: Fraction of CAPEX returned overall (float).
+            Decimal value in [0, 1]. Example: 0.50 means 50% of the
+            initial investment is returned across the bonus duration.
+            Default: 0.50 (matches Italy's standard "Detrazione 50%").
+        duration_years: Number of yearly instalments (int).
+            Italy's standard scheme spreads the bonus across 10 yearly
+            payments. Must be >= 1. If ``duration_years > n_years`` the
+            simulator silently pays only the instalments that fit within
+            the simulation horizon (no extension). Default: 10.
+
+    Example:
+        ```python
+        # Italian "Detrazione 50% in 10 anni" — the typical residential case
+        bonus = TaxBonusConfig(
+            enabled=True,
+            fraction_of_investment=0.5,
+            duration_years=10,
+        )
+
+        # Hypothetical "65% in 5 anni" scheme
+        bonus_premium = TaxBonusConfig(
+            enabled=True,
+            fraction_of_investment=0.65,
+            duration_years=5,
+        )
+        ```
+
+    Notes:
+        - Yearly instalment = ``investment_eur * fraction_of_investment
+          / duration_years``. Paid at month index ``12k - 1`` for k = 1..K.
+        - The bonus is a **nominal** cash inflow: it does not adjust to
+          inflation. The simulator divides it by the inflation factor of
+          its month (same as for energy savings) to obtain its real
+          purchasing power for the ``profit_cum_real`` series.
+        - The bonus is included in the IRR cash-flow array, so IRR and
+          break-even improve when enabled.
+        - Validation lives at the boundary (Pydantic schemas, CLI
+          validator). This dataclass trusts its inputs (CLAUDE.md §2.4).
+    """
+    enabled: bool = False
+    fraction_of_investment: float = 0.50
+    duration_years: int = 10
+
+
+@dataclass
+class InflationConfig:
+    """
+    Inflation model parameters for real return calculations (Phase 11).
+
+    Replaces the legacy scalar ``EconomicConfig.inflation_rate`` with a
+    richer object that supports both the historical deterministic regime
+    and a new path-dependent stochastic regime (Truncated Normal per year).
+    The deterministic case is preserved exactly so that pre-Phase-11 runs
+    remain byte-identical when no stochastic component is requested.
+
+    The semantics of ``mean`` are identical to the legacy ``inflation_rate``:
+    it is the **annual compounded rate** used to discount nominal cash flows
+    to present-day purchasing power. The new ``std``, ``min_clip`` and
+    ``max_clip`` are only consulted when ``mode='stochastic'``.
+
+    Attributes:
+        mode: Sampling regime for the inflation rate (string).
+            - ``'deterministic'`` (default): the same constant ``mean`` is
+              applied every year, identical to the legacy behaviour. No
+              random calls are consumed — this guarantees byte-identical
+              results with respect to runs that predate Phase 11.
+            - ``'stochastic'``: each Monte Carlo path samples one annual
+              rate per year from a Normal(``mean``, ``std``) clipped to
+              ``[min_clip, max_clip]``. The path-dependent factors are
+              applied to compute the real (inflation-adjusted) cash flow.
+        mean: Mean annual inflation rate (decimal, e.g. 0.025 = 2.5%).
+            Typical European long-run values: 0.015–0.035.
+            Default: 0.025.
+        std: Annual standard deviation of the inflation rate (decimal).
+            Only used when ``mode='stochastic'``. Set to 0.0 for a
+            deterministic-like Stochastic mode (Truncated Normal collapses
+            to a delta). Default: 0.0.
+        min_clip: Lower bound applied to each sampled annual rate (decimal).
+            Prevents extreme deflation tails. Default: -0.02 (i.e. -2%).
+        max_clip: Upper bound applied to each sampled annual rate (decimal).
+            Prevents extreme hyperinflation tails. Default: 0.10 (i.e. 10%).
+
+    Example:
+        ```python
+        # Legacy-equivalent deterministic case
+        deterministic = InflationConfig(mean=0.025)
+
+        # Realistic Euro-area volatility (≈ historical 2000–2024)
+        stochastic = InflationConfig(
+            mode='stochastic',
+            mean=0.025,
+            std=0.015,
+            min_clip=-0.01,
+            max_clip=0.08,
+        )
+        ```
+
+    Notes:
+        - ``mode='deterministic'`` is the default for backward compatibility.
+        - With ``mode='stochastic'`` and ``std=0`` you recover the
+          deterministic behaviour, but you DO consume RNG calls — prefer
+          ``mode='deterministic'`` if you don't need stochasticity at all.
+        - Annual rates are sampled once per (path, year). The same annual
+          rate is reused for all 12 months of that year — there is no
+          intra-year inflation jitter.
+        - The compounded factors are obtained by ``cumprod(1 + r_annual)``
+          and then broadcast to monthly granularity via ``np.repeat(..., 12)``.
+    """
+    mode: Literal["deterministic", "stochastic"] = "deterministic"
+    mean: float = 0.025
+    std: float = 0.0
+    min_clip: float = -0.02
+    max_clip: float = 0.10
+
 
 @dataclass
 class EconomicConfig:
@@ -53,6 +189,18 @@ class EconomicConfig:
             Typical European values: 0.015-0.035 (1.5%-3.5%).
             Real return = nominal return adjusted by this inflation.
             Default: 0.025 (2.5% per year, conservative estimate).
+            **Deprecated in Phase 11**: prefer the ``inflation`` field
+            (InflationConfig object). When both are provided ``inflation``
+            wins; when ``inflation`` is None this scalar is wrapped into
+            an ``InflationConfig(mode='deterministic', mean=inflation_rate)``
+            at simulation time. Kept here for backward compatibility with
+            JSON scenarios and code paths that predate Phase 11.
+        inflation: Rich inflation configuration (InflationConfig, optional).
+            When provided, takes precedence over ``inflation_rate``. Enables
+            the new stochastic regime (Truncated Normal annual rates) used
+            by Monte Carlo to widen the real-return p05–p95 band. When
+            None (default), the simulator falls back to ``inflation_rate``
+            and behaves exactly like pre-Phase-11 code.
 
     Example:
         ```python
@@ -91,6 +239,8 @@ class EconomicConfig:
     investment_eur: float = 2500.0
     n_mc: int = 200
     inflation_rate: float = 0.025
+    inflation: Optional[InflationConfig] = None
+    tax_bonus: Optional[TaxBonusConfig] = None
 
 
 @dataclass
@@ -279,6 +429,18 @@ class MonteCarloResults:
     break_even_month_p95: Optional[float] = None
     npv_median_eur: Optional[float] = None
     irr_mean: Optional[float] = None
+    # Phase 11 — inflation fields. Populated only when
+    # ``InflationConfig.mode='stochastic'``; remain None in deterministic
+    # runs so legacy clients that construct results by hand are unaffected.
+    inflation_annual_rates_paths: Optional[np.ndarray] = None
+    df_inflation: Optional[pd.DataFrame] = None
+    # Phase 11 — tax bonus diagnostics. ``bonus_per_month_eur`` is the
+    # sparse vector applied to every Monte Carlo path; ``tax_bonus_total_eur``
+    # is the total bonus disbursed during the simulation horizon (sum of
+    # the sparse vector). Both default to harmless values so that legacy
+    # clients which build MonteCarloResults by hand keep working.
+    bonus_per_month_eur: Optional[np.ndarray] = None
+    tax_bonus_total_eur: float = 0.0
 
 
 class MonteCarloSimulator:
@@ -428,6 +590,187 @@ class MonteCarloSimulator:
         self.price_model = price_model
         self.economic_config = economic_config
 
+    @staticmethod
+    def _build_tax_bonus_per_month(
+        cfg: EconomicConfig, n_months: int
+    ) -> np.ndarray:
+        """
+        Build the sparse monthly cash-inflow vector for the tax bonus.
+
+        When the bonus is disabled (or no TaxBonusConfig is attached to
+        ``cfg``), returns a zero vector — so the rest of the cash-flow
+        pipeline is unaffected. When enabled, places one yearly instalment
+        at the last month of each of the first ``min(duration_years,
+        n_years)`` years (month indices 11, 23, 35, ...).
+
+        Args:
+            cfg: EconomicConfig. ``investment_eur`` and ``tax_bonus`` are read.
+            n_months: Simulation horizon in months.
+
+        Returns:
+            np.ndarray of shape (n_months,), dtype float64. Zeros everywhere
+            except at month indices ``12k - 1`` for ``k = 1..K``, where
+            ``K = min(tax_bonus.duration_years, n_months // 12)``.
+
+        Notes:
+            - Total disbursed = ``investment_eur * fraction * K /
+              duration_years``. When ``duration_years <= n_years`` this
+              equals exactly ``investment_eur * fraction``.
+            - When ``duration_years > n_years`` the user loses the
+              instalments that fall outside the horizon — documented and
+              tested.
+        """
+        bonus = np.zeros(n_months)
+        tb = cfg.tax_bonus
+        if tb is None or not tb.enabled:
+            return bonus
+        n_years_in_horizon = n_months // 12
+        n_payments = min(tb.duration_years, n_years_in_horizon)
+        if n_payments <= 0:
+            return bonus
+        yearly_amount = (
+            cfg.investment_eur * tb.fraction_of_investment / tb.duration_years
+        )
+        for k in range(1, n_payments + 1):
+            bonus[k * 12 - 1] = yearly_amount
+        return bonus
+
+    @staticmethod
+    def _resolve_inflation_config(cfg: EconomicConfig) -> InflationConfig:
+        """
+        Pick the effective InflationConfig for a simulation run.
+
+        When ``cfg.inflation`` is provided it wins. Otherwise the legacy
+        scalar ``cfg.inflation_rate`` is wrapped into a deterministic
+        InflationConfig so that pre-Phase-11 scenarios keep working
+        unchanged.
+
+        Args:
+            cfg: EconomicConfig to inspect.
+
+        Returns:
+            InflationConfig: the configuration to use downstream. Never None.
+
+        Notes:
+            - In ``mode='deterministic'`` the result is byte-identical to
+              the legacy ``np.power(1 + inflation_rate, years)`` factor
+              computation (same ``mean``, no random draws).
+            - This helper does NOT consume RNG state — safe to call before
+              any path-specific RNG setup.
+        """
+        if cfg.inflation is not None:
+            return cfg.inflation
+        return InflationConfig(mode="deterministic", mean=cfg.inflation_rate)
+
+    @staticmethod
+    def _build_inflation_factors_stochastic(
+        inflation_cfg: InflationConfig,
+        rng: np.random.Generator,
+        n_mc: int,
+        n_years: int,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Pre-sample path-dependent inflation factors for all Monte Carlo paths.
+
+        Draws ``n_mc × n_years`` annual rates from a Truncated Normal
+        distribution N(mean, std) clipped to ``[min_clip, max_clip]``,
+        composes them into cumulative factors (year 0 → factor 1.0; year k
+        → product of ``(1 + r_j)`` for ``j ∈ [1..k]``), and expands the
+        result to monthly granularity by repeating each annual factor 12
+        times (no intra-year jitter).
+
+        Sampling happens **once, upfront**, before the path loop. This
+        avoids interleaving the inflation RNG with the per-path RNG used by
+        the energy/price simulators, keeping behaviour predictable and
+        easy to reason about.
+
+        Args:
+            inflation_cfg: InflationConfig with ``mode='stochastic'``. The
+                ``mean``, ``std``, ``min_clip`` and ``max_clip`` fields are
+                consulted.
+            rng: NumPy ``Generator`` used to draw the rates. Mutated.
+            n_mc: Number of Monte Carlo paths.
+            n_years: Simulation horizon in whole years.
+
+        Returns:
+            Tuple ``(annual_rates_paths, monthly_factors_paths)``:
+                - ``annual_rates_paths``: float64 array of shape
+                  ``(n_mc, n_years)`` with the clipped annual rates
+                  (decimal). Preserved verbatim for diagnostic plotting
+                  (fan chart of expected inflation).
+                - ``monthly_factors_paths``: float64 array of shape
+                  ``(n_mc, n_months)`` with cumulative factors at monthly
+                  granularity. Factor for year 0 is 1.0 for all 12 months.
+
+        Notes:
+            - "Truncated Normal" here is implemented as
+              ``np.clip(N(mean, std), min_clip, max_clip)``. This is biased
+              for very wide std vs. tight clips (mass piles up on the
+              boundaries), but acceptable for the inflation range we care
+              about. Alternative: rejection sampling via ``scipy.stats.
+              truncnorm`` — overkill for the current use case.
+            - Calling this helper consumes ``n_mc * n_years`` standard
+              normal draws from ``rng``.
+        """
+        n_months = n_years * 12
+        annual_rates = rng.normal(
+            loc=inflation_cfg.mean,
+            scale=inflation_cfg.std,
+            size=(n_mc, n_years),
+        )
+        annual_rates = np.clip(
+            annual_rates, inflation_cfg.min_clip, inflation_cfg.max_clip
+        )
+        # Cumulative factor up to and INCLUDING year k. Year 0 keeps
+        # factor 1.0 by construction (we prepend a column of ones).
+        # Note that the convention matches the deterministic helper:
+        # months in year 0 get factor 1.0, months in year 1 get (1 + r_1),
+        # months in year 2 get (1 + r_1)(1 + r_2), and so on.
+        ones_col = np.ones((n_mc, 1))
+        cumulative_year_end = np.cumprod(1.0 + annual_rates, axis=1)
+        # We want the factor that APPLIES TO year k (i.e. cumulative product
+        # up to year k-1 for k >= 1, and 1.0 for k=0). So shift by one
+        # column to the right and drop the last cumulative column.
+        cumulative_per_year = np.concatenate(
+            [ones_col, cumulative_year_end[:, :-1]], axis=1
+        )
+        monthly_factors = np.repeat(cumulative_per_year, 12, axis=1)
+        return annual_rates, monthly_factors
+
+    @staticmethod
+    def _build_inflation_factors_deterministic(
+        mean_rate: float, n_months: int
+    ) -> np.ndarray:
+        """
+        Compute deterministic cumulative inflation factors at monthly granularity.
+
+        Returns the same vector as the legacy ``np.power(1 + r, years)``
+        computation: factor 1.0 for all 12 months of year 0, ``(1+r)`` for
+        year 1, ``(1+r)^2`` for year 2, etc. This guarantees byte-identical
+        real cash flows with respect to runs that predate Phase 11 when
+        ``mean_rate`` equals the legacy ``EconomicConfig.inflation_rate``.
+
+        Args:
+            mean_rate: Constant annual inflation rate (decimal).
+            n_months: Length of the output vector. Must be a multiple of 12
+                for the year-step semantics to hold cleanly, but partial
+                years are tolerated (last bucket truncated).
+
+        Returns:
+            np.ndarray of shape (n_months,), dtype float64, with the
+            cumulative inflation factor at each month.
+
+        Example:
+            ```python
+            f = MonteCarloSimulator._build_inflation_factors_deterministic(
+                mean_rate=0.025, n_months=24
+            )
+            # f[0:12] == 1.0, f[12:24] == 1.025
+            ```
+        """
+        years = np.arange(n_months) // 12
+        return np.power(1.0 + mean_rate, years)
+
     def run(
         self,
         seed: int = 123,
@@ -551,7 +894,35 @@ class MonteCarloSimulator:
         months = np.arange(n_months)
         years = months // 12
         month_in_year = months % 12
-        inflation_factors = np.power(1.0 + cfg.inflation_rate, years)
+        # Phase 11 — inflation factors are resolved via InflationConfig.
+        # In ``mode='deterministic'`` the resulting vector is byte-identical
+        # to the legacy ``np.power(1 + inflation_rate, years)`` formula
+        # (broadcast to all paths), so runs that predate Phase 11 are
+        # unaffected. In ``mode='stochastic'`` we pre-sample one annual rate
+        # per (path, year) BEFORE the per-path loop so the path-specific
+        # RNG used by the energy/price simulators is not contaminated by
+        # inflation draws.
+        # Phase 11 — tax bonus sparse vector (zeros if disabled).
+        # Same vector for every path: it depends only on the configured
+        # investment, fraction and duration, not on the stochastic state.
+        bonus_per_month = self._build_tax_bonus_per_month(cfg, n_months)
+        tax_bonus_total_eur = float(bonus_per_month.sum())
+
+        inflation_cfg = self._resolve_inflation_config(cfg)
+        if inflation_cfg.mode == "deterministic":
+            inflation_factors_path0 = self._build_inflation_factors_deterministic(
+                inflation_cfg.mean, n_months
+            )
+            inflation_factors_paths = np.broadcast_to(
+                inflation_factors_path0, (n_mc, n_months)
+            )
+            inflation_annual_rates_paths = None  # not used downstream
+        else:
+            inflation_annual_rates_paths, inflation_factors_paths = (
+                self._build_inflation_factors_stochastic(
+                    inflation_cfg, rng_global, n_mc, n_years
+                )
+            )
 
         start_time = time.time()
 
@@ -590,8 +961,15 @@ class MonteCarloSimulator:
                 price_paths[i, m] = price
                 monthly_savings_eur[m] = monthly_savings_kwh[m] * price
 
+            # Phase 11 — fold the tax bonus into the savings stream BEFORE
+            # computing cumulative profit and IRR. The bonus is a nominal
+            # cash inflow and naturally propagates into both the nominal
+            # and the inflation-adjusted curves (the latter via division
+            # by inflation_factors_paths[i] below).
+            monthly_savings_eur = monthly_savings_eur + bonus_per_month
+
             profit_cum = -cfg.investment_eur + np.cumsum(monthly_savings_eur)
-            monthly_savings_real = monthly_savings_eur / inflation_factors
+            monthly_savings_real = monthly_savings_eur / inflation_factors_paths[i]
             profit_cum_real = -cfg.investment_eur + np.cumsum(monthly_savings_real)
             cashflows = np.concatenate(([-cfg.investment_eur], monthly_savings_eur))
             irr_annual_paths[i] = _compute_irr_annual(cashflows)
@@ -767,6 +1145,40 @@ class MonteCarloSimulator:
         valid_irr = irr_annual_paths[~np.isnan(irr_annual_paths)]
         irr_mean: Optional[float] = float(valid_irr.mean()) if len(valid_irr) > 0 else None
 
+        # Phase 11 — inflation diagnostic DataFrame. Built only when the
+        # simulator ran in stochastic mode; for deterministic mode there is
+        # nothing to summarise beyond the constant rate already stored in
+        # the InflationConfig itself.
+        df_inflation: Optional[pd.DataFrame] = None
+        if inflation_annual_rates_paths is not None:
+            year_idx = np.arange(n_years)
+            mean_rate = inflation_annual_rates_paths.mean(axis=0)
+            p05_rate = np.percentile(inflation_annual_rates_paths, 5, axis=0)
+            p95_rate = np.percentile(inflation_annual_rates_paths, 95, axis=0)
+            # Compose the per-year cumulative factor that APPLIES to each
+            # year (year 0 -> 1.0; year k -> prod(1+r_1..r_k)).
+            ones_col = np.ones((n_mc, 1))
+            cumulative_year_end = np.cumprod(
+                1.0 + inflation_annual_rates_paths, axis=1
+            )
+            cumulative_per_year = np.concatenate(
+                [ones_col, cumulative_year_end[:, :-1]], axis=1
+            )
+            mean_factor = cumulative_per_year.mean(axis=0)
+            p05_factor = np.percentile(cumulative_per_year, 5, axis=0)
+            p95_factor = np.percentile(cumulative_per_year, 95, axis=0)
+            df_inflation = pd.DataFrame(
+                {
+                    "year": year_idx,
+                    "mean_rate": mean_rate,
+                    "p05_rate": p05_rate,
+                    "p95_rate": p95_rate,
+                    "mean_factor": mean_factor,
+                    "p05_factor": p05_factor,
+                    "p95_factor": p95_factor,
+                }
+            )
+
         return MonteCarloResults(
             df_profit=df_profit,
             df_energy=df_energy,
@@ -786,6 +1198,14 @@ class MonteCarloSimulator:
             break_even_month_p95=break_even_month_p95,
             npv_median_eur=npv_median_eur,
             irr_mean=irr_mean,
+            # Phase 11 — inflation diagnostics (None in deterministic mode).
+            inflation_annual_rates_paths=inflation_annual_rates_paths,
+            df_inflation=df_inflation,
+            # Phase 11 — tax bonus diagnostics. Both are zero/None-safe
+            # when the bonus is disabled, so downstream code can read them
+            # without conditionals.
+            bonus_per_month_eur=bonus_per_month,
+            tax_bonus_total_eur=tax_bonus_total_eur,
         )
 
     # ---------- plotting utilities ----------

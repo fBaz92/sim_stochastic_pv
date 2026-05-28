@@ -429,8 +429,6 @@
     .item-body { flex: 1; }
     .item-actions { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; }
     .confirm-label { font-size: 0.82rem; color: var(--color-danger, #dc3545); font-weight: 500; }
-    .btn-sm { padding: 0.2rem 0.5rem; font-size: 0.82rem; }
-    .btn-del:hover { color: var(--color-danger, #dc3545); }
     .form-card { padding: 1.5rem; margin-bottom: 2rem; }
     .edit-hint { font-size: 0.82rem; color: var(--color-text-muted, #6c757d); margin: 0 0 1rem; }
     .form-actions { margin-top: 1rem; display: flex; gap: 0.5rem; justify-content: flex-end; }

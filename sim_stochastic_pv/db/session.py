@@ -126,16 +126,33 @@ def _apply_lightweight_migrations() -> None:
 
     try:
         inspector = inspect(engine)
-        if "solar_profiles" not in inspector.get_table_names():
-            return
+        tables = set(inspector.get_table_names())
 
-        existing_columns = {col["name"] for col in inspector.get_columns("solar_profiles")}
-        if "weather_persistence" not in existing_columns:
-            with engine.begin() as connection:
-                # Both SQLite and PostgreSQL accept the JSON type literal here.
-                connection.execute(
-                    text("ALTER TABLE solar_profiles ADD COLUMN weather_persistence JSON")
-                )
-            print("✅ Migrated solar_profiles: added column 'weather_persistence'")
+        if "solar_profiles" in tables:
+            existing_columns = {
+                col["name"] for col in inspector.get_columns("solar_profiles")
+            }
+            if "weather_persistence" not in existing_columns:
+                with engine.begin() as connection:
+                    # Both SQLite and PostgreSQL accept the JSON type literal here.
+                    connection.execute(
+                        text(
+                            "ALTER TABLE solar_profiles ADD COLUMN weather_persistence JSON"
+                        )
+                    )
+                print("✅ Migrated solar_profiles: added column 'weather_persistence'")
+
+        # Phase 12 — add the soft-archive timestamp to run_results.
+        if "run_results" in tables:
+            existing_columns = {
+                col["name"] for col in inspector.get_columns("run_results")
+            }
+            if "archived_at" not in existing_columns:
+                with engine.begin() as connection:
+                    # TIMESTAMP / DATETIME both work across SQLite & Postgres.
+                    connection.execute(
+                        text("ALTER TABLE run_results ADD COLUMN archived_at TIMESTAMP")
+                    )
+                print("✅ Migrated run_results: added column 'archived_at'")
     except Exception as exc:  # pragma: no cover - defensive: don't break startup
         print(f"⚠️  Warning: lightweight migration skipped: {exc}")

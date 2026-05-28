@@ -14,6 +14,7 @@ from sim_stochastic_pv.simulation import (
     EnergySystemConfig,
     EscalatingPriceModel,
     GBMPriceModel,
+    InflationConfig,
     InverterOption,
     LoadProfile,
     LoadScenarioBlueprint,
@@ -23,6 +24,7 @@ from sim_stochastic_pv.simulation import (
     PanelOption,
     PriceModel,
     SolarModel,
+    TaxBonusConfig,
     WeeklyPatternLoadProfile,
     WEEKLY_PRESETS,
     make_default_solar_params_for_pavullo,
@@ -712,11 +714,93 @@ def build_default_economic_config(
     n_mc: int | None = None,
     scenario_data: Mapping[str, Any] | str | Path | None = None,
 ) -> EconomicConfig:
+    """
+    Hydrate an EconomicConfig from a JSON scenario dictionary.
+
+    Reads the ``economic`` block of the scenario and wires up the optional
+    sub-blocks introduced in Phase 11:
+
+    - ``tax_bonus`` → TaxBonusConfig. Absent or ``enabled=false`` keeps
+      the bonus off and is a true no-op for the simulator.
+    - ``inflation`` → InflationConfig. Absent falls back to the legacy
+      scalar ``inflation_rate`` (also read here for compatibility with
+      pre-Phase-11 JSONs).
+
+    Args:
+        n_mc: Optional override for the number of Monte Carlo paths.
+            When provided wins over ``economic.n_mc``. When None the
+            JSON value is used (with a fallback of 100).
+        scenario_data: JSON scenario as dict / path / None. ``None`` uses
+            the bundled default scenario at ``examples/home_away_default.json``.
+
+    Returns:
+        EconomicConfig fully populated with the inflation and tax-bonus
+        sub-objects when present.
+    """
     data = load_scenario_data(scenario_data)
     econ_cfg = data["economic"]
+
+    legacy_inflation_rate = float(econ_cfg.get("inflation_rate", 0.025))
+    inflation_cfg = _build_inflation_config(
+        econ_cfg.get("inflation"), legacy_inflation_rate
+    )
+    tax_bonus_cfg = _build_tax_bonus_config(econ_cfg.get("tax_bonus"))
+
     return EconomicConfig(
         investment_eur=econ_cfg.get("investment_eur", 0.0),
         n_mc=n_mc or econ_cfg.get("n_mc", 100),
+        inflation_rate=legacy_inflation_rate,
+        inflation=inflation_cfg,
+        tax_bonus=tax_bonus_cfg,
+    )
+
+
+def _build_inflation_config(
+    raw: Mapping[str, Any] | None,
+    legacy_inflation_rate: float,
+) -> InflationConfig | None:
+    """
+    Translate the JSON ``economic.inflation`` block into an InflationConfig.
+
+    Returns ``None`` when the block is absent AND the legacy scalar is
+    the default (so the simulator stays in the legacy deterministic
+    behaviour without allocating an object). Returns a full object when
+    the JSON block is present, applying defaults for missing keys.
+    """
+    if raw is None:
+        # Pre-Phase-11 scenarios with the legacy scalar fall back here.
+        # We return None so the simulator picks up the scalar via
+        # MonteCarloSimulator._resolve_inflation_config().
+        return None
+    mode = raw.get("mode", "deterministic")
+    if mode not in ("deterministic", "stochastic"):
+        raise ValueError(
+            f"economic.inflation.mode must be 'deterministic' or 'stochastic', "
+            f"got '{mode}'."
+        )
+    return InflationConfig(
+        mode=mode,
+        mean=float(raw.get("mean", legacy_inflation_rate)),
+        std=float(raw.get("std", 0.0)),
+        min_clip=float(raw.get("min_clip", -0.02)),
+        max_clip=float(raw.get("max_clip", 0.10)),
+    )
+
+
+def _build_tax_bonus_config(
+    raw: Mapping[str, Any] | None,
+) -> TaxBonusConfig | None:
+    """
+    Translate the JSON ``economic.tax_bonus`` block into a TaxBonusConfig.
+
+    Returns ``None`` when the block is absent (preserves legacy behaviour).
+    """
+    if raw is None:
+        return None
+    return TaxBonusConfig(
+        enabled=bool(raw.get("enabled", False)),
+        fraction_of_investment=float(raw.get("fraction_of_investment", 0.5)),
+        duration_years=int(raw.get("duration_years", 10)),
     )
 
 

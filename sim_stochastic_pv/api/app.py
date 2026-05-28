@@ -6,6 +6,7 @@ from .routes import (
     configurations_router,
     execution_router,
     hardware_router,
+    jobs_router,
     profiles_router,
     simulation_router,
 )
@@ -58,6 +59,7 @@ def create_app() -> FastAPI:
     app.include_router(profiles_router)
     app.include_router(configurations_router)
     app.include_router(execution_router)
+    app.include_router(jobs_router)
 
     return app
 

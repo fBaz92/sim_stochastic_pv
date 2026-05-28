@@ -171,8 +171,6 @@
     .item-body { flex: 1; }
     .item-actions { display: flex; align-items: center; gap: 0.4rem; justify-content: flex-end; border-top: 1px solid var(--color-border, #e2e8f0); padding-top: 0.5rem; }
     .confirm-label { font-size: 0.82rem; color: var(--color-danger, #dc3545); font-weight: 500; }
-    .btn-sm { padding: 0.2rem 0.5rem; font-size: 0.82rem; }
-    .btn-del:hover { color: var(--color-danger, #dc3545); }
     .specs { font-size: 1.2rem; font-weight: bold; color: var(--color-accent); }
     .meta { color: var(--color-text-secondary); font-size: 0.9rem; }
     .form-actions { margin-top: 1rem; display: flex; gap: 0.5rem; justify-content: flex-end; }

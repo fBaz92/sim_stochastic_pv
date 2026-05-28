@@ -18,7 +18,7 @@
      */
     import { onMount } from "svelte";
     import { api } from "../api";
-    import { pendingRunId } from "../lib/stores";
+    import { pendingRunId, activeJob } from "../lib/stores";
     import MonthInput from "../components/forms/MonthInput.svelte";
     import MonthlyProfileEditor from "../components/forms/MonthlyProfileEditor.svelte";
     import WeeklyPatternEditor from "../components/forms/WeeklyPatternEditor.svelte";
@@ -132,6 +132,103 @@
     let weeklyMonthlyW = Array(12).fill(300);
     let weeklyPattern = Array.from({ length: 7 }, () => Array(24).fill(100));
 
+    // Phase 11+ — variation percentiles applied to the inline profile.
+    // The simulator interprets [p05, p95] as the bracket of multiplicative
+    // perturbation applied to the base load before each Monte Carlo path.
+    // Default 10% on home, 5% on away matches the backend defaults.
+    let homeVariationPercent = 10;   // ±%, both sides symmetric
+    let awayVariationPercent = 5;
+
+    // Status banner for the Excel template / import actions.
+    let loadProfileStatus = "";
+    let loadProfileError = "";
+
+    /**
+     * Map the wizard's profile-type identifier to the kind expected by
+     * the backend Excel template/parse endpoints.
+     *   - "custom"    → "monthly_avg"
+     *   - "custom_24h"→ "monthly_24h"
+     *   - "weekly"    → "weekly"
+     *   - everything else returns null (no template available).
+     */
+    function profileKindForBackend(uiType) {
+        if (uiType === "custom") return "monthly_avg";
+        if (uiType === "custom_24h") return "monthly_24h";
+        if (uiType === "weekly") return "weekly";
+        return null;
+    }
+
+    /** Trigger a browser download for the matching Excel template. */
+    function downloadLoadProfileTemplate(uiType) {
+        const kind = profileKindForBackend(uiType);
+        if (!kind) return;
+        const a = document.createElement("a");
+        a.href = api.loadProfileTemplateUrl(kind);
+        a.download = `load_profile_${kind}_template.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+    }
+
+    /**
+     * Read a user-selected .xlsx file, POST it to the parse endpoint,
+     * and merge the result into the appropriate wizard state slot.
+     *
+     * @param {Event} ev     Input change event.
+     * @param {string} uiType  homeProfileType / awayProfileType value.
+     * @param {"home"|"away"} side  Which side of the home/away pair to update.
+     */
+    async function handleLoadProfileUpload(ev, uiType, side) {
+        loadProfileStatus = "";
+        loadProfileError = "";
+        const file = ev.target.files?.[0];
+        if (!file) return;
+        const kind = profileKindForBackend(uiType);
+        if (!kind) {
+            loadProfileError = "Nessun template disponibile per questo tipo di profilo.";
+            return;
+        }
+        try {
+            const data = await api.parseLoadProfileXlsx(kind, file);
+            applyParsedLoadProfile(data, uiType, side);
+            loadProfileStatus = `Profilo "${side === "home" ? "casa" : "via"}" importato da ${file.name}.`;
+        } catch (e) {
+            loadProfileError = `Errore import: ${e.message}`;
+        } finally {
+            // Reset the input so the same file can be re-selected.
+            ev.target.value = "";
+        }
+    }
+
+    function applyParsedLoadProfile(parsed, uiType, side) {
+        if (uiType === "custom") {
+            const arr = parsed.monthly_avg_w;
+            if (!Array.isArray(arr) || arr.length !== 12) {
+                throw new Error("Il file non contiene 12 valori mensili.");
+            }
+            if (side === "home") homeProfilesW = [...arr];
+            else awayProfilesW = [...arr];
+        } else if (uiType === "custom_24h") {
+            const grid = parsed.monthly_24h_w;
+            if (!Array.isArray(grid) || grid.length !== 12 || grid.some((r) => r.length !== 24)) {
+                throw new Error("Il file non ha forma 12×24.");
+            }
+            if (side === "home") homeProfiles24h = grid.map((r) => [...r]);
+            else awayProfiles24h = grid.map((r) => [...r]);
+        } else if (uiType === "weekly") {
+            const monthly = parsed.monthly_w;
+            const pattern = parsed.weekly_pattern_w;
+            if (!Array.isArray(monthly) || monthly.length !== 12) {
+                throw new Error("La 'Scala mensile' deve avere 12 valori.");
+            }
+            if (!Array.isArray(pattern) || pattern.length !== 7 || pattern.some((r) => r.length !== 24)) {
+                throw new Error("Il 'Pattern settimanale' deve essere 7×24.");
+            }
+            weeklyMonthlyW = [...monthly];
+            weeklyPattern = pattern.map((r) => [...r]);
+        }
+    }
+
     /** Human-readable summary of the selected DB load profile. */
     function describeLoadProfile(item) {
         if (!item) return "";
@@ -171,6 +268,22 @@
     let nYears = 20;
     let nMc = 200;
     let scenarioName = "Mio Scenario";
+
+    // Phase 11 — optional tax bonus block. The UI shows percentages
+    // (0–100); the payload assembly converts to fractions (0–1).
+    let taxBonusEnabled = false;
+    let taxBonusFractionPercent = 50;
+    let taxBonusDurationYears = 10;
+
+    // Phase 11 — optional inflation overrides. When ``inflationOverride``
+    // is false the payload omits the ``economic.inflation`` block and
+    // the backend falls back to the legacy deterministic behaviour.
+    let inflationOverride = false;
+    let inflationMode = "deterministic"; // 'deterministic' | 'stochastic'
+    let inflationMeanPercent = 2.5;
+    let inflationStdPercent = 1.0;
+    let inflationMinClipPercent = -2.0;
+    let inflationMaxClipPercent = 10.0;
 
     // ── Step 6 — Riepilogo & Esegui ────────────────────────────────────────
     let loading = false;
@@ -262,6 +375,10 @@
                 weekly_pattern_w: weeklyPattern.map((row) => [...row]),
                 min_days_home: [...minDaysHome],
                 max_days_home: [...maxDaysHome],
+                home_variation_percentiles: [
+                    -homeVariationPercent / 100,
+                    homeVariationPercent / 100,
+                ],
             };
             return scenarioClone;
         }
@@ -291,6 +408,14 @@
             away_profile: resolvedAwayType,
             min_days_home: [...minDaysHome],
             max_days_home: [...maxDaysHome],
+            home_variation_percentiles: [
+                -homeVariationPercent / 100,
+                homeVariationPercent / 100,
+            ],
+            away_variation_percentiles: [
+                -awayVariationPercent / 100,
+                awayVariationPercent / 100,
+            ],
         };
         if (resolvedHomeW) scenarioClone.load_profile.home_profiles_w = resolvedHomeW;
         if (resolvedAwayW) scenarioClone.load_profile.away_profiles_w = resolvedAwayW;
@@ -322,15 +447,35 @@
             inverter_p_ac_max_kw: inverterPAcMaxKw,
         };
 
+        const economic = {
+            investment_eur: investmentEur,
+            n_mc: nMc,
+        };
+        // Phase 11 — optional sub-blocks. Only included when the user
+        // explicitly opted in, so legacy scenarios stay byte-identical.
+        if (taxBonusEnabled) {
+            economic.tax_bonus = {
+                enabled: true,
+                fraction_of_investment: taxBonusFractionPercent / 100,
+                duration_years: taxBonusDurationYears,
+            };
+        }
+        if (inflationOverride) {
+            economic.inflation = {
+                mode: inflationMode,
+                mean: inflationMeanPercent / 100,
+                std: inflationStdPercent / 100,
+                min_clip: inflationMinClipPercent / 100,
+                max_clip: inflationMaxClipPercent / 100,
+            };
+        }
+
         let scenarioClone = {
             scenario_name: scenarioName,
             solar,
             energy,
             price: buildPriceBlock(),
-            economic: {
-                investment_eur: investmentEur,
-                n_mc: nMc,
-            },
+            economic,
         };
 
         if (selectedInverterId) scenarioClone.inverter_id = selectedInverterId;
@@ -351,13 +496,21 @@
         message = "";
         try {
             const payload = buildPayload();
-            const res = await api.triggerAnalysis(payload);
-            // Phase 6: store the run ID and redirect to Dashboard so that the
-            // auto-select logic picks it up on mount.
-            if (res.run_id != null) {
-                pendingRunId.set(res.run_id);
-            }
-            window.location.hash = "/";
+            // Phase 12 — submit the analysis as a background job. The
+            // floating JobProgress widget handles the redirect when done.
+            const { job_id } = await api.submitAnalysisJob(payload);
+            activeJob.set({
+                id: job_id,
+                kind: "analysis",
+                status: "pending",
+                progress_done: 0,
+                progress_total: payload.n_mc ?? 0,
+                progress_fraction: 0,
+                message: "In attesa di avvio...",
+                run_id: null,
+                error: null,
+            });
+            message = "Analisi avviata. Vedi la barra in basso a sinistra per il progresso.";
         } catch (e) {
             console.error(e);
             message = "Errore durante l'analisi: " + e.message;
@@ -431,8 +584,43 @@
                 loadSource = "inline";
                 homeProfileType = d.load_profile.home_profile_type ?? "arera";
                 awayProfileType = d.load_profile.away_profile ?? "arera";
-                if (d.load_profile.home_profiles_w) homeProfilesW = d.load_profile.home_profiles_w;
-                if (d.load_profile.away_profiles_w) awayProfilesW = d.load_profile.away_profiles_w;
+                // The backend stores 12×24 grids under "home_profiles_w" /
+                // "away_profiles_w" regardless of whether the user typed a
+                // monthly average or a 24h profile. Differentiate by shape.
+                const hw = d.load_profile.home_profiles_w;
+                if (Array.isArray(hw) && hw.length === 12) {
+                    if (Array.isArray(hw[0])) {
+                        homeProfileType = "custom_24h";
+                        homeProfiles24h = hw.map((r) => [...r]);
+                    } else {
+                        homeProfilesW = [...hw];
+                    }
+                }
+                const aw = d.load_profile.away_profiles_w;
+                if (Array.isArray(aw) && aw.length === 12) {
+                    if (Array.isArray(aw[0])) {
+                        awayProfileType = "custom_24h";
+                        awayProfiles24h = aw.map((r) => [...r]);
+                    } else {
+                        awayProfilesW = [...aw];
+                    }
+                }
+                // Phase 11+ — restore the variation brackets when the saved
+                // scenario carries them. We always store symmetric values
+                // in the UI; if the JSON has asymmetric brackets we pick
+                // the wider side for visual safety.
+                if (Array.isArray(d.load_profile.home_variation_percentiles)) {
+                    const [lo, hi] = d.load_profile.home_variation_percentiles;
+                    homeVariationPercent = Math.round(
+                        Math.max(Math.abs(lo ?? 0), Math.abs(hi ?? 0)) * 100,
+                    );
+                }
+                if (Array.isArray(d.load_profile.away_variation_percentiles)) {
+                    const [lo, hi] = d.load_profile.away_variation_percentiles;
+                    awayVariationPercent = Math.round(
+                        Math.max(Math.abs(lo ?? 0), Math.abs(hi ?? 0)) * 100,
+                    );
+                }
             }
             if (d.min_days_home) minDaysHome = d.min_days_home;
             if (d.max_days_home) maxDaysHome = d.max_days_home;
@@ -463,6 +651,31 @@
             investmentEur = d.economic?.investment_eur ?? investmentEur;
             nMc = d.economic?.n_mc ?? nMc;
             nYears = d.energy?.n_years ?? nYears;
+
+            // Phase 11 — restore optional sub-blocks
+            if (d.economic?.tax_bonus) {
+                const tb = d.economic.tax_bonus;
+                taxBonusEnabled = Boolean(tb.enabled);
+                if (tb.fraction_of_investment != null) {
+                    taxBonusFractionPercent = tb.fraction_of_investment * 100;
+                }
+                if (tb.duration_years != null) {
+                    taxBonusDurationYears = tb.duration_years;
+                }
+            } else {
+                taxBonusEnabled = false;
+            }
+            if (d.economic?.inflation) {
+                const inf = d.economic.inflation;
+                inflationOverride = true;
+                inflationMode = inf.mode ?? "deterministic";
+                if (inf.mean != null) inflationMeanPercent = inf.mean * 100;
+                if (inf.std != null) inflationStdPercent = inf.std * 100;
+                if (inf.min_clip != null) inflationMinClipPercent = inf.min_clip * 100;
+                if (inf.max_clip != null) inflationMaxClipPercent = inf.max_clip * 100;
+            } else {
+                inflationOverride = false;
+            }
 
             scenarioName = saved.name ?? scenarioName;
             message = `Scenario "${saved.name}" caricato.`;
@@ -515,18 +728,19 @@
 <!-- ══════════════════════════════════════════════════════════════════════ -->
 <div class="container">
     <div class="header">
-        <h1 class="page-title">Nuovo Scenario</h1>
-        <p class="page-subtitle">
-            Configura <strong>un</strong> impianto PV+batteria in pochi passi e
-            avvia l'analisi Monte Carlo. Per esplorare più alternative vai su
-            <a href="#/campaign">Campagna</a>.
-        </p>
+        <div class="header-text">
+            <h1 class="page-title">Nuovo Scenario</h1>
+            <p class="page-subtitle">
+                Configura <strong>un</strong> impianto PV+batteria in pochi passi e
+                avvia l'analisi Monte Carlo. Per esplorare più alternative vai su
+                <a href="#/design">Design</a>.
+            </p>
+        </div>
         <!-- Load saved scenario (top-bar shortcut) -->
         <div class="header-actions">
             <select
                 class="select sm"
                 bind:value={selectedSavedScenarioId}
-                style="min-width: 220px;"
             >
                 <option value="">Carica scenario salvato…</option>
                 {#each savedScenarios as s}
@@ -539,12 +753,12 @@
                 disabled={!selectedSavedScenarioId || loading}
             >Carica</button>
         </div>
-        {#if message}
-            <div class={`badge ${message.toLowerCase().includes("errore") ? "error" : "success"}`}>
-                {message}
-            </div>
-        {/if}
     </div>
+    {#if message}
+        <div class={`badge ${message.toLowerCase().includes("errore") ? "error" : "success"} header-message`}>
+            {message}
+        </div>
+    {/if}
 
     <!-- ══════════════════════════════════════════════════════════════════ -->
     <!-- Step progress bar                                                  -->
@@ -848,6 +1062,25 @@
                     </select>
                 </div>
 
+                {#if homeProfileType !== "arera"}
+                    <div class="excel-tools">
+                        <button
+                            type="button"
+                            class="btn btn-outline btn-sm"
+                            on:click={() => downloadLoadProfileTemplate(homeProfileType)}
+                            title="Scarica un template Excel per questo tipo di profilo"
+                        >📥 Scarica template</button>
+                        <label class="btn btn-outline btn-sm import-btn">
+                            📤 Importa Excel
+                            <input
+                                type="file"
+                                accept=".xlsx"
+                                on:change={(ev) => handleLoadProfileUpload(ev, homeProfileType, "home")}
+                            />
+                        </label>
+                    </div>
+                {/if}
+
                 {#if homeProfileType === "custom"}
                     <MonthInput label="Potenza media casa (W/mese)" bind:values={homeProfilesW} />
                 {:else if homeProfileType === "custom_24h"}
@@ -869,12 +1102,58 @@
                             <option value="custom_24h">Profilo 24h per mese (W)</option>
                         </select>
                     </div>
+                    {#if awayProfileType !== "arera"}
+                        <div class="excel-tools">
+                            <button
+                                type="button"
+                                class="btn btn-outline btn-sm"
+                                on:click={() => downloadLoadProfileTemplate(awayProfileType)}
+                                title="Scarica un template Excel per questo tipo di profilo"
+                            >📥 Scarica template</button>
+                            <label class="btn btn-outline btn-sm import-btn">
+                                📤 Importa Excel
+                                <input
+                                    type="file"
+                                    accept=".xlsx"
+                                    on:change={(ev) => handleLoadProfileUpload(ev, awayProfileType, "away")}
+                                />
+                            </label>
+                        </div>
+                    {/if}
                     {#if awayProfileType === "custom"}
                         <MonthInput label="Potenza media via (W/mese)" bind:values={awayProfilesW} />
                     {:else if awayProfileType === "custom_24h"}
                         <MonthlyProfileEditor label="Profilo 24h — Via (W)" bind:values={awayProfiles24h} />
                     {/if}
                 {/if}
+
+                {#if loadProfileStatus}
+                    <p class="hint success-text">{loadProfileStatus}</p>
+                {/if}
+                {#if loadProfileError}
+                    <p class="hint error-text">{loadProfileError}</p>
+                {/if}
+
+                <!-- Phase 11+ — variation brackets for the load profile -->
+                <div class="divider"></div>
+                <div class="section-subtitle">Variazione del consumo (Monte Carlo)</div>
+                <p class="hint">
+                    Per ogni traiettoria il simulatore moltiplica il profilo per
+                    un fattore casuale all'interno di una banda simmetrica
+                    [-x %, +x %], catturando l'incertezza dei consumi reali.
+                </p>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="label" for="home-variation">Variazione casa (±%)</label>
+                        <input id="home-variation" class="input" type="number" step="1" min="0" max="80" bind:value={homeVariationPercent} />
+                    </div>
+                    {#if homeProfileType !== "weekly"}
+                        <div class="form-group">
+                            <label class="label" for="away-variation">Variazione via (±%)</label>
+                            <input id="away-variation" class="input" type="number" step="1" min="0" max="80" bind:value={awayVariationPercent} />
+                        </div>
+                    {/if}
+                </div>
             {/if}
 
             <div class="divider"></div>
@@ -1041,6 +1320,93 @@
 
             <div class="divider"></div>
 
+            <!-- Phase 11 — optional tax bonus block ─────────────────────── -->
+            <details class="adv-block">
+                <summary>
+                    Bonus fiscale (opzionale)
+                    <span class="tooltip" title="Detrazione fiscale come quella italiana del 50% in 10 anni. Quando attiva, ogni anno (fine anno) ti viene restituita una quota dell'investimento.">ⓘ</span>
+                </summary>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="label">
+                            <input type="checkbox" bind:checked={taxBonusEnabled} />
+                            Attiva bonus fiscale
+                        </label>
+                    </div>
+                </div>
+                {#if taxBonusEnabled}
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="label" for="bonus-fraction">
+                                Percentuale dell'investimento (%)
+                            </label>
+                            <input id="bonus-fraction" class="input" type="number" step="1" min="0" max="100" bind:value={taxBonusFractionPercent} />
+                            <p class="hint">
+                                Es. 50 = 50% dell'investimento restituito complessivamente
+                            </p>
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="bonus-years">
+                                Durata (anni)
+                            </label>
+                            <input id="bonus-years" class="input" type="number" step="1" min="1" max="20" bind:value={taxBonusDurationYears} />
+                            <p class="hint">
+                                Importo annuo = € {(investmentEur * (taxBonusFractionPercent / 100) / Math.max(1, taxBonusDurationYears)).toLocaleString("it-IT", {maximumFractionDigits: 0})}
+                            </p>
+                        </div>
+                    </div>
+                {/if}
+            </details>
+
+            <!-- Phase 11 — optional inflation override ──────────────────── -->
+            <details class="adv-block">
+                <summary>
+                    Inflazione (opzionale)
+                    <span class="tooltip" title="Sostituisce il tasso di inflazione predefinito (2,5%). In modalità stocastica viene estratto annualmente da una Normale troncata.">ⓘ</span>
+                </summary>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="label">
+                            <input type="checkbox" bind:checked={inflationOverride} />
+                            Personalizza inflazione
+                        </label>
+                    </div>
+                </div>
+                {#if inflationOverride}
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="label" for="inflation-mode">Modalità</label>
+                            <select id="inflation-mode" class="input" bind:value={inflationMode}>
+                                <option value="deterministic">Deterministica</option>
+                                <option value="stochastic">Stocastica (Normale troncata)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="inflation-mean">Media annua (%)</label>
+                            <input id="inflation-mean" class="input" type="number" step="0.1" min="-5" max="20" bind:value={inflationMeanPercent} />
+                        </div>
+                    </div>
+                    {#if inflationMode === "stochastic"}
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="label" for="inflation-std">Deviazione standard (%)</label>
+                                <input id="inflation-std" class="input" type="number" step="0.1" min="0" max="10" bind:value={inflationStdPercent} />
+                            </div>
+                            <div class="form-group">
+                                <label class="label" for="inflation-min">Limite inferiore (%)</label>
+                                <input id="inflation-min" class="input" type="number" step="0.5" bind:value={inflationMinClipPercent} />
+                            </div>
+                            <div class="form-group">
+                                <label class="label" for="inflation-max">Limite superiore (%)</label>
+                                <input id="inflation-max" class="input" type="number" step="0.5" bind:value={inflationMaxClipPercent} />
+                            </div>
+                        </div>
+                    {/if}
+                {/if}
+            </details>
+
+            <div class="divider"></div>
+
             <div class="form-group">
                 <label class="label" for="scenario-name">
                     Nome dello scenario
@@ -1134,6 +1500,48 @@
 {/if}
 
 <style>
+    /* Phase 11+ — Excel template / import buttons */
+    .excel-tools {
+        display: flex;
+        gap: 0.5rem;
+        margin: 0.5rem 0 0.75rem;
+        flex-wrap: wrap;
+    }
+    .import-btn {
+        position: relative;
+        overflow: hidden;
+        cursor: pointer;
+    }
+    .import-btn input[type="file"] {
+        position: absolute;
+        inset: 0;
+        opacity: 0;
+        cursor: pointer;
+    }
+    .success-text { color: var(--color-success, #198754); }
+    .error-text   { color: var(--color-danger,  #dc3545); }
+
+    /* ── Phase 11 — optional advanced blocks (collapsed by default) ──────── */
+    .adv-block {
+        margin-top: 1rem;
+        border: 1px solid var(--color-border, #e2e8f0);
+        border-radius: var(--radius-sm, 6px);
+        padding: 0.75rem 1rem;
+        background: var(--color-bg-secondary, #f8f9fa);
+    }
+    .adv-block summary {
+        cursor: pointer;
+        font-weight: 600;
+        color: var(--color-text, #1f2937);
+        margin: -0.25rem 0;
+        padding: 0.25rem 0;
+    }
+    .adv-block[open] summary {
+        margin-bottom: 0.75rem;
+        border-bottom: 1px solid var(--color-border, #e2e8f0);
+        padding-bottom: 0.5rem;
+    }
+
     /* ── Stepper ──────────────────────────────────────────────────────────── */
     .stepper {
         display: flex;
@@ -1354,11 +1762,27 @@
         font-size: 0.82rem;
         margin-top: 0.2rem;
     }
+    .header-text {
+        flex: 1 1 360px;
+        min-width: 0;
+    }
     .header-actions {
         display: flex;
         gap: 0.5rem;
         align-items: center;
-        margin-top: 0.75rem;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+    }
+    .header-actions .select {
+        width: auto;
+        min-width: 220px;
+        max-width: 260px;
+        flex: 0 1 auto;
+    }
+    .header-message {
+        display: block;
+        margin: 0 0 1rem auto;
+        width: fit-content;
     }
     .badge.error {
         background: var(--color-danger, #dc3545);

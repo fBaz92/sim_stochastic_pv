@@ -295,9 +295,45 @@ class PersistenceService:
             result_type, summary, scenario=scenario, optimization=optimization, output_dir=output_dir
         )
 
-    def list_run_results(self, limit: int = 50) -> list[RunResultRecord]:
-        """Fetch the latest run results ordered by creation date."""
-        return self.executions.list_run_results(limit)
+    def list_run_results(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        *,
+        scenario_name: str | None = None,
+        location: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        include_archived: bool = False,
+    ) -> list[RunResultRecord]:
+        """Fetch the latest run results with optional filters and pagination."""
+        return self.executions.list_run_results(
+            limit=limit,
+            offset=offset,
+            scenario_name=scenario_name,
+            location=location,
+            date_from=date_from,
+            date_to=date_to,
+            include_archived=include_archived,
+        )
+
+    def get_run_result(self, run_id: int) -> RunResultRecord | None:
+        """Fetch a single run result by primary key, or None if missing (Phase 11)."""
+        return self.executions.get_run_result(run_id)
+
+    def delete_run_result(self, run_id: int) -> bool:
+        """Hard-delete a run result by id. Returns True if removed (Phase 12)."""
+        return self.executions.delete_run_result(run_id)
+
+    def set_run_archived(
+        self, run_id: int, archived: bool
+    ) -> RunResultRecord | None:
+        """Toggle the run's archived flag (Phase 12)."""
+        return self.executions.set_run_archived(run_id, archived)
+
+    def list_distinct_run_locations(self) -> list[str]:
+        """Distinct location names across all runs (Phase 12 — for filters)."""
+        return self.executions.list_distinct_locations()
 
     def list_scenarios(self) -> list[ScenarioRecord]:
         """List all saved scenarios (history)."""

@@ -217,8 +217,6 @@
         color: var(--color-danger, #dc3545);
         font-weight: 500;
     }
-    .btn-sm { padding: 0.2rem 0.5rem; font-size: 0.82rem; }
-    .btn-del:hover { color: var(--color-danger, #dc3545); }
     .specs {
         font-size: 1.2rem;
         font-weight: bold;

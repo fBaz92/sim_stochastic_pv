@@ -13,11 +13,14 @@ by ID in scenarios.
 
 from __future__ import annotations
 
+import io
 from dataclasses import asdict
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi.responses import StreamingResponse
 
+from ...output.exporters import build_template_xlsx, parse_load_profile_xlsx
 from ...persistence import PersistenceService
 from ...scenario_builder import build_default_price_model
 from ...simulation.prices import (
@@ -27,6 +30,9 @@ from ...simulation.prices import (
 from .. import dependencies
 from ..schemas import profiles as profile_schemas
 from ..schemas.profiles import SolarProfileResponse
+
+
+_SUPPORTED_LOAD_KINDS = {"monthly_avg", "monthly_24h", "weekly"}
 
 router = APIRouter(prefix="/api", tags=["profiles"])
 
@@ -488,3 +494,89 @@ def preview_price_parameters(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     return _preview_payload(result)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase 11+ — Excel templates and uploaders for inline load profiles.
+# The wizard offers, for each non-ARERA profile kind, a "download
+# template" and an "import Excel" action so users can fill the values
+# in a spreadsheet rather than typing them cell by cell.
+# ─────────────────────────────────────────────────────────────────────
+
+
+@router.get("/load-profiles/template/{kind}.xlsx")
+def download_load_profile_template(kind: str) -> StreamingResponse:
+    """
+    Stream a blank Excel template for an inline load profile.
+
+    The user downloads the template, fills the cells, then uploads it
+    via :func:`upload_load_profile_xlsx`.
+
+    Args:
+        kind: Profile shape — one of ``monthly_avg``, ``monthly_24h``,
+            ``weekly``. ``arera`` is intentionally excluded because its
+            table is fixed by Italian regulation.
+
+    Raises:
+        HTTPException 404: ``kind`` is not one of the supported values.
+    """
+    if kind not in _SUPPORTED_LOAD_KINDS:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Unknown load profile kind '{kind}'. "
+                f"Supported: {sorted(_SUPPORTED_LOAD_KINDS)}."
+            ),
+        )
+    buffer = io.BytesIO()
+    build_template_xlsx(kind, buffer)
+    buffer.seek(0)
+    filename = f"load_profile_{kind}_template.xlsx"
+    return StreamingResponse(
+        buffer,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/load-profiles/parse-xlsx/{kind}")
+async def upload_load_profile_xlsx(
+    kind: str, file: UploadFile = File(...),
+) -> Dict[str, Any]:
+    """
+    Parse an Excel workbook into a JSON-compatible load profile payload.
+
+    Args:
+        kind: Expected profile shape (``monthly_avg``, ``monthly_24h``,
+            ``weekly``). Determines how the sheet is read.
+        file: Multipart upload of an .xlsx workbook produced from the
+            matching template (or any compatible layout).
+
+    Returns:
+        A JSON-friendly dict ready to be merged into the scenario
+        ``load_profile`` block. Shapes:
+
+        - ``monthly_avg`` → ``{"monthly_avg_w": [12 floats]}``
+        - ``monthly_24h`` → ``{"monthly_24h_w": [[24 floats] × 12]}``
+        - ``weekly``      → ``{"monthly_w": [...12], "weekly_pattern_w": [[24] × 7]}``
+
+    Raises:
+        HTTPException 404: ``kind`` is not supported.
+        HTTPException 422: Workbook cannot be parsed (malformed cell,
+            wrong dimensions, missing sheet).
+    """
+    if kind not in _SUPPORTED_LOAD_KINDS:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Unknown load profile kind '{kind}'. "
+                f"Supported: {sorted(_SUPPORTED_LOAD_KINDS)}."
+            ),
+        )
+    content = await file.read()
+    try:
+        return parse_load_profile_xlsx(kind, io.BytesIO(content))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

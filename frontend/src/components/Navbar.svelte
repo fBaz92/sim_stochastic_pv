@@ -21,10 +21,10 @@
             </li>
             <li>
                 <a
-                    href="#/campaign"
-                    class:active={$currentRoute === "/campaign"}
-                    title="Esplora più configurazioni per trovare il design ottimale"
-                    >Campagna</a
+                    href="#/design"
+                    class:active={$currentRoute === "/design" || $currentRoute === "/campaign"}
+                    title="Esplora più configurazioni hardware (CAPEX) e parametri operativi (OPEX) per trovare il design ottimale"
+                    >Design</a
                 >
             </li>
             <li>

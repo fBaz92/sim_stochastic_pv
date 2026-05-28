@@ -474,6 +474,11 @@ class RunResultRecord(Base, TimestampMixin):
     scenario_id = Column(Integer, ForeignKey("scenarios.id"), nullable=True)
     optimization_id = Column(Integer, ForeignKey("optimizations.id"), nullable=True)
 
+    # Phase 12 — soft archive. Default hidden in the Dashboard sidebar;
+    # the user can toggle "Mostra archiviati" to bring them back. Set to
+    # ``now()`` when archived and back to ``None`` when unarchived.
+    archived_at = Column(DateTime, nullable=True)
+
     scenario = relationship("ScenarioRecord", back_populates="runs")
     optimization = relationship("OptimizationRecord", back_populates="runs")
 

@@ -31,7 +31,13 @@ from .load_profiles import (
     WEEKLY_PRESETS,
     make_flat_monthly_load_profiles,
 )
-from .monte_carlo import EconomicConfig, MonteCarloResults, MonteCarloSimulator
+from .monte_carlo import (
+    EconomicConfig,
+    InflationConfig,
+    MonteCarloResults,
+    MonteCarloSimulator,
+    TaxBonusConfig,
+)
 from .optimizer import (
     BatteryOption,
     InverterOption,
@@ -73,6 +79,8 @@ __all__ = [
     "EnergySystemSimulator",
     # Economics + Monte Carlo
     "EconomicConfig",
+    "InflationConfig",
+    "TaxBonusConfig",
     "MonteCarloResults",
     "MonteCarloSimulator",
     "PriceModel",

@@ -298,6 +298,82 @@ in Fase 5).
 
 ---
 
+## Fase 11 — Bonus fiscale, inflazione stocastica, export Excel/PDF, rename Campagna→Design
+
+**Problema**: tre lacune significative nello strumento di valutazione economica.
+
+1. **Bonus fiscale assente.** L'utente italiano ha tipicamente diritto a una
+   detrazione del 50% (o più) del CAPEX, erogata su 10 anni. Oggi non è
+   modellabile: IRR e break-even sono sistematicamente sottostimati di 30–40
+   punti percentuali rispetto alla realtà fiscale.
+2. **Inflazione deterministica.** `EconomicConfig.inflation_rate=0.025` è uno
+   scalare fisso. In EU negli ultimi 20 anni l'inflazione ha oscillato fra 0%
+   e 8%; la banda del profit reale (`p05–p95`) è artificialmente stretta.
+3. **Nessun export.** L'utente non può portare via i risultati: né tabelle
+   per analisi su Excel, né report per condividere con consulenti.
+
+Inoltre, "Campagna" continua a confondere in UI. L'utente capisce meglio
+"Design" come *esplorazione economica al variare di CAPEX (configurazioni
+hardware) e OPEX (parametri operativi)*.
+
+**Deliverable**:
+
+- `TaxBonusConfig` dataclass + integrazione opzionale in `EconomicConfig`.
+  Importo annuo = `investment_eur × fraction / duration_years`, pagato a
+  fine anno (mesi 11, 23, 35, …). Truncato graziosamente se
+  `duration_years > n_years`.
+- `InflationConfig` dataclass con `mode='deterministic' | 'stochastic'`.
+  In modalità stocastica estrae `n_mc × n_years` tassi annuali da
+  Normale(mean, std) clippata in [min_clip, max_clip]. Il legacy scalar
+  `inflation_rate` resta come fallback retrocompat: identico byte-per-byte
+  in deterministico.
+- `inflation_factors_paths` shape `(n_mc, n_months)` pre-campionati prima
+  del loop MC; `bonus_per_month` vettore sparso sommato a `monthly_savings_eur`
+  prima di `cumsum`/IRR (entra automaticamente nei `profit_cum`, `profit_cum_real`
+  e nei cashflows IRR).
+- `MonteCarloResults` esteso con `inflation_annual_rates_paths`,
+  `df_inflation`, `bonus_per_month_eur`, `tax_bonus_total_eur`.
+- `application._build_inflation_plot_payload` (fan chart inflazione) e
+  `_build_cashflow_table_payload` (medi mensili) emessi in
+  `summary.plots_data`. `tax_bonus_total_eur` aggiunto al top-level.
+- `scenario_builder.build_default_economic_config` legge i due sotto-blocchi
+  da JSON; `validation._validate_tax_bonus` e `_validate_inflation`
+  enforce dei limiti (fraction in [0,1], std≥0, min_clip≤max_clip).
+- Schemi Pydantic `TaxBonusSchema` e `InflationSchema` + campo
+  `tax_bonus_total_eur` in `AnalysisResponse`.
+- **Export Excel** (openpyxl): `GET /api/runs/{id}/export/cashflow.xlsx`
+  → workbook con foglio "Cash flow medio" (vettori mensili) e "KPI" (decision metrics).
+- **Export PDF** (WeasyPrint + Jinja2 + matplotlib): `GET /api/runs/{id}/export/report.pdf`
+  → report multi-pagina con KPI Decisione, fan chart profitto/energia/prezzo/inflazione
+  e tabella cash flow. Degrado grazioso su run pre-Fase-11.
+- Frontend `ScenarioBuilder.svelte` e `CampaignBuilder.svelte`: sezioni
+  opzionali "Bonus fiscale" e "Inflazione" nello step Investimento
+  (conversione UI % ↔ payload 0–1).
+- Frontend `Dashboard.svelte`: nuovo tab "Inflazione" (fan chart con
+  fattore cumulativo), card KPI "Bonus fiscale totale", pulsanti
+  "Scarica Excel" e "Scarica PDF" sopra la sezione Decisione.
+- Frontend `ResultsChart.svelte`: icona overlay Download in alto a destra
+  di ogni grafico, basata su `chart.toBase64Image()` (Chart.js nativo).
+- **Rinomina UI Campagna → Design**: route `/design` (più alias `/campaign`
+  per retrocompat dei bookmark), label Navbar, titoli e badge, blocco
+  didattico CAPEX/OPEX in cima alla pagina Design. NON cambiano:
+  `config_type='campaign'` nel DB, API path `/api/campaigns/...`,
+  variabili JS (`selectedSavedCampaignId`, `runSavedCampaign`, ecc.),
+  nome file `CampaignBuilder.svelte` (CLAUDE.md §Glossario).
+- Aggiunti `openpyxl`, `weasyprint`, `Jinja2` a `requirements.txt`; deps
+  native pango/cairo/gdk-pixbuf-2.0 nel `Dockerfile.backend`.
+
+**Out of scope ora**:
+- Bonus tax-bracket-dependent (Superbonus 110%, scaglioni IRPEF, cap di
+  spesa). Resta un flat percent × n_years.
+- Inflazione path-dependent AR(1) o regime switching (resta Normale iid
+  per anno).
+- Export CSV separato (l'Excel è già un superset utile).
+- Localizzazione del PDF in lingue diverse dall'italiano.
+- Confronto side-by-side di più run nello stesso PDF.
+
+---
+
 ## Fase 10 — Preview traiettorie prezzo nella sezione Database
 
 **Problema**: l'utente sceglie i parametri di un `price_profile`
@@ -362,6 +438,55 @@ Fase 10 (price preview) ── dipende solo da Fase 2 (già fatta)
 Nessuna fase attivamente in corso.
 
 ### ✅ Completate
+
+**Fase 11 — Bonus fiscale, inflazione stocastica, export Excel/PDF, rename Campagna→Design** — chiusa 2026-05-27.
+
+Consegnato:
+- Backend: nuove dataclass `TaxBonusConfig` e `InflationConfig` in
+  `simulation/monte_carlo/core.py`; helper privati
+  `_build_tax_bonus_per_month`, `_resolve_inflation_config`,
+  `_build_inflation_factors_deterministic`,
+  `_build_inflation_factors_stochastic`. In `mode='deterministic'` la
+  simulazione resta byte-identica al pre-Fase-11 (verificato dai 184
+  test esistenti).
+- `MonteCarloResults` esteso con `inflation_annual_rates_paths`,
+  `df_inflation`, `bonus_per_month_eur`, `tax_bonus_total_eur`.
+- `application._build_inflation_plot_payload` (fan chart inflazione,
+  None in deterministico) e `_build_cashflow_table_payload` (medi
+  mensili: savings nominali/reali, bonus, profit cum, prezzo,
+  fattore di inflazione). `tax_bonus_total_eur` in `AnalysisResponse`.
+- `scenario_builder._build_inflation_config` e `_build_tax_bonus_config`
+  parsano i sotto-blocchi JSON; `validation._validate_tax_bonus` e
+  `_validate_inflation` enforce dei limiti.
+- Schemi Pydantic `TaxBonusSchema`, `InflationSchema` (con
+  `model_validator` sul vincolo `min_clip ≤ max_clip`).
+- Nuovi endpoint `GET /api/runs/{id}/export/cashflow.xlsx` (openpyxl
+  via `output/exporters/xlsx_cashflow.py`) e
+  `GET /api/runs/{id}/export/report.pdf` (WeasyPrint+Jinja2+matplotlib
+  via `output/exporters/pdf_report.py`). `PersistenceService.get_run_result`
+  aggiunto per il fetch del singolo run. StreamingResponse con
+  `Content-Disposition: attachment` per il download nativo.
+- Frontend: form opzionali nel wizard Scenario e nella pagina Design
+  (`ScenarioBuilder.svelte`, `CampaignBuilder.svelte`) con conversione
+  UI % ↔ payload 0–1.
+- Frontend: tab "Inflazione" in `Dashboard.svelte` con fan chart del
+  fattore cumulativo (`getInflationChart`), card KPI "Bonus fiscale
+  totale", pulsanti "Scarica Excel" / "Scarica PDF" nell'header del
+  run, e icona Download overlay in `ResultsChart.svelte`
+  (`chart.toBase64Image()` di Chart.js).
+- Rinomina UI Campagna → Design: route `/design` (con alias `/campaign`
+  per retrocompat), Navbar, titoli e badge in Dashboard, h1 e copie in
+  CampaignBuilder con blocco didattico CAPEX/OPEX, link in
+  ScenarioBuilder. `config_type='campaign'` nel DB e API
+  `/api/campaigns/...` lasciate intatte (CLAUDE.md §Glossario).
+- Dipendenze: `openpyxl`, `weasyprint`, `Jinja2` aggiunte a
+  `requirements.txt`; `Dockerfile.backend` esteso con
+  `libpango-1.0-0 libpangoft2-1.0-0 libcairo2 libgdk-pixbuf-2.0-0
+  libffi-dev shared-mime-info fonts-dejavu-core`.
+- 26 nuovi test (`tests/test_inflation_config.py`,
+  `tests/test_tax_bonus.py`, `tests/test_phase11_scenario_round_trip.py`,
+  `tests/test_phase11_payload.py`, `tests/test_phase11_export.py`). Suite
+  completa: 225/225 verde.
 
 **Fase 6 — Riorganizzazione UI come wizard** — chiusa 2026-05-27.
 

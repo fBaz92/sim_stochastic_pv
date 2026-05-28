@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Mapping
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 import numpy as np
 
@@ -136,6 +136,163 @@ def _build_price_plot_payload(
     }
 
 
+# Phase 11 — same cap applied to the inflation fan chart, so the JSON
+# payload stays well under the SQLite practical limit for `summary` JSON.
+_INFLATION_SAMPLE_PATHS_LIMIT: int = _PRICE_SAMPLE_PATHS_LIMIT
+
+
+def _build_inflation_plot_payload(
+    results: MonteCarloResults,
+    sample_paths_limit: int = _INFLATION_SAMPLE_PATHS_LIMIT,
+) -> Dict[str, Any] | None:
+    """
+    Build the JSON-friendly inflation block for the Dashboard fan chart.
+
+    Returns ``None`` when the simulator ran in deterministic mode — the
+    fan chart degenerates to a single line in that case and is not worth
+    rendering. When stochastic, the payload mirrors the price block:
+    per-year aggregates plus a capped set of full sample trajectories
+    of the cumulative inflation factor.
+
+    Args:
+        results: MonteCarloResults from a stochastic-inflation run.
+        sample_paths_limit: Maximum number of cumulative-factor sample
+            paths included in the payload (deterministic stride).
+
+    Returns:
+        Dict with keys ``years``, ``mean_factor``, ``p05_factor``,
+        ``p95_factor``, ``mean_rate``, ``sample_paths`` — or None if the
+        simulator was deterministic.
+    """
+    if results.df_inflation is None or results.inflation_annual_rates_paths is None:
+        return None
+
+    df_inf = results.df_inflation
+    rates_paths = results.inflation_annual_rates_paths  # (n_mc, n_years)
+    n_mc, n_years = rates_paths.shape
+
+    # Reconstruct per-path cumulative factor (year 0 -> 1.0, year k ->
+    # prod(1+r_1..r_k)). Mirrors the convention in
+    # MonteCarloSimulator._build_inflation_factors_stochastic.
+    ones_col = np.ones((n_mc, 1))
+    cumulative_year_end = np.cumprod(1.0 + rates_paths, axis=1)
+    cumulative_per_year = np.concatenate(
+        [ones_col, cumulative_year_end[:, :-1]], axis=1
+    )  # (n_mc, n_years)
+
+    if n_mc <= sample_paths_limit:
+        selected_idx = np.arange(n_mc)
+    else:
+        stride = max(1, n_mc // sample_paths_limit)
+        selected_idx = np.arange(0, n_mc, stride)[:sample_paths_limit]
+
+    sample_paths: List[List[float]] = [
+        cumulative_per_year[i, :].tolist() for i in selected_idx
+    ]
+
+    return {
+        "years": df_inf["year"].tolist(),
+        "mean_factor": df_inf["mean_factor"].tolist(),
+        "p05_factor": df_inf["p05_factor"].tolist(),
+        "p95_factor": df_inf["p95_factor"].tolist(),
+        "mean_rate": df_inf["mean_rate"].tolist(),
+        "sample_paths": sample_paths,
+    }
+
+
+def _build_cashflow_table_payload(results: MonteCarloResults) -> Dict[str, Any]:
+    """
+    Build the monthly cash-flow table used by the Excel/PDF exporters.
+
+    All series are *means across Monte Carlo paths* at monthly granularity.
+    The table is structured as a "column store" (one key per column) for
+    cheap JSON serialisation and for easy reshaping into a pandas
+    DataFrame on the consumer side.
+
+    Args:
+        results: MonteCarloResults with the full path arrays still attached.
+
+    Returns:
+        Dict with keys:
+            - ``months``: list[int], 0-based month indices.
+            - ``mean_savings_eur``: mean nominal monthly savings (incl. bonus).
+            - ``mean_savings_real_eur``: mean inflation-adjusted savings.
+            - ``bonus_per_month_eur``: sparse bonus vector (0 where empty).
+            - ``mean_profit_cum_eur``: mean cumulative profit, nominal.
+            - ``mean_profit_cum_real_eur``: mean cumulative profit, real.
+            - ``mean_price_eur_per_kwh``: mean electricity price per month.
+            - ``mean_inflation_factor``: mean cumulative inflation factor.
+
+    Notes:
+        - The bonus is already folded into ``mean_savings_eur`` (the
+          simulator adds it inside the per-month loop). The separate
+          ``bonus_per_month_eur`` column is provided so the Excel reader
+          can split it out and compute "savings excluding bonus" cheaply.
+        - For deterministic-inflation runs the mean inflation factor is a
+          simple ``(1+r)^year`` curve, identical across all paths.
+    """
+    n_months = len(results.df_profit)
+    months_list = results.df_profit["month_index"].tolist()
+
+    mean_savings_eur = results.monthly_savings_eur_paths.mean(axis=0).tolist()
+    mean_savings_real_eur = results.monthly_savings_real_eur_paths.mean(axis=0).tolist()
+    bonus_per_month_eur = (
+        results.bonus_per_month_eur.tolist()
+        if results.bonus_per_month_eur is not None
+        else [0.0] * n_months
+    )
+    mean_profit_cum_eur = results.df_profit["mean_gain_eur"].tolist()
+    mean_profit_cum_real_eur = results.df_profit["mean_gain_real_eur"].tolist()
+
+    if results.df_price is not None:
+        mean_price = results.df_price["price_mean_eur_per_kwh"].tolist()
+    else:
+        mean_price = [None] * n_months
+
+    # Mean cumulative inflation factor at monthly granularity. For
+    # stochastic runs we expand the per-year mean factor over 12 months.
+    # For deterministic runs we recompute the (1+r)^year curve from
+    # ``mean_savings_eur / mean_savings_real_eur`` to avoid storing yet
+    # another array on MonteCarloResults — but this can produce NaNs when
+    # the nominal savings are zero. Safer: derive from df_inflation when
+    # available, else from results.monthly_savings_eur_paths /
+    # monthly_savings_real_eur_paths (path-wise division before averaging).
+    if results.df_inflation is not None:
+        mean_factor_per_year = np.asarray(results.df_inflation["mean_factor"].tolist())
+        mean_inflation_factor = np.repeat(mean_factor_per_year, 12).tolist()
+    else:
+        # Deterministic: derive the factor from the ratio of nominal to
+        # real savings PATH-WISE then average. This is robust to zero
+        # savings months because the simulator multiplies path-wise by
+        # the same factor for nominal and real, so the ratio is the
+        # constant deterministic factor for every (path, month).
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = np.where(
+                results.monthly_savings_real_eur_paths != 0.0,
+                results.monthly_savings_eur_paths
+                / results.monthly_savings_real_eur_paths,
+                np.nan,
+            )
+        # Use nanmean to ignore months where nominal=real=0 (no division).
+        mean_inflation_factor = np.nanmean(ratio, axis=0)
+        # Replace any all-nan column with 1.0 (start of horizon, no
+        # inflation effect yet).
+        mean_inflation_factor = np.where(
+            np.isnan(mean_inflation_factor), 1.0, mean_inflation_factor
+        ).tolist()
+
+    return {
+        "months": months_list,
+        "mean_savings_eur": mean_savings_eur,
+        "mean_savings_real_eur": mean_savings_real_eur,
+        "bonus_per_month_eur": bonus_per_month_eur,
+        "mean_profit_cum_eur": mean_profit_cum_eur,
+        "mean_profit_cum_real_eur": mean_profit_cum_real_eur,
+        "mean_price_eur_per_kwh": mean_price,
+        "mean_inflation_factor": mean_inflation_factor,
+    }
+
+
 class SimulationApplication:
     """
     High-level orchestrator used by the CLI and (future) FastAPI surface.
@@ -158,12 +315,44 @@ class SimulationApplication:
         self.persistence = persistence
         self.result_builder = result_builder
 
+    def _resolve_location_name(
+        self, scenario_payload: Mapping[str, Any]
+    ) -> str | None:
+        """
+        Best-effort lookup of the solar profile's location name.
+
+        Used to enrich the persisted ``summary`` with a string the
+        Dashboard can use as a filter facet. Returns None when no profile
+        is referenced or the persistence layer is unavailable.
+        """
+        if not self.persistence:
+            return None
+        solar_cfg = scenario_payload.get("solar") or {}
+        profile_id = solar_cfg.get("solar_profile_id")
+        profile = None
+        if profile_id is not None:
+            try:
+                profile = self.persistence.get_solar_profile_by_id(int(profile_id))
+            except Exception:  # noqa: BLE001
+                profile = None
+        if profile is None:
+            name = solar_cfg.get("solar_profile_name")
+            if name:
+                try:
+                    profile = self.persistence.get_solar_profile_by_name(name)
+                except Exception:  # noqa: BLE001
+                    profile = None
+        if profile is None:
+            return None
+        return getattr(profile, "location_name", None) or getattr(profile, "name", None)
+
     def run_analysis(
         self,
         *,
         n_mc: int | None = None,
         seed: int = 123,
         scenario_data: ScenarioData = None,
+        progress_callback: "Callable[[int, int, float, float], None] | None" = None,
     ) -> Dict[str, Any]:
         """
         Execute the single-scenario Monte Carlo analysis.
@@ -212,13 +401,28 @@ class SimulationApplication:
             economic_config=econ_cfg,
         )
 
-        results = mc.run(seed=seed)
+        results = mc.run(
+            seed=seed,
+            progress_callback=progress_callback,
+            show_progress=progress_callback is None,
+        )
         scenario_name = scenario_payload.get("scenario_name", "custom_scenario")
 
         price_plot = _build_price_plot_payload(results)
+        # Phase 11 — optional inflation fan chart payload (None in
+        # deterministic mode; the Dashboard tab degrades gracefully).
+        inflation_plot = _build_inflation_plot_payload(results)
+        # Phase 11 — monthly cash-flow table for Excel/PDF exporters.
+        cashflow_table = _build_cashflow_table_payload(results)
+
+        # Phase 12 — capture the solar profile location so the Dashboard
+        # can offer a "Filter by location" facet without re-reading the
+        # scenario JSON. Falls back to None when no profile is wired.
+        location_name = self._resolve_location_name(scenario_payload)
 
         summary = {
             "scenario": scenario_name,
+            "location_name": location_name,
             "final_gain_mean_eur": float(results.df_profit["mean_gain_eur"].iloc[-1]),
             "final_gain_real_mean_eur": float(results.df_profit["mean_gain_real_eur"].iloc[-1]),
             "prob_gain": float(results.df_profit["prob_gain"].iloc[-1]),
@@ -229,6 +433,10 @@ class SimulationApplication:
             "break_even_month_p95": results.break_even_month_p95,
             "npv_median_eur": results.npv_median_eur,
             "irr_mean": results.irr_mean,
+            # Phase 11 — total bonus disbursed. Always present (0.0 when
+            # the feature is disabled) so the Dashboard can display it
+            # unconditionally.
+            "tax_bonus_total_eur": float(results.tax_bonus_total_eur),
             "plots_data": {
                 "profit": {
                     "months": results.df_profit["month_index"].tolist(),
@@ -261,6 +469,12 @@ class SimulationApplication:
                     ]
                 },
                 "price": price_plot,
+                # Phase 11 — inflation fan chart (None in deterministic mode).
+                "inflation": inflation_plot,
+                # Phase 11 — monthly cash-flow table used by the Excel/PDF
+                # exporters (and any client that needs the raw monthly
+                # means, e.g. a future "Tabella cassa" tab).
+                "cashflow_table": cashflow_table,
             }
         }
 
@@ -303,6 +517,7 @@ class SimulationApplication:
         seed: int = 123,  # Default seed unified to 123 for consistency across workflows
         n_mc: int | None = None,
         scenario_data: ScenarioData = None,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> Dict[str, Any]:
         """
         Execute the optimization batch covering all configured scenarios.
@@ -322,6 +537,10 @@ class SimulationApplication:
         price_model = build_default_price_model(scenario_data=scenario_payload)
         solar_model = build_default_solar_model(scenario_payload)
 
+        # Phase 12 — resolved once for the whole sweep so each persisted
+        # run inherits the same location label.
+        opt_location_name = self._resolve_location_name(scenario_payload)
+
         optimizer = ScenarioOptimizer(
             request=request,
             base_energy_config=base_energy_cfg,
@@ -330,7 +549,11 @@ class SimulationApplication:
             load_profile_factory=lambda payload=scenario_payload: build_default_load_profile(payload),
             solar_model=solar_model,
         )
-        evaluations = optimizer.run(seed=seed)
+        evaluations = optimizer.run(
+            seed=seed,
+            external_progress_callback=progress_callback,
+            show_progress=progress_callback is None,
+        )
 
         output_dir = None
         if self.save_outputs and self.result_builder:
@@ -433,6 +656,10 @@ class SimulationApplication:
                     battery=battery_record,
                 )
                 summary = _build_summary(ev)
+                # Phase 12 — copy the resolved location into the per-run
+                # summary so the Dashboard can filter design results by
+                # location as well.
+                summary["location_name"] = opt_location_name
                 self.persistence.record_run_result(
                     "optimization",
                     summary,

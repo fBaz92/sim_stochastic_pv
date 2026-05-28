@@ -35,8 +35,12 @@ Monte Carlo toolkit for residential photovoltaic + battery systems. The project 
 - pip + virtualenv
 - SQLite (bundled) or PostgreSQL (optional)
 - Docker (optional, for containerized stack)
+- **WeasyPrint native libs** (only for the Phase-11 PDF export):
+  - macOS: `brew install pango cairo gdk-pixbuf libffi`
+  - Debian/Ubuntu: `apt-get install libpango-1.0-0 libpangoft2-1.0-0 libcairo2 libgdk-pixbuf-2.0-0 libffi-dev shared-mime-info fonts-dejavu-core`
+  - Already baked into the Docker image (`Dockerfile.backend`).
 
-`requirements.txt` lists runtime deps (FastAPI, NumPy, Pandas, Matplotlib, SciPy, SQLAlchemy, etc.). Install dev-only tools (pytest, mypy, ruff…) as needed.
+`requirements.txt` lists runtime deps (FastAPI, NumPy, Pandas, Matplotlib, SciPy, SQLAlchemy, openpyxl, WeasyPrint, Jinja2, etc.). Install dev-only tools (pytest, mypy, ruff…) as needed.
 
 ---
 
@@ -178,8 +182,32 @@ Key endpoints (all prefixed by `/api`):
 | `POST` | `/api/analysis` | Execute a single scenario run, return summary metrics. |
 | `POST` | `/api/optimization` | Kick off an optimization batch and return best options. |
 | `GET`  | `/api/runs` | List persisted runs with metadata. |
+| `GET`  | `/api/runs/{id}/export/cashflow.xlsx` | **Phase 11** — Excel with the monthly mean cash-flow table + KPI sheet. |
+| `GET`  | `/api/runs/{id}/export/report.pdf` | **Phase 11** — PDF report with KPI cards, all charts (profit/energy/price/inflation) and cash-flow table. |
 
 Docs + interactive “Try it out” page: `http://localhost:8000/docs`.
+
+The two export endpoints read only the persisted ``summary`` JSON, so they
+work even after the original on-disk artefacts (``results/...``) have been
+deleted. The PDF degrades gracefully on legacy runs (predating Phase 11):
+sections without data are skipped instead of erroring.
+
+### Phase 11 — tax bonus & stochastic inflation
+
+Scenarios and Designs can now opt into:
+
+- **Tax bonus** — a fraction of the upfront CAPEX returned yearly at
+  year-end (Italian-style "Detrazione fiscale"). Configurable via
+  `economic.tax_bonus = {enabled, fraction_of_investment (0–1),
+  duration_years}`.
+- **Stochastic inflation** — the legacy scalar `inflation_rate` is
+  superseded by `economic.inflation = {mode: 'stochastic'|'deterministic',
+  mean, std, min_clip, max_clip}`. In `stochastic` mode the simulator
+  samples one annual rate per (path, year) from a Truncated Normal,
+  widening the real-return uncertainty band.
+
+Both blocks are strictly opt-in: legacy scenarios continue to produce
+byte-identical results.
 
 ### Frontend
 

@@ -17,9 +17,13 @@ persistence is enabled.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+import io
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 from ...application import SimulationApplication
+from ...output.exporters import build_cashflow_xlsx, build_pdf_report
 from ...persistence import PersistenceService
 from .. import dependencies
 from ..schemas import simulation as sim_schemas
@@ -211,6 +215,12 @@ def trigger_optimization(
 @router.get("/runs", response_model=list[sim_schemas.RunResult])
 def list_runs(
     limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    scenario_name: str | None = Query(None),
+    location: str | None = Query(None),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    include_archived: bool = Query(False),
     persistence: PersistenceService = Depends(dependencies.get_persistence_service),
 ) -> list[sim_schemas.RunResult]:
     """
@@ -280,5 +290,147 @@ def list_runs(
         - Empty list if no runs have been executed
         - Runs are only stored if persistence is enabled in application config
     """
-    records = persistence.list_run_results(limit=limit)
+    records = persistence.list_run_results(
+        limit=limit,
+        offset=offset,
+        scenario_name=scenario_name,
+        location=location,
+        date_from=date_from,
+        date_to=date_to,
+        include_archived=include_archived,
+    )
     return records
+
+
+# Phase 12 — Dashboard helper endpoints: distinct locations (for the
+# filter dropdown), soft archive toggle, hard delete.
+
+
+@router.get("/runs/locations", response_model=list[str])
+def list_run_locations(
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> list[str]:
+    """Return the distinct location names across all run results."""
+    return persistence.list_distinct_run_locations()
+
+
+@router.delete("/runs/{run_id}", status_code=204)
+def delete_run(
+    run_id: int,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> None:
+    """Hard-delete a run result. 404 when the id is unknown."""
+    removed = persistence.delete_run_result(run_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+
+@router.patch("/runs/{run_id}/archive", response_model=sim_schemas.RunResult)
+def archive_run(
+    run_id: int,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+):
+    """Mark a run as archived (hidden from the default Dashboard list)."""
+    record = persistence.set_run_archived(run_id, archived=True)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    return record
+
+
+@router.patch("/runs/{run_id}/unarchive", response_model=sim_schemas.RunResult)
+def unarchive_run(
+    run_id: int,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+):
+    """Clear the archived flag on a run."""
+    record = persistence.set_run_archived(run_id, archived=False)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    return record
+
+
+# Phase 11 — Excel export endpoint. Reads the persisted ``summary`` JSON
+# of a run (which now includes the ``cashflow_table`` payload) and
+# streams an .xlsx workbook back to the client.
+@router.get("/runs/{run_id}/export/cashflow.xlsx")
+def export_run_cashflow_xlsx(
+    run_id: int,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> StreamingResponse:
+    """
+    Export the monthly cash flow of a run as an Excel workbook.
+
+    The workbook has two sheets: "Cash flow medio" (one row per month with
+    nominal/real savings, bonus, cumulative profit, price, inflation
+    factor) and "KPI" (decision metrics).
+
+    Args:
+        run_id: Primary key of the run to export. The run must have been
+            executed in Phase 11 or later (older runs lack the
+            ``cashflow_table`` payload and respond with 422).
+
+    Returns:
+        StreamingResponse with the .xlsx file content.
+
+    Raises:
+        HTTPException 404: No run with the given id exists.
+        HTTPException 422: Run exists but predates Phase 11 (no
+            ``cashflow_table`` in the summary).
+    """
+    record = persistence.get_run_result(run_id)
+    if record is None:
+        raise HTTPException(
+            status_code=404, detail=f"Run with id={run_id} not found"
+        )
+    buffer = io.BytesIO()
+    try:
+        build_cashflow_xlsx(record.summary, buffer)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    buffer.seek(0)
+    filename = f"cashflow_run_{run_id}.xlsx"
+    return StreamingResponse(
+        buffer,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/runs/{run_id}/export/report.pdf")
+def export_run_report_pdf(
+    run_id: int,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> StreamingResponse:
+    """
+    Export the full Monte Carlo report of a run as a PDF.
+
+    The PDF includes the Decisione KPI cards, the profit/energy/price/
+    inflation charts (matplotlib-rendered) and a cash-flow table. The
+    renderer reads only the ``RunResultRecord.summary`` JSON, so older
+    runs without the Phase-11 payloads still produce a (smaller) report.
+
+    Args:
+        run_id: Primary key of the run to export.
+
+    Returns:
+        StreamingResponse with the generated PDF.
+
+    Raises:
+        HTTPException 404: No run with the given id exists.
+    """
+    record = persistence.get_run_result(run_id)
+    if record is None:
+        raise HTTPException(
+            status_code=404, detail=f"Run with id={run_id} not found"
+        )
+    buffer = io.BytesIO()
+    build_pdf_report(record.summary, run_id=record.id, buffer=buffer)
+    buffer.seek(0)
+    filename = f"report_run_{run_id}.pdf"
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

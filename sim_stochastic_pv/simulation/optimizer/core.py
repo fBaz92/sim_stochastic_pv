@@ -345,13 +345,25 @@ class ScenarioOptimizer:
             return None
         return int(df_profit[mask]["month_index"].iloc[0])
 
-    def run(self, seed: int = 123, show_progress: bool = True) -> List[ScenarioEvaluation]:
+    def run(
+        self,
+        seed: int = 123,
+        show_progress: bool = True,
+        external_progress_callback: Callable[[int, int, str], None] | None = None,
+    ) -> List[ScenarioEvaluation]:
         """
         Execute optimization across all scenario combinations.
 
         Args:
             seed: Master random seed for reproducibility.
-            show_progress: Whether to display progress bar.
+            show_progress: Whether to display the legacy tqdm progress bar
+                on stdout. Suppressed automatically when
+                ``external_progress_callback`` is provided.
+            external_progress_callback: Optional callback invoked once per
+                completed configuration. Signature
+                ``(done_scenarios, total_scenarios, current_desc)``.
+                Used by the API job queue (Phase 12) to drive a UI
+                progress bar.
 
         Returns:
             List of evaluated scenarios with results.
@@ -432,6 +444,8 @@ class ScenarioOptimizer:
             if show_progress:
                 completed_line = f"Scenario {idx+1}/{total} completato."
                 self._render_progress(completed_line)
+            if external_progress_callback is not None:
+                external_progress_callback(completed, total, scenario_desc)
 
         if show_progress:
             final_line = "Tutti gli scenari completati."

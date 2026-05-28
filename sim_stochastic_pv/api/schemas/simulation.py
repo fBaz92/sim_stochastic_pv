@@ -13,9 +13,74 @@ scenario configurations and receive economic analysis results.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class TaxBonusSchema(BaseModel):
+    """
+    Pydantic schema for the optional ``economic.tax_bonus`` block (Phase 11).
+
+    The bonus is rendered as a yearly cash inflow paid at the end of each
+    year for ``duration_years`` years, with each instalment equal to
+    ``investment_eur * fraction_of_investment / duration_years``.
+
+    Attributes:
+        enabled: Whether the bonus applies. When False the simulator
+            ignores the other fields entirely.
+        fraction_of_investment: Total fraction of CAPEX returned across
+            the bonus duration, expressed as a decimal in [0, 1].
+            Example: 0.5 means the user gets 50% of the investment back.
+        duration_years: Number of yearly instalments (>= 1). If
+            ``duration_years`` exceeds the simulation horizon, only the
+            instalments that fit are paid (silent truncation).
+    """
+
+    enabled: bool = False
+    fraction_of_investment: float = Field(
+        default=0.5, ge=0.0, le=1.0,
+        description="Fraction of CAPEX returned across the bonus (0-1, decimal)",
+    )
+    duration_years: int = Field(
+        default=10, ge=1,
+        description="Number of yearly instalments (>= 1)",
+    )
+
+
+class InflationSchema(BaseModel):
+    """
+    Pydantic schema for the optional ``economic.inflation`` block (Phase 11).
+
+    Replaces the legacy scalar ``economic.inflation_rate`` with a richer
+    object. The deterministic mode is byte-identical to the legacy
+    behaviour; the stochastic mode samples one annual rate per
+    (Monte Carlo path × year) from a Truncated Normal.
+
+    Attributes:
+        mode: 'deterministic' (default, legacy-equivalent) or 'stochastic'.
+        mean: Annual mean inflation rate (decimal, e.g. 0.025 = 2.5%).
+        std: Annual standard deviation. Only used in stochastic mode;
+            ignored otherwise.
+        min_clip: Lower bound applied per-draw to prevent extreme
+            deflation tails.
+        max_clip: Upper bound applied per-draw.
+    """
+
+    mode: Literal["deterministic", "stochastic"] = "deterministic"
+    mean: float = Field(default=0.025, description="Annual mean rate (decimal)")
+    std: float = Field(default=0.0, ge=0.0, description="Annual std (decimal, >=0)")
+    min_clip: float = Field(default=-0.02, description="Lower clip applied per draw")
+    max_clip: float = Field(default=0.10, description="Upper clip applied per draw")
+
+    @model_validator(mode="after")
+    def _check_clip_interval(self) -> "InflationSchema":
+        if self.min_clip > self.max_clip:
+            raise ValueError(
+                "InflationSchema: min_clip must be <= max_clip "
+                f"(got min_clip={self.min_clip}, max_clip={self.max_clip})"
+            )
+        return self
 
 
 class AnalysisRequest(BaseModel):
@@ -208,6 +273,17 @@ class AnalysisResponse(BaseModel):
             "None if no valid IRR exists (e.g. investment never recovered)."
         ),
     )
+    # Phase 11 — total tax bonus disbursed during the simulation horizon.
+    # 0.0 when the bonus is disabled (default), positive when enabled.
+    # Optional for backward compatibility with runs stored before Phase 11.
+    tax_bonus_total_eur: Optional[float] = Field(
+        None,
+        description=(
+            "Total tax bonus disbursed during the simulation horizon (EUR). "
+            "0.0 when the feature is disabled; None on legacy runs stored "
+            "before Phase 11."
+        ),
+    )
 
 
 class OptimizationRequest(BaseModel):
@@ -391,3 +467,7 @@ class RunResult(BaseModel):
     scenario_id: Optional[int] = Field(None, description="Link to scenario if from saved scenario")
     optimization_id: Optional[int] = Field(None, description="Link to optimization if from campaign")
     created_at: datetime = Field(..., description="Timestamp of result creation")
+    # Phase 12 — soft archive flag.
+    archived_at: Optional[datetime] = Field(
+        None, description="When the user archived this run, or None if active"
+    )

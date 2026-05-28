@@ -96,6 +96,12 @@ def validate_scenario(data: Dict[str, Any]) -> List[str]:
                 elif data["economic"]["n_years"] <= 0:
                     errors.append("economic.n_years must be positive")
 
+            # Phase 11 — tax_bonus and inflation sub-blocks
+            if "tax_bonus" in data["economic"]:
+                errors.extend(_validate_tax_bonus(data["economic"]["tax_bonus"]))
+            if "inflation" in data["economic"]:
+                errors.extend(_validate_inflation(data["economic"]["inflation"]))
+
     # Validate price model
     if "price" in data:
         if not isinstance(data["price"], dict):
@@ -181,6 +187,87 @@ def _validate_price_model(price_cfg: Dict[str, Any]) -> List[str]:
                 "price.long_term_price_eur_per_kwh must be a strictly positive number"
             )
 
+    return errors
+
+
+def _validate_tax_bonus(raw: Any) -> List[str]:
+    """
+    Validate the ``economic.tax_bonus`` block (Phase 11).
+
+    Enforces sane bounds on the fraction (0–1) and the duration (≥ 1).
+    Does NOT enforce ``duration_years ≤ n_years`` because the simulator
+    silently truncates oversized durations (documented behaviour).
+
+    Args:
+        raw: The ``tax_bonus`` sub-dict, or anything if the user typed
+            the wrong shape.
+
+    Returns:
+        List of human-readable error messages.
+    """
+    errors: List[str] = []
+    if not isinstance(raw, dict):
+        return ["economic.tax_bonus must be a dict/object"]
+    if "enabled" in raw and not isinstance(raw["enabled"], bool):
+        errors.append("economic.tax_bonus.enabled must be a boolean")
+    if "fraction_of_investment" in raw:
+        f = raw["fraction_of_investment"]
+        if not isinstance(f, (int, float)):
+            errors.append(
+                "economic.tax_bonus.fraction_of_investment must be a number"
+            )
+        elif not (0.0 <= float(f) <= 1.0):
+            errors.append(
+                "economic.tax_bonus.fraction_of_investment must be in [0, 1] "
+                "(decimal fraction, e.g. 0.5 for 50%)"
+            )
+    if "duration_years" in raw:
+        d = raw["duration_years"]
+        if not isinstance(d, int) or isinstance(d, bool):
+            errors.append("economic.tax_bonus.duration_years must be an integer")
+        elif d < 1:
+            errors.append(
+                "economic.tax_bonus.duration_years must be >= 1"
+            )
+    return errors
+
+
+_VALID_INFLATION_MODES = {"deterministic", "stochastic"}
+
+
+def _validate_inflation(raw: Any) -> List[str]:
+    """
+    Validate the ``economic.inflation`` block (Phase 11).
+
+    Enforces the mode literal, non-negative std, and a coherent clipping
+    interval. Does NOT require that ``mean`` itself lies inside the clip
+    interval — sampling will clip out-of-range draws, which is the
+    expected behaviour for a Truncated Normal.
+    """
+    errors: List[str] = []
+    if not isinstance(raw, dict):
+        return ["economic.inflation must be a dict/object"]
+    if "mode" in raw:
+        if raw["mode"] not in _VALID_INFLATION_MODES:
+            errors.append(
+                f"economic.inflation.mode must be one of "
+                f"{sorted(_VALID_INFLATION_MODES)}; got {raw['mode']!r}"
+            )
+    for key in ("mean", "std", "min_clip", "max_clip"):
+        if key in raw and not isinstance(raw[key], (int, float)):
+            errors.append(f"economic.inflation.{key} must be a number")
+    if "std" in raw and isinstance(raw["std"], (int, float)) and raw["std"] < 0:
+        errors.append("economic.inflation.std must be non-negative")
+    if (
+        "min_clip" in raw
+        and "max_clip" in raw
+        and isinstance(raw["min_clip"], (int, float))
+        and isinstance(raw["max_clip"], (int, float))
+        and raw["min_clip"] > raw["max_clip"]
+    ):
+        errors.append(
+            "economic.inflation.min_clip must be <= economic.inflation.max_clip"
+        )
     return errors
 
 

@@ -108,7 +108,81 @@ export const api = {
         return request(`/campaigns/${campaignId}/run${query}`, { method: 'POST' });
     },
 
-    async listRuns() {
-        return request('/runs');
+    /**
+     * List run results with optional filters and pagination.
+     * @param {object} [opts]
+     * @param {number} [opts.limit]  Max rows (default backend = 50).
+     * @param {number} [opts.offset]  Pagination offset (default 0).
+     * @param {string} [opts.scenarioName]  Substring filter on summary.scenario.
+     * @param {string} [opts.location]  Exact match on summary.location_name.
+     * @param {string} [opts.dateFrom]  ISO timestamp lower bound (inclusive).
+     * @param {string} [opts.dateTo]    ISO timestamp upper bound (inclusive).
+     * @param {boolean} [opts.includeArchived]  Include archived runs.
+     */
+    async listRuns(opts = {}) {
+        const params = new URLSearchParams();
+        if (opts.limit != null) params.set('limit', String(opts.limit));
+        if (opts.offset != null) params.set('offset', String(opts.offset));
+        if (opts.scenarioName) params.set('scenario_name', opts.scenarioName);
+        if (opts.location) params.set('location', opts.location);
+        if (opts.dateFrom) params.set('date_from', opts.dateFrom);
+        if (opts.dateTo) params.set('date_to', opts.dateTo);
+        if (opts.includeArchived) params.set('include_archived', 'true');
+        const qs = params.toString();
+        return request('/runs' + (qs ? `?${qs}` : ''));
+    },
+    async listRunLocations() {
+        return request('/runs/locations');
+    },
+    async archiveRun(runId) {
+        return request(`/runs/${runId}/archive`, { method: 'PATCH' });
+    },
+    async unarchiveRun(runId) {
+        return request(`/runs/${runId}/unarchive`, { method: 'PATCH' });
+    },
+    async deleteRun(runId) {
+        return request(`/runs/${runId}`, { method: 'DELETE' });
+    },
+
+    // Phase 11 — download helpers for the per-run Excel and PDF exports.
+    // We expose URLs (rather than fetching the binary) so the Dashboard
+    // can use a plain <a href download> link and the browser handles the
+    // save-as dialog natively.
+    runCashflowXlsxUrl(runId) {
+        return `${API_BASE}/runs/${runId}/export/cashflow.xlsx`;
+    },
+    runReportPdfUrl(runId) {
+        return `${API_BASE}/runs/${runId}/export/report.pdf`;
+    },
+
+    // Phase 12 — background job queue. The submit endpoints return a
+    // job_id immediately; the client polls the status endpoint to drive
+    // the floating progress bar.
+    async submitAnalysisJob(payload) {
+        return request('/jobs/analysis', { method: 'POST', body: JSON.stringify(payload) });
+    },
+    async submitOptimizationJob(payload) {
+        return request('/jobs/optimization', { method: 'POST', body: JSON.stringify(payload) });
+    },
+    async getJob(jobId) {
+        return request(`/jobs/${jobId}`);
+    },
+
+    // Phase 11+ — inline load profile templates and Excel parsing.
+    loadProfileTemplateUrl(kind) {
+        return `${API_BASE}/load-profiles/template/${kind}.xlsx`;
+    },
+    async parseLoadProfileXlsx(kind, file) {
+        const fd = new FormData();
+        fd.append("file", file);
+        const response = await fetch(
+            `${API_BASE}/load-profiles/parse-xlsx/${kind}`,
+            { method: "POST", body: fd },
+        );
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({ detail: response.statusText }));
+            throw new Error(err.detail || "Upload failed");
+        }
+        return response.json();
     },
 };
