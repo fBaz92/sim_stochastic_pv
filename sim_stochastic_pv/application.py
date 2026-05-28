@@ -384,8 +384,11 @@ class SimulationApplication:
                 scenario_payload
             )
         load_profile = build_default_load_profile(scenario_payload)
-        solar_model = build_default_solar_model(scenario_payload)
-        energy_cfg = build_default_energy_config(scenario_payload)
+        solar_model = build_default_solar_model(scenario_payload, self.persistence)
+        # Phase 16 — energy_cfg now also wires the optional ThermalModel /
+        # ElectricalModel from the scenario JSON (resolved via the
+        # persistence service when climate_profile_id is set).
+        energy_cfg = build_default_energy_config(scenario_payload, self.persistence)
         price_model = build_default_price_model(scenario_data=scenario_payload)
         econ_cfg = build_default_economic_config(n_mc=n_mc, scenario_data=scenario_payload)
 
@@ -437,6 +440,11 @@ class SimulationApplication:
             # the feature is disabled) so the Dashboard can display it
             # unconditionally.
             "tax_bonus_total_eur": float(results.tax_bonus_total_eur),
+            # Phase 16 — aggregated electrical KPIs (None when the
+            # detailed model is disabled). The Dashboard reads this
+            # block to render the new "Salute hardware" card with
+            # hours_dc_overvoltage / hours_outside_mppt / peak voltages.
+            "electrical": results.electrical_kpis_summary,
             "plots_data": {
                 "profit": {
                     "months": results.df_profit["month_index"].tolist(),
@@ -532,10 +540,10 @@ class SimulationApplication:
         """
         scenario_payload = load_scenario_data(scenario_data)
         request = build_default_optimization_request(scenario_payload)
-        base_energy_cfg = build_default_energy_config(scenario_payload)
+        base_energy_cfg = build_default_energy_config(scenario_payload, self.persistence)
         econ_cfg = build_default_economic_config(n_mc=n_mc, scenario_data=scenario_payload)
         price_model = build_default_price_model(scenario_data=scenario_payload)
-        solar_model = build_default_solar_model(scenario_payload)
+        solar_model = build_default_solar_model(scenario_payload, self.persistence)
 
         # Phase 12 — resolved once for the whole sweep so each persisted
         # run inherits the same location label.

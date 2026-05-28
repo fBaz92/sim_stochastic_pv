@@ -1,0 +1,21 @@
+{
+  "name": "SolarEdge SE3000H-RW000BNN4",
+  "manufacturer": "SolarEdge",
+  "model_number": "SE3000H-RW000BNN4",
+  "nominal_power_kw": 3.0,
+  "specs": {
+    "p_ac_max_kw": 3.0,
+    "p_dc_max_kw": 4.65,
+    "price_eur": 1200.0,
+    "install_cost_eur": 800.0,
+    "v_dc_min_v": 220.0,
+    "v_dc_max_v": 480.0,
+    "v_mppt_min_v": 350.0,
+    "v_mppt_max_v": 480.0,
+    "n_mppt_trackers": 1,
+    "i_dc_max_per_mppt_a": 14.0,
+    "efficiency_max": 0.99,
+    "warranty_years": 12,
+    "datasheet_note": "HD-Wave technology, mandatory pairing with power optimizers"
+  }
+}

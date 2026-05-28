@@ -1,0 +1,21 @@
+{
+  "name": "SMA Sunny Boy 5.0-1AV-41",
+  "manufacturer": "SMA",
+  "model_number": "Sunny Boy 5.0-1AV-41",
+  "nominal_power_kw": 5.0,
+  "specs": {
+    "p_ac_max_kw": 5.0,
+    "p_dc_max_kw": 7.5,
+    "price_eur": 1700.0,
+    "install_cost_eur": 800.0,
+    "v_dc_min_v": 100.0,
+    "v_dc_max_v": 600.0,
+    "v_mppt_min_v": 175.0,
+    "v_mppt_max_v": 500.0,
+    "n_mppt_trackers": 2,
+    "i_dc_max_per_mppt_a": 15.0,
+    "efficiency_max": 0.974,
+    "warranty_years": 10,
+    "datasheet_note": "Single-phase transformerless with integrated Webconnect"
+  }
+}

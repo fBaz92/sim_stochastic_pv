@@ -28,6 +28,15 @@ from .configurations import (
     SavedConfigurationResponse,
     ScenarioResponse,
 )
+from .external import (
+    ClimateNormalsResponse,
+    ClimateProfileFromLocationRequest,
+    ClimateProfilePreviewResponse,
+    ClimateProfileResponse,
+    GeocodeRequest,
+    GeocodeResultResponse,
+    SolarProfileFromLocationRequest,
+)
 from .hardware import (
     BatteryCreate,
     BatteryResponse,
@@ -76,4 +85,13 @@ __all__ = [
     "SavedConfigurationResponse",
     "SavedConfigurationCreate",
     "ScenarioResponse",
+    # External / geolocation schemas (Phase 14)
+    "ClimateNormalsResponse",
+    "GeocodeRequest",
+    "GeocodeResultResponse",
+    "SolarProfileFromLocationRequest",
+    # Climate profile schemas (Phase 15)
+    "ClimateProfileFromLocationRequest",
+    "ClimateProfilePreviewResponse",
+    "ClimateProfileResponse",
 ]

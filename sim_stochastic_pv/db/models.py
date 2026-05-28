@@ -315,6 +315,73 @@ class SolarProfileModel(Base, TimestampMixin):
     notes = Column(Text, nullable=True)
 
 
+class ClimateProfileModel(Base, TimestampMixin):
+    """
+    Database model for stochastic thermal (ambient-temperature) profiles.
+
+    Stores a fully-calibrated :class:`ThermalModel` (Phase 15) for a single
+    geographic location, ready to be replayed by the simulator for
+    Phase-16 electrical derating and Phase-17 HVAC load coupling.
+
+    Calibration provenance lives in the JSON ``monthly_params`` blob so a
+    future change in :class:`ThermalMonthParams` schema can be detected
+    and re-fitted instead of silently corrupted.
+
+    Attributes:
+        id: Primary key.
+        name: Unique short identifier (e.g. ``"Pavullo"``).
+        location_name: Human-readable description (Nominatim display_name).
+        latitude: Decimal latitude in degrees.
+        longitude: Decimal longitude in degrees.
+        elevation_m: Elevation in metres (Open-Meteo gridcell), optional.
+        source: Provenance string (e.g. ``"OpenMeteo Archive"``).
+        harmonic: JSON object with keys ``{"a0", "a1", "a2"}`` carrying
+            the deterministic seasonal harmonic coefficients (°C).
+        monthly_params: JSON list of 12 objects, one per calendar month
+            (index 0 = January). Each entry has keys
+            ``{"t_std_residual_c", "persistence_phi", "t_amplitude_c",
+            "gpd_upper", "gpd_lower"}`` where the two GPD entries are
+            either ``null`` or
+            ``{"threshold", "shape", "scale", "exceedance_prob"}``.
+        climate_trend_c_per_year: Linear trend (°C/year) applied on top
+            of the seasonal mean (0 = stationary climate). Phase 15
+            default 0; users opt in by editing the profile.
+        lookback_window: JSON object ``{"start_year", "end_year"}`` of
+            the archive window used for calibration (audit).
+        notes: Free-text metadata (e.g. RMSE of the harmonic fit).
+
+    Notes:
+        - The serialization helpers live in
+          :mod:`sim_stochastic_pv.persistence.climate_repo` (because
+          they import :mod:`simulation.thermal` and we keep DB models
+          dependency-light).
+        - Linked to :class:`ScenarioRecord` via ``climate_profile_id``
+          (introduced as a nullable foreign key in the same Phase-15
+          migration). Scenarios without a climate profile preserve the
+          pre-Phase-15 behaviour (no thermal model).
+    """
+
+    __tablename__ = "climate_profiles"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), unique=True, nullable=False, index=True)
+
+    # Location metadata
+    location_name = Column(String(255), nullable=False)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    elevation_m = Column(Float, nullable=True)
+    source = Column(String(255), nullable=True)
+
+    # Calibrated model payload
+    harmonic = Column(JSON, nullable=False)            # {a0, a1, a2}
+    monthly_params = Column(JSON, nullable=False)      # list[12] of dicts
+    climate_trend_c_per_year = Column(Float, nullable=False, default=0.0)
+    lookback_window = Column(JSON, nullable=True)      # {start_year, end_year}
+
+    notes = Column(Text, nullable=True)
+
+
 class ScenarioRecord(Base, TimestampMixin):
     """
     Database model for complete PV system scenario configurations.

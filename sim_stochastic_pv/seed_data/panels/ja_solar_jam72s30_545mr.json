@@ -1,0 +1,22 @@
+{
+  "name": "JA Solar JAM72S30-545/MR",
+  "manufacturer": "JA Solar",
+  "model_number": "JAM72S30-545/MR",
+  "power_w": 545.0,
+  "specs": {
+    "power_w": 545.0,
+    "price_eur": 170.0,
+    "efficiency": 0.211,
+    "v_oc_stc_v": 49.75,
+    "v_mpp_stc_v": 41.86,
+    "i_sc_stc_a": 13.93,
+    "i_mpp_stc_a": 13.02,
+    "n_cells_series": 144,
+    "beta_voc_pct_per_c": -0.272,
+    "gamma_pmax_pct_per_c": -0.350,
+    "noct_c": 45.0,
+    "dimensions_mm": [2278, 1134, 35],
+    "warranty_years": 25,
+    "datasheet_note": "DeepBlue 3.0 MBB half-cell PERC"
+  }
+}

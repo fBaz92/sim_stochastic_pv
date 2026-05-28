@@ -18,6 +18,19 @@ CLI) can import from.
 from __future__ import annotations
 
 from .battery import BatteryBank, BatterySpecs
+from .electrical import (
+    DEFAULT_DERATING_EXPONENT_K,
+    ElectricalKPIs,
+    ElectricalModel,
+    InverterElectricalSpecs,
+    PanelElectricalSpecs,
+    PvString,
+    aggregate_kpis,
+    cell_temperature_c,
+    missing_inverter_fields,
+    missing_panel_fields,
+    v_string_at_cell_temperature,
+)
 from .energy_simulator import EnergySystemConfig, EnergySystemSimulator
 from .inverter import InverterAC
 from .load_profiles import (
@@ -60,6 +73,18 @@ __all__ = [
     "BatteryBank",
     "BatterySpecs",
     "InverterAC",
+    # Electrical model (Phase 16 — opt-in MPPT-window derating)
+    "DEFAULT_DERATING_EXPONENT_K",
+    "ElectricalKPIs",
+    "ElectricalModel",
+    "InverterElectricalSpecs",
+    "PanelElectricalSpecs",
+    "PvString",
+    "aggregate_kpis",
+    "cell_temperature_c",
+    "missing_inverter_fields",
+    "missing_panel_fields",
+    "v_string_at_cell_temperature",
     "PVModelSingleDiode",
     "SolarModel",
     "SolarMonthParams",

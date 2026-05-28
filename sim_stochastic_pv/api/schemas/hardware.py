@@ -96,6 +96,16 @@ class InverterResponse(BaseModel):
     integrated_battery_specs: Optional[Dict[str, Any]] = None
     integrated_battery_price_eur: Optional[float] = None
     integrated_battery_count_options: Optional[List[int]] = None
+    # Phase 16 — optional electrical datasheet fields. ``None`` is the
+    # backward-compat sentinel ("legacy hardware without MPPT detail"),
+    # so the front-end can simply hide the "Modello elettrico
+    # dettagliato" panel when these come back unset.
+    v_dc_min_v: Optional[float] = None
+    v_dc_max_v: Optional[float] = None
+    v_mppt_min_v: Optional[float] = None
+    v_mppt_max_v: Optional[float] = None
+    n_mppt_trackers: Optional[int] = None
+    i_dc_max_per_mppt_a: Optional[float] = None
     datasheet: Optional[Any] = None
     specs: Optional[Dict[str, Any]] = None
 
@@ -125,6 +135,16 @@ class InverterResponse(BaseModel):
                 "integrated_battery_specs",
                 "integrated_battery_price_eur",
                 "integrated_battery_count_options",
+                # Phase 16 — surface electrical specs through the same
+                # auto-populate mechanism so DB rows that store them
+                # only in the ``specs`` JSON blob still show up at the
+                # top level for API consumers.
+                "v_dc_min_v",
+                "v_dc_max_v",
+                "v_mppt_min_v",
+                "v_mppt_max_v",
+                "n_mppt_trackers",
+                "i_dc_max_per_mppt_a",
                 "datasheet",
             ],
         )
@@ -192,6 +212,16 @@ class InverterCreate(BaseModel):
     integrated_battery_specs: Optional[Dict[str, Any]] = Field(None, description="Integrated battery specifications")
     integrated_battery_price_eur: Optional[float] = Field(None, ge=0, description="Integrated battery price in EUR")
     integrated_battery_count_options: Optional[List[int]] = Field(None, description="Available battery counts")
+    # Phase 16 — optional electrical datasheet fields (all-or-nothing
+    # validation belongs to the simulator's ``validation._validate_electrical``;
+    # the CRUD endpoint accepts partial fills so the user can refine
+    # them later).
+    v_dc_min_v: Optional[float] = Field(None, ge=0, description="Inverter DC operating window: lower bound (V)")
+    v_dc_max_v: Optional[float] = Field(None, ge=0, description="Inverter DC operating window: upper bound (V)")
+    v_mppt_min_v: Optional[float] = Field(None, ge=0, description="MPPT tracking window: lower bound (V)")
+    v_mppt_max_v: Optional[float] = Field(None, ge=0, description="MPPT tracking window: upper bound (V)")
+    n_mppt_trackers: Optional[int] = Field(None, ge=1, description="Number of independent MPPT inputs (>=1)")
+    i_dc_max_per_mppt_a: Optional[float] = Field(None, ge=0, description="Maximum DC current per MPPT input (A)")
     datasheet: Optional[str | Dict[str, Any]] = Field(None, description="Datasheet URL or metadata")
     specs: Optional[Dict[str, Any]] = Field(None, description="Additional specifications (JSON)")
 
@@ -253,6 +283,17 @@ class PanelResponse(BaseModel):
     model_number: Optional[str] = None
     power_w: Optional[float] = None
     price_eur: Optional[float] = None
+    # Phase 16 — optional electrical datasheet fields. ``None`` means
+    # the legacy "energy-only" panel (no MPPT/thermal detail). The
+    # front-end gates the electrical UI on the presence of these.
+    v_oc_stc_v: Optional[float] = None
+    v_mpp_stc_v: Optional[float] = None
+    i_sc_stc_a: Optional[float] = None
+    i_mpp_stc_a: Optional[float] = None
+    n_cells_series: Optional[int] = None
+    beta_voc_pct_per_c: Optional[float] = None
+    gamma_pmax_pct_per_c: Optional[float] = None
+    noct_c: Optional[float] = None
     datasheet: Optional[Any] = None
     specs: Optional[Dict[str, Any]] = None
 
@@ -269,7 +310,24 @@ class PanelResponse(BaseModel):
             Enhanced values with specs fields merged into top-level fields.
         """
         values = _coerce_to_dict(values)
-        return _merge_specs_defaults(values, ["price_eur", "datasheet"])
+        return _merge_specs_defaults(
+            values,
+            [
+                "price_eur",
+                # Phase 16 — pull electrical datasheet fields from the
+                # ``specs`` JSON blob into top-level attributes so API
+                # consumers can read them without a second roundtrip.
+                "v_oc_stc_v",
+                "v_mpp_stc_v",
+                "i_sc_stc_a",
+                "i_mpp_stc_a",
+                "n_cells_series",
+                "beta_voc_pct_per_c",
+                "gamma_pmax_pct_per_c",
+                "noct_c",
+                "datasheet",
+            ],
+        )
 
 
 class PanelCreate(BaseModel):
@@ -319,6 +377,22 @@ class PanelCreate(BaseModel):
     model_number: Optional[str] = Field(None, description="Manufacturer's model number")
     power_w: float = Field(..., gt=0, description="Rated power in watts under STC (must be > 0)")
     price_eur: Optional[float] = Field(None, ge=0, description="Purchase price per panel in EUR (must be >= 0)")
+    # Phase 16 — optional electrical datasheet fields. The CRUD endpoint
+    # accepts partial fills; the simulator enforces the all-or-nothing
+    # contract via ``validation._validate_electrical`` when the scenario
+    # opts into ``electrical.mode='mppt_window'``.
+    v_oc_stc_v: Optional[float] = Field(None, ge=0, description="Open-circuit voltage at STC (V)")
+    v_mpp_stc_v: Optional[float] = Field(None, ge=0, description="MPP voltage at STC (V)")
+    i_sc_stc_a: Optional[float] = Field(None, ge=0, description="Short-circuit current at STC (A)")
+    i_mpp_stc_a: Optional[float] = Field(None, ge=0, description="MPP current at STC (A)")
+    n_cells_series: Optional[int] = Field(None, ge=1, description="Number of cells wired in series")
+    beta_voc_pct_per_c: Optional[float] = Field(
+        None, description="V_oc temperature coefficient (%/°C, typically negative)"
+    )
+    gamma_pmax_pct_per_c: Optional[float] = Field(
+        None, description="P_max temperature coefficient (%/°C, typically negative)"
+    )
+    noct_c: Optional[float] = Field(None, description="Nominal Operating Cell Temperature (°C)")
     datasheet: Optional[str | Dict[str, Any]] = Field(None, description="Datasheet URL or metadata")
     specs: Optional[Dict[str, Any]] = Field(None, description="Additional specifications (JSON)")
 

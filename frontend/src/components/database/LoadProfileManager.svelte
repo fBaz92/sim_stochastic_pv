@@ -189,11 +189,21 @@
             );
         }
 
-        await api.createLoadProfile({
+        const payload = {
             name: newItem.name,
             profile_type: newItem.profile_type,
             data: payloadData,
-        });
+        };
+        try {
+            if (editingId != null) {
+                await api.updateLoadProfile(editingId, payload);
+            } else {
+                await api.createLoadProfile(payload);
+            }
+        } catch (e) {
+            alert("Errore nel salvataggio: " + e.message);
+            return;
+        }
         cancelForm();
         load();
     }
@@ -237,7 +247,7 @@
         <div id="load-profile-form" class="card form-card">
             <h3>{editingId ? "Modifica profilo" : "Nuovo profilo"}</h3>
             {#if editingId}
-                <p class="edit-hint">Il nome identifica univocamente il profilo.</p>
+                <p class="edit-hint">Stai modificando un profilo esistente. Puoi anche rinominarlo.</p>
             {/if}
             <form
                 on:submit={(e) => {

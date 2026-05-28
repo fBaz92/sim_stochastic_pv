@@ -1,0 +1,21 @@
+{
+  "name": "Huawei SUN2000-5KTL-L1",
+  "manufacturer": "Huawei",
+  "model_number": "SUN2000-5KTL-L1",
+  "nominal_power_kw": 5.0,
+  "specs": {
+    "p_ac_max_kw": 5.0,
+    "p_dc_max_kw": 7.5,
+    "price_eur": 1300.0,
+    "install_cost_eur": 800.0,
+    "v_dc_min_v": 90.0,
+    "v_dc_max_v": 600.0,
+    "v_mppt_min_v": 90.0,
+    "v_mppt_max_v": 560.0,
+    "n_mppt_trackers": 2,
+    "i_dc_max_per_mppt_a": 12.5,
+    "efficiency_max": 0.982,
+    "warranty_years": 10,
+    "datasheet_note": "Single-phase hybrid-ready inverter with battery interface"
+  }
+}

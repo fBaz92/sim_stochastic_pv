@@ -217,6 +217,53 @@ class PriceProfileCreate(BaseModel):
     data: Dict[str, Any] = Field(..., description="Price model configuration")
 
 
+class SolarProfileUpdate(BaseModel):
+    """
+    Schema for updating an existing :class:`SolarProfileModel` by ID.
+
+    All fields are optional: only the keys present in the payload are
+    written to the underlying record. This lets the UI rename a profile
+    (or correct metadata like ``location_name`` or ``notes``) without
+    having to resubmit the full PVGIS-derived monthly arrays.
+
+    Attributes:
+        name: Short identifier (must remain unique).
+        location_name: Human-readable description.
+        latitude: Decimal latitude.
+        longitude: Decimal longitude.
+        elevation_m: Elevation in metres.
+        optimal_tilt_degrees: Optimal tilt angle (°).
+        optimal_azimuth_degrees: Optimal azimuth (°, 180 = south).
+        avg_daily_kwh_per_kwp: Monthly avg daily production (12 floats).
+        p_sunny: Monthly probability of sunny day (12 floats, 0-1).
+        weather_persistence: Monthly weather persistence factor (12 floats).
+        sunny_factor: Production multiplier on sunny days.
+        cloudy_factor: Production multiplier on cloudy days.
+        source: Provenance attribution.
+        notes: Free-text metadata.
+
+    Notes:
+        Validation of monthly array lengths is intentionally permissive —
+        the wizard step rejects malformed input upstream, and the editor
+        in the Database UI presents inline guards.
+    """
+
+    name: Optional[str] = Field(None, min_length=1)
+    location_name: Optional[str] = None
+    latitude: Optional[float] = Field(None, ge=-90.0, le=90.0)
+    longitude: Optional[float] = Field(None, ge=-180.0, le=180.0)
+    elevation_m: Optional[float] = None
+    optimal_tilt_degrees: Optional[float] = Field(None, ge=0.0, le=90.0)
+    optimal_azimuth_degrees: Optional[float] = Field(None, ge=0.0, le=360.0)
+    avg_daily_kwh_per_kwp: Optional[List[float]] = None
+    p_sunny: Optional[List[float]] = None
+    weather_persistence: Optional[List[float]] = None
+    sunny_factor: Optional[float] = Field(None, gt=0.0)
+    cloudy_factor: Optional[float] = Field(None, ge=0.0)
+    source: Optional[str] = None
+    notes: Optional[str] = None
+
+
 class SolarProfileResponse(BaseModel):
     """
     Solar irradiance profile response schema.

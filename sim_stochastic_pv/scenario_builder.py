@@ -10,25 +10,31 @@ from sim_stochastic_pv.simulation import (
     AreraLoadProfile,
     BatteryOption,
     BatterySpecs,
+    DEFAULT_DERATING_EXPONENT_K,
     EconomicConfig,
+    ElectricalModel,
     EnergySystemConfig,
     EscalatingPriceModel,
     GBMPriceModel,
     InflationConfig,
+    InverterElectricalSpecs,
     InverterOption,
     LoadProfile,
     LoadScenarioBlueprint,
     MeanRevertingPriceModel,
     MonthlyAverageLoadProfile,
     OptimizationRequest,
+    PanelElectricalSpecs,
     PanelOption,
     PriceModel,
+    PvString,
     SolarModel,
     TaxBonusConfig,
     WeeklyPatternLoadProfile,
     WEEKLY_PRESETS,
     make_default_solar_params_for_pavullo,
 )
+from sim_stochastic_pv.simulation.thermal import ThermalModel
 DEFAULT_SCENARIO_PATH = Path(__file__).resolve().parent / "examples" / "home_away_default.json"
 
 
@@ -240,6 +246,55 @@ def _build_single_load_profile_factory(sub_cfg: Mapping[str, Any]) -> "callable"
     )
 
 
+def _looks_like_phase8_single_side(load_cfg: Mapping[str, Any]) -> bool:
+    """
+    Detect whether a load-profile dict without ``kind`` field is actually a
+    single-sided Phase-8 sub-profile (saved by the LoadProfileManager UI)
+    rather than the legacy ``home_profiles_w`` / ``away_profiles_w`` shape.
+
+    Returns ``True`` when any of these Phase-8 single-side markers is present
+    at the root of ``load_cfg``:
+
+    - ``monthly_w`` — flat 12-value monthly average.
+    - ``monthly_24h_w`` — 12×24 monthly × hourly matrix.
+    - ``weekly_pattern_w`` — 7×24 weekly pattern.
+    - ``type`` ∈ {``arera``, ``weekly``} (case-insensitive).
+
+    Returns ``False`` when the dict looks legacy (``home_profiles_w`` or
+    ``away_profiles_w`` keys present) — the legacy branch handles those.
+
+    The check is deliberately conservative: an *unknown* shape (no Phase-8
+    marker, no legacy marker) returns ``False`` so the legacy branch fires
+    its own informative error message. This keeps a single failure mode
+    instead of two for malformed input.
+
+    Args:
+        load_cfg: The root dict of a load-profile payload.
+
+    Returns:
+        True if the dict should be routed to :func:`_build_single_load_profile_factory`.
+
+    Example:
+        ```python
+        # Saved DB profile (UI "custom" mode):
+        _looks_like_phase8_single_side({"monthly_w": [200]*12})       # True
+        # Saved DB profile (UI "custom_24h" mode):
+        _looks_like_phase8_single_side({"monthly_24h_w": [[200]*24]*12})  # True
+        # Saved DB profile (UI "arera" mode):
+        _looks_like_phase8_single_side({"type": "arera"})              # True
+        # Legacy inline scenario:
+        _looks_like_phase8_single_side({"home_profiles_w": [200]*12})  # False
+        ```
+    """
+    phase8_keys = {"monthly_w", "monthly_24h_w", "weekly_pattern_w"}
+    if any(key in load_cfg for key in phase8_keys):
+        return True
+    declared_type = str(load_cfg.get("type", "")).lower()
+    if declared_type in ("arera", "weekly"):
+        return True
+    return False
+
+
 def _legacy_side_factory(
     load_cfg: Mapping[str, Any],
     *,
@@ -388,6 +443,15 @@ def build_default_load_profile(scenario_data: Mapping[str, Any] | str | Path | N
             )
         home_factory = _build_single_load_profile_factory(load_cfg["home"])
         away_factory = _build_single_load_profile_factory(load_cfg["away"])
+    elif _looks_like_phase8_single_side(load_cfg):
+        # DB-saved single-sided profiles ("custom", "custom_24h",
+        # "weekly", "arera") — the LoadProfileManager stores them as a
+        # flat dict with the Phase-8 sub-profile keys at root level
+        # (``monthly_w``, ``monthly_24h_w``, ``weekly_pattern_w``,
+        # or ``type``). Treat the whole dict as the home sub-profile
+        # and fall back to ARERA for the away side.
+        home_factory = _build_single_load_profile_factory(load_cfg)
+        away_factory = lambda: AreraLoadProfile()
     else:
         # Legacy inline scenario form (pre-Phase 8).
         home_factory = _legacy_side_factory(
@@ -589,7 +653,191 @@ def _solar_model_from_db_record(profile, pv_kwp, degradation_per_year, panel_til
     )
 
 
-def build_default_energy_config(scenario_data: Mapping[str, Any] | str | Path | None = None) -> EnergySystemConfig:
+def build_default_thermal_model(
+    scenario_data: Mapping[str, Any] | str | Path | None = None,
+    persistence=None,
+) -> ThermalModel | None:
+    """
+    Resolve the Phase-15 :class:`ThermalModel` referenced by the scenario.
+
+    Looks for a top-level ``climate_profile_id`` (preferred) or
+    ``climate_profile_name`` key in the scenario JSON and asks the
+    persistence service to hydrate the calibrated model. Returns
+    ``None`` when neither key is present, when no persistence service
+    is wired (CLI / standalone), or when the referenced profile does
+    not exist in the database. The caller decides whether ``None`` is
+    a fatal condition (Phase 16 ``mode='mppt_window'`` requires it) or
+    a silent legacy fallback (default scenarios).
+
+    Args:
+        scenario_data: JSON path, dict, or ``None`` for the packaged
+            example.
+        persistence: Optional :class:`PersistenceService` used to fetch
+            the climate profile. Required when the scenario contains
+            ``climate_profile_id`` / ``climate_profile_name``.
+
+    Returns:
+        :class:`ThermalModel` instance ready for the simulator, or
+        ``None`` when the scenario does not reference any climate
+        profile or the lookup yields nothing.
+
+    Raises:
+        ValueError: When the referenced profile id/name does not
+            resolve to a record (only when ``persistence`` is wired —
+            a missing persistence service yields a quiet ``None``).
+    """
+    data = load_scenario_data(scenario_data)
+    profile_id = data.get("climate_profile_id")
+    profile_name = data.get("climate_profile_name")
+    if profile_id is None and profile_name is None:
+        return None
+    if persistence is None:
+        return None
+    if profile_id is not None:
+        thermal = persistence.load_thermal_model(int(profile_id))
+        if thermal is None:
+            raise ValueError(
+                f"climate_profile_id={profile_id} not found in the database"
+            )
+        return thermal
+    record = persistence.climate.get_climate_profile_by_name(str(profile_name))
+    if record is None:
+        raise ValueError(
+            f"climate_profile_name={profile_name!r} not found in the database"
+        )
+    return persistence.load_thermal_model(record.id)
+
+
+def _coerce_pv_string(raw: Mapping[str, Any]) -> PvString:
+    """
+    Parse one entry of ``electrical.pv_strings`` into a :class:`PvString`.
+
+    All fields default to a single south-facing string on the first
+    MPPT tracker, matching the simulator's legacy behaviour.
+    """
+    return PvString(
+        n_panels=int(raw["n_panels"]),
+        tilt_degrees=float(raw.get("tilt_degrees", raw.get("tilt", 35.0))),
+        azimuth_degrees=float(raw.get("azimuth_degrees", raw.get("azimuth", 180.0))),
+        mppt_id=int(raw.get("mppt_id", 0)),
+    )
+
+
+def build_default_electrical_model(
+    scenario_data: Mapping[str, Any] | str | Path | None = None,
+    *,
+    energy_cfg: Mapping[str, Any] | None = None,
+) -> ElectricalModel | None:
+    """
+    Build the Phase-16 :class:`ElectricalModel` from a scenario JSON.
+
+    The function looks at ``scenario_data["electrical"]`` and returns
+    ``None`` whenever the block is missing or sets
+    ``mode = "off"`` — the simulator must then run the legacy
+    byte-identical energy path. When ``mode = "mppt_window"`` the
+    function pulls panel + inverter datasheet specs from inline
+    ``panel`` / ``inverter`` sub-blocks (the wizard frontend writes
+    them after the user picks hardware from the DB catalog), assembles
+    a list of :class:`PvString` from ``pv_strings`` (or synthesises a
+    single default string covering all the panels), and wires the
+    whole thing into an :class:`ElectricalModel` ready for the
+    simulator.
+
+    Args:
+        scenario_data: JSON path, dict, or ``None`` for the packaged
+            example.
+        energy_cfg: Optional pre-extracted ``data["energy"]`` block
+            (avoids re-loading the scenario twice when called inside
+            :func:`build_default_energy_config`).
+
+    Returns:
+        :class:`ElectricalModel` when the block opts in; ``None``
+        otherwise.
+
+    Raises:
+        ValueError: When ``mode='mppt_window'`` but the required
+            datasheet fields are missing or the layout is internally
+            inconsistent (e.g. zero panels). The error message lists
+            the missing fields so the user can fix the JSON.
+    """
+    data = load_scenario_data(scenario_data)
+    elec_cfg = data.get("electrical")
+    if not isinstance(elec_cfg, Mapping):
+        return None
+    mode = str(elec_cfg.get("mode", "off")).lower()
+    if mode in ("off", "", "disabled"):
+        return None
+    if mode != "mppt_window":
+        raise ValueError(
+            f"electrical.mode={mode!r} not recognised. "
+            "Valid values: 'off', 'mppt_window'."
+        )
+
+    panel_raw = elec_cfg.get("panel") or {}
+    inverter_raw = elec_cfg.get("inverter") or {}
+    panel_specs = PanelElectricalSpecs(
+        power_w=panel_raw.get("power_w"),
+        v_oc_stc_v=panel_raw.get("v_oc_stc_v"),
+        v_mpp_stc_v=panel_raw.get("v_mpp_stc_v"),
+        i_sc_stc_a=panel_raw.get("i_sc_stc_a"),
+        i_mpp_stc_a=panel_raw.get("i_mpp_stc_a"),
+        n_cells_series=panel_raw.get("n_cells_series"),
+        beta_voc_pct_per_c=panel_raw.get("beta_voc_pct_per_c"),
+        gamma_pmax_pct_per_c=panel_raw.get("gamma_pmax_pct_per_c"),
+        noct_c=panel_raw.get("noct_c"),
+    )
+    inverter_specs = InverterElectricalSpecs(
+        v_dc_min_v=inverter_raw.get("v_dc_min_v"),
+        v_dc_max_v=inverter_raw.get("v_dc_max_v"),
+        v_mppt_min_v=inverter_raw.get("v_mppt_min_v"),
+        v_mppt_max_v=inverter_raw.get("v_mppt_max_v"),
+        n_mppt_trackers=int(inverter_raw.get("n_mppt_trackers", 1)),
+        i_dc_max_per_mppt_a=inverter_raw.get("i_dc_max_per_mppt_a"),
+    )
+
+    strings_raw = elec_cfg.get("pv_strings")
+    if isinstance(strings_raw, list) and strings_raw:
+        strings = [_coerce_pv_string(s) for s in strings_raw]
+    else:
+        # Synthesise a single default string covering all panels using
+        # the energy block's pv_kwp and the panel nameplate.
+        cfg = energy_cfg if energy_cfg is not None else data.get("energy", {})
+        pv_kwp = float(cfg.get("pv_kwp", 0.0) or 0.0)
+        panel_power_w = panel_specs.power_w
+        if panel_power_w in (None, 0):
+            raise ValueError(
+                "electrical.mode='mppt_window' requires either "
+                "electrical.pv_strings or a panel.power_w to derive "
+                "the default single-string layout."
+            )
+        if pv_kwp <= 0:
+            raise ValueError(
+                "electrical.mode='mppt_window' requires energy.pv_kwp > 0 "
+                "when electrical.pv_strings is not provided."
+            )
+        n_panels = max(1, int(round(pv_kwp * 1000.0 / panel_power_w)))
+        # Tilt/azimuth taken from the solar block (PVGIS-aligned) or
+        # default to optimal south-facing.
+        solar_cfg = data.get("solar", {})
+        tilt = float(solar_cfg.get("panel_tilt_degrees", 35.0))
+        az = float(solar_cfg.get("panel_azimuth_degrees", 180.0))
+        strings = [PvString(n_panels=n_panels, tilt_degrees=tilt, azimuth_degrees=az, mppt_id=0)]
+
+    derating_exp = float(elec_cfg.get("derating_exponent_k", DEFAULT_DERATING_EXPONENT_K))
+    n_years = int((energy_cfg or data.get("energy", {})).get("n_years", 20))
+    return ElectricalModel(
+        panel=panel_specs,
+        inverter=inverter_specs,
+        strings=strings,
+        derating_exponent_k=derating_exp,
+        n_years=n_years,
+    )
+
+
+def build_default_energy_config(
+    scenario_data: Mapping[str, Any] | str | Path | None = None,
+    persistence=None,
+) -> EnergySystemConfig:
     data = load_scenario_data(scenario_data)
     energy_cfg = data["energy"]
     battery_specs_data = energy_cfg.get("battery_specs", {"capacity_kwh": 0.0, "cycles_life": 6000})
@@ -599,12 +847,34 @@ def build_default_energy_config(scenario_data: Mapping[str, Any] | str | Path | 
         # missing key — fall back to the BatterySpecs class default of 6000).
         cycles_life=battery_specs_data.get("cycles_life") or 6000,
     )
+    # Phase 16 — optional detailed electrical model (opt-in via
+    # ``electrical.mode='mppt_window'``). The companion ``ThermalModel``
+    # is resolved from the scenario's ``climate_profile_id`` so the
+    # MPPT-window logic has hourly T_ambient to work with. Both stay
+    # ``None`` in legacy scenarios, preserving the byte-identical
+    # pre-Phase-16 energy path.
+    electrical_model = build_default_electrical_model(data, energy_cfg=energy_cfg)
+    thermal_model = (
+        build_default_thermal_model(data, persistence)
+        if electrical_model is not None
+        else None
+    )
+    if electrical_model is not None and thermal_model is None:
+        raise ValueError(
+            "electrical.mode='mppt_window' requires a climate_profile_id "
+            "(Phase 15) so the simulator can compute T_cell from hourly "
+            "ambient temperatures. Either set climate_profile_id at the "
+            "scenario root or downgrade electrical.mode to 'off'."
+        )
+
     return EnergySystemConfig(
         n_years=energy_cfg.get("n_years", 20),
         pv_kwp=energy_cfg.get("pv_kwp", 2.0),
         battery_specs=battery_specs,
         n_batteries=energy_cfg.get("n_batteries", 0),
         inverter_p_ac_max_kw=energy_cfg.get("inverter_p_ac_max_kw", 1.0),
+        electrical_model=electrical_model,
+        thermal_model=thermal_model,
     )
 
 

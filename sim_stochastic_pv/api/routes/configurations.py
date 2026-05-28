@@ -282,6 +282,73 @@ def list_scenarios(
     return persistence.list_scenarios()
 
 
+@router.get(
+    "/configurations/{config_id}",
+    response_model=config_schemas.SavedConfigurationResponse,
+)
+def get_configuration(
+    config_id: int,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> config_schemas.SavedConfigurationResponse:
+    """
+    Fetch a single saved configuration by primary key.
+
+    Used by the Database UI to "load" a scenario or campaign into the
+    builder for editing.
+
+    Args:
+        config_id: Primary-key ID of the configuration.
+
+    Raises:
+        HTTPException 404: configuration not found.
+    """
+    record = persistence.get_configuration_by_id(config_id)
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Configuration id={config_id} not found",
+        )
+    return record
+
+
+@router.put(
+    "/configurations/{config_id}",
+    response_model=config_schemas.SavedConfigurationResponse,
+)
+def update_configuration(
+    config_id: int,
+    payload: config_schemas.SavedConfigurationCreate,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> config_schemas.SavedConfigurationResponse:
+    """
+    Update a saved configuration by primary key (allows rename).
+
+    Unlike POST (upsert-by-name), this endpoint matches on ``config_id``
+    so the user-visible name can be edited freely without producing a
+    duplicate record.
+
+    Args:
+        config_id: Primary-key ID of the configuration to update.
+        payload: New name + type + data.
+
+    Raises:
+        HTTPException 404: configuration not found.
+        HTTPException 409: new ``name`` already used by another record.
+    """
+    try:
+        record = persistence.update_configuration(
+            config_id, payload.name, payload.config_type, payload.data
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Configuration id={config_id} not found",
+        )
+    return record
+
+
 @router.delete("/configurations/{config_id}")
 def delete_configuration(
     config_id: int,

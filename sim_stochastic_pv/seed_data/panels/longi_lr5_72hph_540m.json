@@ -1,0 +1,22 @@
+{
+  "name": "Longi LR5-72HPH-540M",
+  "manufacturer": "Longi Solar",
+  "model_number": "LR5-72HPH-540M",
+  "power_w": 540.0,
+  "specs": {
+    "power_w": 540.0,
+    "price_eur": 175.0,
+    "efficiency": 0.209,
+    "v_oc_stc_v": 49.5,
+    "v_mpp_stc_v": 41.5,
+    "i_sc_stc_a": 13.92,
+    "i_mpp_stc_a": 13.02,
+    "n_cells_series": 144,
+    "beta_voc_pct_per_c": -0.27,
+    "gamma_pmax_pct_per_c": -0.34,
+    "noct_c": 45.0,
+    "dimensions_mm": [2256, 1133, 35],
+    "warranty_years": 25,
+    "datasheet_note": "Hi-MO 5m monofacial, 144 half-cells M10 monocrystalline PERC"
+  }
+}

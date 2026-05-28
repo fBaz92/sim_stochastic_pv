@@ -1,0 +1,22 @@
+{
+  "name": "SunPower Maxeon 3 SPR-MAX3-400",
+  "manufacturer": "SunPower",
+  "model_number": "SPR-MAX3-400",
+  "power_w": 400.0,
+  "specs": {
+    "power_w": 400.0,
+    "price_eur": 290.0,
+    "efficiency": 0.227,
+    "v_oc_stc_v": 75.6,
+    "v_mpp_stc_v": 65.8,
+    "i_sc_stc_a": 6.58,
+    "i_mpp_stc_a": 6.08,
+    "n_cells_series": 104,
+    "beta_voc_pct_per_c": -0.235,
+    "gamma_pmax_pct_per_c": -0.29,
+    "noct_c": 41.5,
+    "dimensions_mm": [1690, 1046, 40],
+    "warranty_years": 40,
+    "datasheet_note": "IBC monocrystalline, premium efficiency tier"
+  }
+}

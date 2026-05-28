@@ -146,6 +146,31 @@ class TestCLITerminology:
 
             assert exc_info.value.code == 0
 
+    def test_campaign_alias_dispatches_like_optimization(self):
+        """Phase 13: ``campaign`` is an alias of ``optimization`` (UI glossary
+        change), and must dispatch to the same subparser group. Help must
+        succeed; the subcommand grammar (list/save/run) must be available."""
+        with mock.patch.object(sys, "argv", ["cli", "campaign", "--help"]):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+        assert exc_info.value.code == 0
+
+    def test_design_alias_dispatches_like_optimization(self):
+        """Phase 13: ``design`` is the UI-facing alias of ``optimization``
+        introduced after the Phase 11 rename. Help must succeed."""
+        with mock.patch.object(sys, "argv", ["cli", "design", "--help"]):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+        assert exc_info.value.code == 0
+
+    def test_optimization_legacy_command_still_works(self):
+        """Phase 13: backward compat — the historical ``optimization`` command
+        must keep working unchanged for any external script."""
+        with mock.patch.object(sys, "argv", ["cli", "optimization", "--help"]):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+        assert exc_info.value.code == 0
+
 
 class TestCLIDefaultSeeds:
     """Tests for unified default seeds."""

@@ -169,10 +169,20 @@
     }
 
     async function handleSubmit() {
-        await api.createPriceProfile({
+        const payload = {
             name: newItem.name,
             data: buildDataPayload(),
-        });
+        };
+        try {
+            if (editingId != null) {
+                await api.updatePriceProfile(editingId, payload);
+            } else {
+                await api.createPriceProfile(payload);
+            }
+        } catch (e) {
+            alert("Errore nel salvataggio: " + e.message);
+            return;
+        }
         cancelForm();
         load();
     }
@@ -339,7 +349,7 @@
         <div id="price-profile-form" class="card form-card">
             <h3>{editingId ? "Modifica profilo" : "Nuovo profilo"}</h3>
             {#if editingId}
-                <p class="edit-hint">Il nome identifica univocamente il profilo.</p>
+                <p class="edit-hint">Stai modificando un profilo esistente. Puoi anche rinominarlo.</p>
             {/if}
             <form
                 on:submit={(e) => {

@@ -941,8 +941,7 @@
                     {:else}
                         <p>
                             Nessuna traiettoria di prezzo disponibile per
-                            questo run (il backend potrebbe essere una versione
-                            precedente alla Fase 3).
+                            questo run. Esegui di nuovo l'analisi per generarla.
                         </p>
                     {/if}
                 {:else if activeTab === "inflation"}
@@ -1040,8 +1039,8 @@
                         </div>
                     {:else}
                         <p>
-                            Cash flow non disponibile per questo run (versione precedente alla
-                            Fase 11). Esegui di nuovo l'analisi per generare la tabella.
+                            Cash flow non disponibile per questo run. Esegui di
+                            nuovo l'analisi per generare la tabella.
                         </p>
                     {/if}
                 {:else if activeTab === "raw"}

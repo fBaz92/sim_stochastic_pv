@@ -17,11 +17,18 @@
      * appena creato.
      */
     import { onMount } from "svelte";
+    import { get } from "svelte/store";
     import { api } from "../api";
-    import { pendingRunId, activeJob } from "../lib/stores";
+    import { pendingRunId, activeJob, pendingConfigurationId } from "../lib/stores";
     import MonthInput from "../components/forms/MonthInput.svelte";
     import MonthlyProfileEditor from "../components/forms/MonthlyProfileEditor.svelte";
     import WeeklyPatternEditor from "../components/forms/WeeklyPatternEditor.svelte";
+    // Phase 14 — Geolocation + PVGIS + Open-Meteo for the Luogo step.
+    import LeafletMap from "../components/LeafletMap.svelte";
+    import LocationSearch from "../components/LocationSearch.svelte";
+    import ClimateNormalsPreview from "../components/ClimateNormalsPreview.svelte";
+    // Phase 15 — Stochastic thermal model fan-chart.
+    import TemperaturePreview from "../components/TemperaturePreview.svelte";
 
     // ── Step navigation ────────────────────────────────────────────────────
     const STEPS = [
@@ -46,6 +53,12 @@
     let batteries = [];
     let loadProfiles = [];
     let savedScenarios = [];
+    // Phase 16 — panel catalog and known climate profiles. Both are
+    // loaded on mount alongside the other catalogs so the detailed
+    // electrical accordion can populate its dropdowns instantly when
+    // the user toggles it on.
+    let panels = [];
+    let climateProfiles = [];
 
     // ── Step 1 — Luogo ─────────────────────────────────────────────────────
     let selectedSolarProfileId = "";
@@ -56,6 +69,169 @@
     ) ?? null;
 
     const MONTHS_SHORT = ["Gen","Feb","Mar","Apr","Mag","Giu","Lug","Ago","Set","Ott","Nov","Dic"];
+
+    // ── Step 1 (Phase 14) — Add a profile from map ─────────────────────────
+    // Opt-in sub-flow that wraps geocoding + map + PVGIS import + Open-Meteo
+    // climate normals. Stays collapsed by default so the existing dropdown
+    // remains the obvious entry point. When the user expands it they can:
+    //
+    //   1. Type a place name → Nominatim suggests candidates
+    //   2. Pick a candidate → map centres there, lat/lon update
+    //   3. Drag the marker / click the map → refine the spot
+    //   4. Climate normals (tmax, tmin, p_sunny) fetch in the background
+    //   5. Press "Importa profilo da PVGIS" → new SolarProfileModel created
+    //      on the backend and auto-selected in the dropdown.
+    let showLocationFinder = false;
+    let pickedLat = 44.336;        // Pavullo default
+    let pickedLon = 10.831;
+    let pickedDisplayName = "";
+    let importTilt = 35.0;
+    let importAzimuth = 180.0;
+    let importLossPct = 14.0;
+    let importLookbackYears = 10;
+    let importName = "";
+    let climateNormals = null;
+    let climateLoading = false;
+    let climateError = null;
+    let importing = false;
+    let importError = null;
+    let climateDebounceTimer = null;
+    // Phase 15 — also calibrate a ClimateProfileModel (stochastic thermal
+    // model) when the user imports the PVGIS profile. Default ON because
+    // the calibration is cheap (one extra Open-Meteo call already done for
+    // the climate-normals panel) and unlocks the temperature fan chart.
+    let alsoCalibrateThermal = true;
+    let thermalPreview = null;
+    let thermalPreviewLoading = false;
+    let thermalPreviewError = null;
+
+    function onLocationPicked(event) {
+        const r = event.detail;
+        pickedLat = r.latitude;
+        pickedLon = r.longitude;
+        pickedDisplayName = r.display_name;
+        // Auto-suggest a profile name from the first token of the display
+        // (the city / locality usually). The user can edit it.
+        const shortName = (r.display_name.split(",")[0] || "Luogo").trim();
+        if (!importName) importName = shortName;
+        scheduleClimateFetch();
+    }
+
+    function onMapChange(event) {
+        pickedLat = event.detail.lat;
+        pickedLon = event.detail.lon;
+        scheduleClimateFetch();
+    }
+
+    function scheduleClimateFetch() {
+        clearTimeout(climateDebounceTimer);
+        climateDebounceTimer = setTimeout(fetchClimateNormals, 600);
+    }
+
+    async function fetchClimateNormals() {
+        climateLoading = true;
+        climateError = null;
+        try {
+            climateNormals = await api.getClimateNormals(pickedLat, pickedLon, {
+                lookback_years: importLookbackYears,
+            });
+        } catch (err) {
+            climateError = err.message || "Errore di rete";
+            climateNormals = null;
+        } finally {
+            climateLoading = false;
+        }
+    }
+
+    /** Build a default profile name from lat/lon when the user didn't type one.
+     *  Example: (45.3393, 10.1985) → "Pos_45.34_10.20". This guarantees the
+     *  ``name`` field is never empty so the backend call always proceeds; the
+     *  user can rename the profile later from the database manager. */
+    function defaultImportNameFromCoords() {
+        const lat = pickedLat.toFixed(2);
+        const lon = pickedLon.toFixed(2);
+        return `Pos_${lat}_${lon}`.replace(/-/g, "S").replace(/\./g, "_");
+    }
+
+    async function importProfileFromLocation() {
+        // Fall back to a coordinate-based name instead of refusing the call:
+        // makes the button behaviour predictable in the common case where the
+        // user only dragged the map without picking from search.
+        const effectiveName = (importName && importName.trim())
+            || defaultImportNameFromCoords();
+        importName = effectiveName;
+
+        importError = null;
+        importing = true;
+        thermalPreview = null;
+        thermalPreviewError = null;
+
+        const locationLabel = pickedDisplayName
+            || `${pickedLat.toFixed(3)}°, ${pickedLon.toFixed(3)}°`;
+
+        try {
+            // Step 1: PVGIS solar profile.
+            const record = await api.createSolarProfileFromLocation({
+                name: effectiveName,
+                location_name: locationLabel,
+                latitude: pickedLat,
+                longitude: pickedLon,
+                tilt_degrees: importTilt,
+                azimuth_degrees: importAzimuth,
+                loss_pct: importLossPct,
+                lookback_years: importLookbackYears,
+                overwrite: false,
+            });
+            // Reload list + auto-select the new record.
+            solarProfiles = await api.listSolarProfiles();
+            selectedSolarProfileId = String(record.id);
+
+            // Step 2 (Phase 15, opt-in): also calibrate the stochastic
+            // thermal model and show the fan-chart preview. We do this
+            // AFTER the solar profile is saved so the user sees the
+            // solar import as immediately successful even if the
+            // thermal calibration fails (e.g. very short archive).
+            if (alsoCalibrateThermal) {
+                await calibrateAndPreviewThermal(effectiveName, locationLabel);
+            } else {
+                showLocationFinder = false;
+            }
+        } catch (err) {
+            importError = err.message || "Errore durante l'import PVGIS.";
+        } finally {
+            importing = false;
+        }
+    }
+
+    async function calibrateAndPreviewThermal(name, locationLabel) {
+        thermalPreviewLoading = true;
+        thermalPreviewError = null;
+        try {
+            const climateRecord = await api.createClimateProfileFromLocation({
+                name: name,                  // same name across solar+climate DB tables
+                location_name: locationLabel,
+                latitude: pickedLat,
+                longitude: pickedLon,
+                lookback_years: importLookbackYears,
+                climate_trend_c_per_year: 0.0,
+                overwrite: true,             // overwrite to keep solar↔climate paired
+            });
+            // Phase 16 — keep the climate profile id for the electrical
+            // accordion and refresh the cached list so the auto-match
+            // reactive statement picks it up immediately.
+            climateProfileId = climateRecord.id;
+            climateProfiles = await api.listClimateProfiles().catch(() => climateProfiles);
+            thermalPreview = await api.previewClimateProfileById(climateRecord.id, {
+                n_paths: 50,
+                n_years: 1,
+                seed: 42,
+            });
+        } catch (err) {
+            thermalPreviewError = err.message || "Errore durante la calibrazione termica.";
+        } finally {
+            thermalPreviewLoading = false;
+        }
+    }
 
     // ── Step 2 — Impianto ──────────────────────────────────────────────────
     // When a solar profile is selected its optimal orientation pre-fills
@@ -79,6 +255,84 @@
     let batteryCapacityKwh = 5.0;
     let batteryCyclesLife = 5000;
     let nBatteries = 0;
+
+    // ── Phase 16 — detailed electrical model (opt-in) ──────────────────────
+    // The accordion appears inside step Impianto. When the user opts in,
+    // we need: a panel pick (datasheet electrical specs), the inverter
+    // electrical specs (already part of the selected inverter), and a
+    // climate_profile_id (Phase 15) on the scenario root. The legacy flow
+    // is preserved when ``electricalEnabled`` stays false.
+    let electricalEnabled = false;
+    let selectedPanelIndex = -1;
+    let selectedPanelId = null;
+    let electricalDeratingExponentK = 0.5;
+    // Climate profile id chosen / created in step Luogo. Picked up
+    // automatically by ``calibrateAndPreviewThermal`` and via a name
+    // match between the selected solar profile and listClimateProfiles.
+    let climateProfileId = null;
+
+    function onPanelChange() {
+        if (selectedPanelIndex >= 0) {
+            const p = panels[selectedPanelIndex];
+            selectedPanelId = p.id;
+        } else {
+            selectedPanelId = null;
+        }
+    }
+
+    /**
+     * Extract the electrical sub-block of the Phase-16 scenario JSON
+     * from the currently selected panel and inverter. Returns null when
+     * the user has not enabled the detailed model OR when one of the
+     * required hardware picks is missing — in both cases the simulator
+     * stays on the byte-identical legacy energy path.
+     */
+    function buildElectricalBlock() {
+        if (!electricalEnabled) return null;
+        if (selectedPanelIndex < 0 || selectedInverterIndex < 0) return null;
+        const p = panels[selectedPanelIndex] ?? {};
+        const inv = inverters[selectedInverterIndex] ?? {};
+        const pSpecs = p.specs ?? {};
+        const iSpecs = inv.specs ?? {};
+        return {
+            mode: "mppt_window",
+            panel: {
+                power_w: p.power_w ?? pSpecs.power_w,
+                v_oc_stc_v: p.v_oc_stc_v ?? pSpecs.v_oc_stc_v,
+                v_mpp_stc_v: p.v_mpp_stc_v ?? pSpecs.v_mpp_stc_v,
+                i_sc_stc_a: p.i_sc_stc_a ?? pSpecs.i_sc_stc_a,
+                i_mpp_stc_a: p.i_mpp_stc_a ?? pSpecs.i_mpp_stc_a,
+                n_cells_series: p.n_cells_series ?? pSpecs.n_cells_series,
+                beta_voc_pct_per_c: p.beta_voc_pct_per_c ?? pSpecs.beta_voc_pct_per_c,
+                gamma_pmax_pct_per_c: p.gamma_pmax_pct_per_c ?? pSpecs.gamma_pmax_pct_per_c,
+                noct_c: p.noct_c ?? pSpecs.noct_c,
+            },
+            inverter: {
+                v_dc_min_v: inv.v_dc_min_v ?? iSpecs.v_dc_min_v,
+                v_dc_max_v: inv.v_dc_max_v ?? iSpecs.v_dc_max_v,
+                v_mppt_min_v: inv.v_mppt_min_v ?? iSpecs.v_mppt_min_v,
+                v_mppt_max_v: inv.v_mppt_max_v ?? iSpecs.v_mppt_max_v,
+                n_mppt_trackers: inv.n_mppt_trackers ?? iSpecs.n_mppt_trackers ?? 1,
+                i_dc_max_per_mppt_a: inv.i_dc_max_per_mppt_a ?? iSpecs.i_dc_max_per_mppt_a,
+            },
+            derating_exponent_k: electricalDeratingExponentK,
+        };
+    }
+
+    // Phase 16 — derived flag: the toggle should be DISABLED when the
+    // user has not selected a Climate profile (no T_ambient available).
+    $: electricalReady = selectedPanelIndex >= 0 && selectedInverterIndex >= 0 && climateProfileId != null;
+    // When the selected solar profile shares a name with a climate
+    // profile already in the DB, auto-link them so the user does not
+    // have to re-pick. Runs whenever solarProfileId or the lists change.
+    $: {
+        if (selectedSolarProfile && climateProfiles.length > 0) {
+            const match = climateProfiles.find(
+                (c) => c.name === selectedSolarProfile.name,
+            );
+            if (match) climateProfileId = match.id;
+        }
+    }
 
     function onInverterChange() {
         if (selectedInverterIndex >= 0) {
@@ -297,20 +551,33 @@
     // ── Initialise remote data ─────────────────────────────────────────────
     onMount(async () => {
         try {
-            const [sp, inv, bat, lp, configs] = await Promise.all([
+            const [sp, inv, bat, lp, configs, pan, climate] = await Promise.all([
                 api.listSolarProfiles(),
                 api.listInverters(),
                 api.listBatteries(),
                 api.listLoadProfiles(),
                 api.listConfigurations("scenario"),
+                api.listPanels(),
+                api.listClimateProfiles().catch(() => []),
             ]);
             solarProfiles = sp;
             inverters = inv;
             batteries = bat;
             loadProfiles = lp;
             savedScenarios = configs;
+            panels = pan;
+            climateProfiles = climate;
         } catch (e) {
             console.error("Failed to load initial data:", e);
+        }
+        // If the Database UI asked us to open a specific saved scenario,
+        // pick it up here and run the existing "load" flow once the data
+        // has hydrated.
+        const pending = get(pendingConfigurationId);
+        if (pending != null) {
+            pendingConfigurationId.set(null);
+            selectedSavedScenarioId = String(pending);
+            await handleLoadScenario();
         }
     });
 
@@ -480,6 +747,18 @@
 
         if (selectedInverterId) scenarioClone.inverter_id = selectedInverterId;
         if (selectedBatteryId) scenarioClone.battery_id = selectedBatteryId;
+        if (selectedPanelId) scenarioClone.panel_id = selectedPanelId;
+
+        // Phase 16 — opt-in detailed electrical block. When the user
+        // does not enable the toggle the helper returns null and the
+        // legacy energy path stays byte-identical.
+        const electrical = buildElectricalBlock();
+        if (electrical) {
+            scenarioClone.electrical = electrical;
+            if (climateProfileId != null) {
+                scenarioClone.climate_profile_id = climateProfileId;
+            }
+        }
 
         applyLoadProfile(scenarioClone);
 
@@ -810,10 +1089,153 @@
                 </select>
                 <p class="hint">
                     I profili precaricati provengono da PVGIS. Se il tuo sito non è
-                    in lista puoi procedere senza selezionarlo e inserire i parametri
-                    manualmente nello step 2.
+                    in lista puoi crearne uno nuovo dalla mappa qui sotto, oppure
+                    procedere senza selezionare e inserire i parametri manualmente
+                    nello step 2.
                 </p>
             </div>
+
+            <!-- Phase 14 — Add a profile from map -->
+            <div class="form-group">
+                <button
+                    type="button"
+                    class="link-btn"
+                    on:click={() => (showLocationFinder = !showLocationFinder)}
+                >
+                    {showLocationFinder ? "▾" : "▸"}
+                    Aggiungi un nuovo profilo da mappa (PVGIS + Open-Meteo)
+                </button>
+            </div>
+
+            {#if showLocationFinder}
+                <div class="step-content card subtle">
+                    <h3 class="step-subtitle">Nuovo profilo da posizione</h3>
+                    <p class="step-desc">
+                        Cerca una località o trascina il marker sulla mappa.
+                        Il backend chiamerà <strong>PVGIS</strong> per i dati di
+                        produzione solare e <strong>Open-Meteo</strong> per le
+                        normali climatiche (probabilità di giorno sereno).
+                    </p>
+
+                    <div class="form-group">
+                        <LocationSearch on:select={onLocationPicked} />
+                    </div>
+
+                    <div class="form-group">
+                        <LeafletMap
+                            bind:lat={pickedLat}
+                            bind:lon={pickedLon}
+                            on:change={onMapChange}
+                        />
+                        <p class="hint">
+                            Lat <strong>{pickedLat.toFixed(4)}°</strong>,
+                            Lon <strong>{pickedLon.toFixed(4)}°</strong>
+                            {#if pickedDisplayName} · {pickedDisplayName}{/if}
+                        </p>
+                    </div>
+
+                    <ClimateNormalsPreview
+                        data={climateNormals}
+                        loading={climateLoading}
+                        error={climateError}
+                    />
+
+                    <div class="form-grid two-cols">
+                        <div class="form-group">
+                            <label class="label" for="import-name">Nome profilo (opzionale)</label>
+                            <input
+                                id="import-name"
+                                class="input"
+                                type="text"
+                                bind:value={importName}
+                                placeholder="es. Pavullo"
+                            />
+                            <p class="hint">
+                                Se lasciato vuoto verrà generato un nome
+                                automatico tipo <code>Pos_45_34_10_20</code>.
+                            </p>
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="import-tilt">Tilt (°)</label>
+                            <input
+                                id="import-tilt"
+                                class="input"
+                                type="number"
+                                step="1"
+                                min="0"
+                                max="90"
+                                bind:value={importTilt}
+                            />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="import-azimuth">Azimuth (°, 180 = sud)</label>
+                            <input
+                                id="import-azimuth"
+                                class="input"
+                                type="number"
+                                step="1"
+                                min="0"
+                                max="360"
+                                bind:value={importAzimuth}
+                            />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="import-loss">Perdite PVGIS (%)</label>
+                            <input
+                                id="import-loss"
+                                class="input"
+                                type="number"
+                                step="0.5"
+                                min="0"
+                                max="100"
+                                bind:value={importLossPct}
+                            />
+                            <p class="hint">14% = PR ≈ 0.86 (impianti residenziali standard).</p>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input
+                                type="checkbox"
+                                bind:checked={alsoCalibrateThermal}
+                            />
+                            <span>
+                                Calibra anche il <strong>modello termico stocastico</strong>
+                                (Open-Meteo Archive, {importLookbackYears} anni)
+                            </span>
+                        </label>
+                        <p class="hint">
+                            Fitta stagionalità armonica + residuo AR(1) + code GPD
+                            per ondate di calore e gelate. Necessario per il
+                            derating elettrico e per modellare il carico HVAC.
+                        </p>
+                    </div>
+
+                    {#if importError}
+                        <div class="info-box error">
+                            <p>{importError}</p>
+                        </div>
+                    {/if}
+
+                    <button
+                        type="button"
+                        class="btn primary"
+                        on:click={importProfileFromLocation}
+                        disabled={importing}
+                    >
+                        {importing ? "Importazione in corso…" : "Importa profilo da PVGIS"}
+                    </button>
+
+                    {#if alsoCalibrateThermal && (thermalPreviewLoading || thermalPreview || thermalPreviewError)}
+                        <TemperaturePreview
+                            data={thermalPreview}
+                            loading={thermalPreviewLoading}
+                            error={thermalPreviewError}
+                        />
+                    {/if}
+                </div>
+            {/if}
 
             {#if selectedSolarProfile}
                 <!-- Read-only weather preview -->
@@ -999,6 +1421,65 @@
                         </label>
                         <input id="battery-cycles" class="input" type="number" step="100" min="500" bind:value={batteryCyclesLife} />
                     </div>
+                </div>
+            {/if}
+
+            <!-- Phase 16 — opt-in detailed electrical model. -->
+            <hr class="section-divider" />
+            <div class="form-group">
+                <label class="toggle-row">
+                    <input type="checkbox" bind:checked={electricalEnabled} />
+                    <span class="toggle-label">Modello elettrico dettagliato (Phase 16 — opzionale)</span>
+                </label>
+                <p class="hint">
+                    Quando attivo, lo scenario controlla ora-per-ora la finestra MPPT
+                    dell'inverter, deratina per temperatura cella e segnala le ore
+                    di shutdown V_dc. Richiede un pannello dal catalogo (con dati
+                    elettrici completi), un inverter dal catalogo (idem) e un
+                    profilo climatico Phase 15 dallo step Luogo.
+                </p>
+            </div>
+            {#if electricalEnabled}
+                <div class="electrical-section">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="label" for="panel-select">
+                                Pannello (dal catalogo)
+                                <span class="tooltip" title="Il modello MPPT usa V_oc, V_mpp e coefficienti termici dal datasheet.">ⓘ</span>
+                            </label>
+                            <select id="panel-select" class="select" bind:value={selectedPanelIndex} on:change={onPanelChange}>
+                                <option value={-1}>— Scegli un pannello —</option>
+                                {#each panels as p, i (p.id)}
+                                    <option value={i}>{p.name} ({p.power_w} W)</option>
+                                {/each}
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="derating-exp">
+                                Esponente derating MPPT (k)
+                                <span class="tooltip" title="Penalità soft fuori finestra MPPT: power × (V_target / V_string)^k. k=0 disattiva il derating MPPT.">ⓘ</span>
+                            </label>
+                            <input id="derating-exp" class="input" type="number" step="0.1" min="0" bind:value={electricalDeratingExponentK} />
+                        </div>
+                    </div>
+                    <p class="hint">
+                        {#if climateProfileId == null}
+                            ⚠️ Manca il profilo climatico: torna allo step Luogo e
+                            spunta "Calibra anche il modello termico stocastico" prima
+                            di importare un profilo da PVGIS.
+                        {:else if selectedPanelIndex < 0}
+                            Seleziona un pannello con dati elettrici completi (v_oc,
+                            v_mpp, β, γ, NOCT).
+                        {:else if selectedInverterIndex < 0}
+                            Seleziona un inverter dal catalogo per ottenere la
+                            finestra MPPT e i limiti V_dc.
+                        {:else}
+                            ✓ Profilo climatico {climateProfileId} · pannello
+                            <strong>{panels[selectedPanelIndex]?.name}</strong> ·
+                            inverter <strong>{inverters[selectedInverterIndex]?.name}</strong> —
+                            il modello elettrico dettagliato è pronto.
+                        {/if}
+                    </p>
                 </div>
             {/if}
         </div>
@@ -1791,5 +2272,74 @@
     .badge.success {
         background: var(--color-success, #198754);
         color: #fff;
+    }
+
+    /* ── Phase 14 — Luogo step add-from-map sub-flow ────────────────────── */
+    .info-box.error {
+        border-color: var(--color-danger, #dc3545);
+        background: var(--color-danger-bg, #fde8ea);
+        color: var(--color-danger, #b3261e);
+    }
+    .info-box.error p {
+        margin: 0;
+        font-weight: 500;
+    }
+    .link-btn {
+        background: none;
+        border: none;
+        padding: 0;
+        margin: 0;
+        font-size: 0.9rem;
+        color: var(--color-primary, #2563eb);
+        cursor: pointer;
+        text-align: left;
+    }
+    .link-btn:hover {
+        text-decoration: underline;
+    }
+    .step-subtitle {
+        margin: 0 0 0.5rem;
+        font-size: 1.05rem;
+        font-weight: 600;
+    }
+    .form-grid {
+        display: grid;
+        gap: 0.75rem;
+        margin: 0.5rem 0;
+    }
+    .form-grid.two-cols {
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    }
+    /* Phase 15 — thermal calibration toggle */
+    .checkbox-label {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.5rem;
+        cursor: pointer;
+        font-size: 0.92rem;
+    }
+    .checkbox-label input[type="checkbox"] {
+        margin-top: 0.2rem;
+    }
+    /* Phase 16 — detailed electrical model accordion. */
+    .section-divider {
+        border: 0;
+        border-top: 1px solid var(--color-border, #e2e8f0);
+        margin: 1.5rem 0;
+    }
+    .toggle-row {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        cursor: pointer;
+        font-size: 0.95rem;
+    }
+    .toggle-label { font-weight: 500; }
+    .electrical-section {
+        padding: 0.75rem 1rem;
+        background-color: var(--color-bg-secondary, #f8f9fb);
+        border: 1px solid var(--color-border, #e2e8f0);
+        border-radius: 6px;
+        margin-top: 0.5rem;
     }
 </style>

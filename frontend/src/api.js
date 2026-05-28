@@ -22,31 +22,83 @@ export const api = {
     // ── Hardware ──────────────────────────────────────────────────────────
     listInverters: () => request('/inverters'),
     createInverter: (data) => request('/inverters', { method: 'POST', body: JSON.stringify(data) }),
+    updateInverter: (id, data) => request(`/inverters/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     deleteInverter: (id) => request(`/inverters/${id}`, { method: 'DELETE' }),
 
     listPanels: () => request('/panels'),
     createPanel: (data) => request('/panels', { method: 'POST', body: JSON.stringify(data) }),
+    updatePanel: (id, data) => request(`/panels/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     deletePanel: (id) => request(`/panels/${id}`, { method: 'DELETE' }),
 
     listBatteries: () => request('/batteries'),
     createBattery: (data) => request('/batteries', { method: 'POST', body: JSON.stringify(data) }),
+    updateBattery: (id, data) => request(`/batteries/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     deleteBattery: (id) => request(`/batteries/${id}`, { method: 'DELETE' }),
 
     // ── Profiles ──────────────────────────────────────────────────────────
 
-    // Phase 6: solar profiles feed the Wizard "Luogo di installazione" step.
+    // Solar profiles back the "Luogo di installazione" step in the wizard
+    // and the "Posizioni" tab in the Database UI.
     async listSolarProfiles() { return request('/profiles/solar'); },
+    updateSolarProfile: (id, data) =>
+        request(`/profiles/solar/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteSolarProfile: (id) => request(`/profiles/solar/${id}`, { method: 'DELETE' }),
+
+    // Phase 14 — external geolocation, climate normals, and one-shot import
+    // of a solar profile from a (lat, lon, tilt, azimuth) combo via
+    // PVGIS + Open-Meteo on the backend.
+    async geocode(query, { limit = 5, accept_language = 'it,en' } = {}) {
+        return request('/external/geocode', {
+            method: 'POST',
+            body: JSON.stringify({ query, limit, accept_language }),
+        });
+    },
+    async getClimateNormals(lat, lon, { lookback_years = 10 } = {}) {
+        const q = new URLSearchParams({ lat, lon, lookback_years }).toString();
+        return request(`/external/climate-normals?${q}`);
+    },
+    async createSolarProfileFromLocation(payload) {
+        return request('/profiles/solar/from_location', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+        });
+    },
+
+    // Phase 15 — stochastic thermal profile (ClimateProfileModel).
+    // The from_location endpoint fits a ThermalModel from 10 years of
+    // Open-Meteo daily archive (seasonal harmonic + AR(1) residuals +
+    // GPD tails for heatwaves/coldsnaps).
+    async listClimateProfiles() {
+        return request('/profiles/climate');
+    },
+    async createClimateProfileFromLocation(payload) {
+        return request('/profiles/climate/from_location', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+        });
+    },
+    async previewClimateProfileById(id, { n_paths = 50, n_years = 1, seed = 42 } = {}) {
+        const q = new URLSearchParams({ n_paths, n_years, seed }).toString();
+        return request(`/profiles/climate/${id}/preview?${q}`);
+    },
+    updateClimateProfile: (id, data) =>
+        request(`/profiles/climate/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteClimateProfile: (id) => request(`/profiles/climate/${id}`, { method: 'DELETE' }),
 
     async listLoadProfiles() { return request('/profiles/load'); },
     async createLoadProfile(data) {
         return request('/profiles/load', { method: 'POST', body: JSON.stringify(data) });
     },
+    updateLoadProfile: (id, data) =>
+        request(`/profiles/load/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     deleteLoadProfile: (id) => request(`/profiles/load/${id}`, { method: 'DELETE' }),
 
     async listPriceProfiles() { return request('/profiles/price'); },
     async createPriceProfile(data) {
         return request('/profiles/price', { method: 'POST', body: JSON.stringify(data) });
     },
+    updatePriceProfile: (id, data) =>
+        request(`/profiles/price/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     deletePriceProfile: (id) => request(`/profiles/price/${id}`, { method: 'DELETE' }),
 
     // Phase 10: Monte Carlo preview of a price profile (fan chart in DB UI)
@@ -70,6 +122,9 @@ export const api = {
     async createConfiguration(data) {
         return request('/configurations', { method: 'POST', body: JSON.stringify(data) });
     },
+    getConfiguration: (id) => request(`/configurations/${id}`),
+    updateConfiguration: (id, data) =>
+        request(`/configurations/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     deleteConfiguration: (id) => request(`/configurations/${id}`, { method: 'DELETE' }),
 
     // ── Scenarios (Execution History) ─────────────────────────────────────

@@ -80,6 +80,46 @@ class ConfigurationRepository:
         """
         return _delete_by_id(self._session_factory, LoadProfileModel, profile_id)
 
+    def update_load_profile(
+        self, profile_id: int, name: str, profile_type: str, data: dict
+    ) -> LoadProfileModel | None:
+        """
+        Update an existing load profile by primary key (allows rename).
+
+        Args:
+            profile_id: Primary-key ID of the profile to update.
+            name: New profile name (may differ from existing).
+            profile_type: Profile type identifier.
+            data: New profile configuration payload.
+
+        Returns:
+            Updated :class:`LoadProfileModel`, or ``None`` if the ID does
+            not exist.
+
+        Raises:
+            ValueError: If the new ``name`` is already used by a different
+                record (uniqueness violation).
+        """
+        with self._session_factory() as session:
+            record = session.get(LoadProfileModel, profile_id)
+            if record is None:
+                return None
+            if name and name != record.name:
+                clash = session.execute(
+                    select(LoadProfileModel).where(LoadProfileModel.name == name)
+                ).scalar_one_or_none()
+                if clash is not None and clash.id != profile_id:
+                    raise ValueError(
+                        f"Load profile name '{name}' is already used by id={clash.id}"
+                    )
+                record.name = name
+            record.profile_type = profile_type
+            record.data = data
+            session.flush()
+            session.commit()
+            session.refresh(record)
+            return record
+
     def upsert_price_profile(self, name: str, data: dict) -> PriceProfileModel:
         """
         Insert or update a price profile.
@@ -120,6 +160,42 @@ class ConfigurationRepository:
             True if the record was found and deleted, False if not found.
         """
         return _delete_by_id(self._session_factory, PriceProfileModel, profile_id)
+
+    def update_price_profile(
+        self, profile_id: int, name: str, data: dict
+    ) -> PriceProfileModel | None:
+        """
+        Update an existing price profile by primary key (allows rename).
+
+        Args:
+            profile_id: Primary-key ID of the profile to update.
+            name: New profile name.
+            data: New price model configuration payload.
+
+        Returns:
+            Updated :class:`PriceProfileModel`, or ``None`` if not found.
+
+        Raises:
+            ValueError: If the new ``name`` clashes with another record.
+        """
+        with self._session_factory() as session:
+            record = session.get(PriceProfileModel, profile_id)
+            if record is None:
+                return None
+            if name and name != record.name:
+                clash = session.execute(
+                    select(PriceProfileModel).where(PriceProfileModel.name == name)
+                ).scalar_one_or_none()
+                if clash is not None and clash.id != profile_id:
+                    raise ValueError(
+                        f"Price profile name '{name}' is already used by id={clash.id}"
+                    )
+                record.name = name
+            record.data = data
+            session.flush()
+            session.commit()
+            session.refresh(record)
+            return record
 
     def save_configuration(self, name: str, config_type: str, data: dict) -> SavedConfigurationModel:
         """
@@ -188,6 +264,48 @@ class ConfigurationRepository:
             True if the record was found and deleted, False if not found.
         """
         return _delete_by_id(self._session_factory, SavedConfigurationModel, config_id)
+
+    def update_configuration(
+        self, config_id: int, name: str, config_type: str, data: dict
+    ) -> SavedConfigurationModel | None:
+        """
+        Update an existing saved configuration by primary key (allows rename).
+
+        Args:
+            config_id: Primary-key ID of the configuration to update.
+            name: New configuration name.
+            config_type: Configuration type identifier ("scenario" or
+                "optimization").
+            data: New configuration payload.
+
+        Returns:
+            Updated :class:`SavedConfigurationModel`, or ``None`` if not
+            found.
+
+        Raises:
+            ValueError: If the new ``name`` clashes with another record.
+        """
+        with self._session_factory() as session:
+            record = session.get(SavedConfigurationModel, config_id)
+            if record is None:
+                return None
+            if name and name != record.name:
+                clash = session.execute(
+                    select(SavedConfigurationModel).where(
+                        SavedConfigurationModel.name == name
+                    )
+                ).scalar_one_or_none()
+                if clash is not None and clash.id != config_id:
+                    raise ValueError(
+                        f"Configuration name '{name}' is already used by id={clash.id}"
+                    )
+                record.name = name
+            record.config_type = config_type
+            record.data = data
+            session.flush()
+            session.commit()
+            session.refresh(record)
+            return record
 
     def get_configuration_by_name(self, name: str) -> SavedConfigurationModel | None:
         """

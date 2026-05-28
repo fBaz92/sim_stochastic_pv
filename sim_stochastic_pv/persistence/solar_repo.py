@@ -236,6 +236,66 @@ class SolarProfileRepository:
         with self._session_factory() as session:
             return session.query(SolarProfileModel).filter_by(name=name).first()
 
+    def update_solar_profile(
+        self, profile_id: int, data: Dict[str, Any]
+    ) -> Optional[SolarProfileModel]:
+        """
+        Update an existing solar profile by primary key (allows rename).
+
+        Unlike :meth:`upsert_solar_profile`, this method uses the ID as the
+        lookup key, so the user-visible ``name`` column can be edited
+        without colliding with the upsert-by-name behaviour. Only the keys
+        present in ``data`` are written — other columns are left untouched.
+
+        Args:
+            profile_id: Primary key of the profile to update.
+            data: Dictionary with the new field values. Allowed keys are
+                any column on :class:`SolarProfileModel`.
+
+        Returns:
+            The updated :class:`SolarProfileModel`, or ``None`` if no
+            record matches ``profile_id``.
+
+        Raises:
+            ValueError: If the requested ``name`` is already used by a
+                different profile (uniqueness violation).
+
+        Example:
+            ```python
+            updated = repo.update_solar_profile(
+                12,
+                {"name": "Pavullo_v2", "notes": "Renamed for clarity"},
+            )
+            ```
+
+        Notes:
+            - Commits immediately.
+            - Returns the refreshed record so callers get DB-side defaults.
+        """
+        if not data:
+            return self.get_solar_profile_by_id(profile_id)
+        with self._session_factory() as session:
+            record = session.get(SolarProfileModel, profile_id)
+            if record is None:
+                return None
+            new_name = data.get("name")
+            if new_name and new_name != record.name:
+                clash = (
+                    session.query(SolarProfileModel)
+                    .filter(SolarProfileModel.name == new_name)
+                    .first()
+                )
+                if clash is not None and clash.id != profile_id:
+                    raise ValueError(
+                        f"Solar profile name '{new_name}' is already used by id={clash.id}"
+                    )
+            for key, value in data.items():
+                if hasattr(record, key):
+                    setattr(record, key, value)
+            session.commit()
+            session.refresh(record)
+            return record
+
     def delete_solar_profile(self, profile_id: int) -> bool:
         """
         Delete solar profile by ID.

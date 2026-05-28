@@ -100,6 +100,53 @@ class HardwareRepository:
         """
         return _delete_by_id(self._session_factory, InverterModel, inverter_id)
 
+    def update_inverter(self, inverter_id: int, inverter_data: Any) -> InverterModel | None:
+        """
+        Update an existing inverter record by primary key.
+
+        Differs from :meth:`upsert_inverter` in that the lookup is by ID
+        rather than name, so the *name* itself can be edited (rename).
+
+        Args:
+            inverter_id: Primary-key ID of the inverter to update.
+            inverter_data: Dataclass or mapping with the new field values.
+                Must include ``name`` (string) and ``p_ac_max_kw`` (float).
+
+        Returns:
+            The updated :class:`InverterModel`, or ``None`` if the ID does
+            not exist.
+
+        Raises:
+            ValueError: If the requested ``name`` is already used by a
+                *different* inverter record (uniqueness violation).
+        """
+        if inverter_data is None:
+            return None
+        payload = asdict_safe(inverter_data)
+        with self._session_factory() as session:
+            record = session.get(InverterModel, inverter_id)
+            if record is None:
+                return None
+            new_name = payload.get("name")
+            if new_name and new_name != record.name:
+                clash = session.execute(
+                    select(InverterModel).where(InverterModel.name == new_name)
+                ).scalar_one_or_none()
+                if clash is not None and clash.id != inverter_id:
+                    raise ValueError(
+                        f"Inverter name '{new_name}' is already used by id={clash.id}"
+                    )
+                record.name = new_name
+            record.manufacturer = payload.get("manufacturer")
+            record.model_number = payload.get("model_number")
+            record.datasheet = payload.get("datasheet")
+            record.specs = payload
+            record.nominal_power_kw = payload.get("p_ac_max_kw")
+            session.flush()
+            session.commit()
+            session.refresh(record)
+            return record
+
     def upsert_panel(self, panel_data: Any) -> PanelModel | None:
         """
         Insert or update a panel record.
@@ -147,6 +194,47 @@ class HardwareRepository:
             True if the record was found and deleted, False if not found.
         """
         return _delete_by_id(self._session_factory, PanelModel, panel_id)
+
+    def update_panel(self, panel_id: int, panel_data: Any) -> PanelModel | None:
+        """
+        Update an existing panel record by primary key (allows rename).
+
+        Args:
+            panel_id: Primary-key ID of the panel to update.
+            panel_data: Dataclass or mapping with new field values.
+
+        Returns:
+            Updated :class:`PanelModel`, or ``None`` if not found.
+
+        Raises:
+            ValueError: If ``name`` clashes with another record.
+        """
+        if panel_data is None:
+            return None
+        payload = asdict_safe(panel_data)
+        with self._session_factory() as session:
+            record = session.get(PanelModel, panel_id)
+            if record is None:
+                return None
+            new_name = payload.get("name")
+            if new_name and new_name != record.name:
+                clash = session.execute(
+                    select(PanelModel).where(PanelModel.name == new_name)
+                ).scalar_one_or_none()
+                if clash is not None and clash.id != panel_id:
+                    raise ValueError(
+                        f"Panel name '{new_name}' is already used by id={clash.id}"
+                    )
+                record.name = new_name
+            record.manufacturer = payload.get("manufacturer")
+            record.model_number = payload.get("model_number")
+            record.datasheet = payload.get("datasheet")
+            record.specs = payload
+            record.power_w = payload.get("power_w")
+            session.flush()
+            session.commit()
+            session.refresh(record)
+            return record
 
     def upsert_battery(self, battery_data: Any) -> BatteryModel | None:
         """
@@ -198,6 +286,49 @@ class HardwareRepository:
             True if the record was found and deleted, False if not found.
         """
         return _delete_by_id(self._session_factory, BatteryModel, battery_id)
+
+    def update_battery(self, battery_id: int, battery_data: Any) -> BatteryModel | None:
+        """
+        Update an existing battery record by primary key (allows rename).
+
+        Args:
+            battery_id: Primary-key ID of the battery to update.
+            battery_data: Mapping with new field values.
+
+        Returns:
+            Updated :class:`BatteryModel`, or ``None`` if not found.
+
+        Raises:
+            ValueError: If ``name`` clashes with another record.
+        """
+        if battery_data is None:
+            return None
+        payload = asdict_safe(battery_data)
+        name = payload.get("name")
+        specs = payload.get("specs") or payload
+        with self._session_factory() as session:
+            record = session.get(BatteryModel, battery_id)
+            if record is None:
+                return None
+            if name and name != record.name:
+                clash = session.execute(
+                    select(BatteryModel).where(BatteryModel.name == name)
+                ).scalar_one_or_none()
+                if clash is not None and clash.id != battery_id:
+                    raise ValueError(
+                        f"Battery name '{name}' is already used by id={clash.id}"
+                    )
+                record.name = name
+            capacity = specs.get("capacity_kwh") if isinstance(specs, Mapping) else None
+            record.manufacturer = payload.get("manufacturer")
+            record.model_number = payload.get("model_number")
+            record.capacity_kwh = capacity
+            record.datasheet = payload.get("datasheet")
+            record.specs = payload
+            session.flush()
+            session.commit()
+            session.refresh(record)
+            return record
 
     def list_inverters(self) -> list[InverterModel]:
         """List all available inverters."""

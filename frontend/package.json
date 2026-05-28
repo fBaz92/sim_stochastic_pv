@@ -17,6 +17,7 @@
   "dependencies": {
     "chart.js": "^4.5.1",
     "chartjs-plugin-zoom": "^2.2.0",
+    "leaflet": "^1.9.4",
     "lucide-svelte": "^0.561.0"
   }
 }

@@ -56,7 +56,11 @@
 
     async function handleSubmit() {
         try {
-            await api.createBattery(formData);
+            if (editingId != null) {
+                await api.updateBattery(editingId, formData);
+            } else {
+                await api.createBattery(formData);
+            }
             cancelForm();
             await loadItems();
         } catch (e) {
@@ -94,7 +98,7 @@
         <div id="battery-form" class="card form-card">
             <h3>{editingId ? 'Modifica batteria' : 'Nuova batteria'}</h3>
             {#if editingId}
-                <p class="edit-hint">Il nome identifica univocamente la batteria.</p>
+                <p class="edit-hint">Stai modificando una batteria esistente. Puoi anche rinominarla.</p>
             {/if}
             <form on:submit={(e) => { e.preventDefault(); handleSubmit(); }}>
                 <div class="form-group">

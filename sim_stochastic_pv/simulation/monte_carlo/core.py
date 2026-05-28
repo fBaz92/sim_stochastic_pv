@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from ..electrical import aggregate_kpis as _aggregate_electrical_kpis
 from ..energy_simulator import EnergySystemSimulator
 from ..prices import PriceModel
 
@@ -441,6 +442,14 @@ class MonteCarloResults:
     # clients which build MonteCarloResults by hand keep working.
     bonus_per_month_eur: Optional[np.ndarray] = None
     tax_bonus_total_eur: float = 0.0
+    # Phase 16 — opt-in electrical KPIs. When the scenario activates the
+    # detailed electrical model (``electrical.mode='mppt_window'``) the
+    # simulator collects per-path :class:`ElectricalKPIs` instances and
+    # exposes both the raw list and an aggregated dict here. Both fields
+    # are ``None`` whenever the model is disabled, so legacy consumers
+    # stay unaffected.
+    electrical_kpis_per_path: Optional[list] = None
+    electrical_kpis_summary: Optional[dict] = None
 
 
 class MonteCarloSimulator:
@@ -926,6 +935,11 @@ class MonteCarloSimulator:
 
         start_time = time.time()
 
+        # Phase 16 — collect per-path electrical KPIs when the detailed
+        # electrical model is wired. Remains an empty list (then None)
+        # in legacy runs.
+        electrical_kpis_per_path: list = []
+
         # Use tqdm for progress tracking when appropriate
         iterator = range(n_mc)
         if progress_callback is None and show_progress:
@@ -986,6 +1000,12 @@ class MonteCarloSimulator:
 
             soh_paths[i, :] = soh_end_of_month
             soc_profiles_paths[i, :, :] = soc_profile_first_year
+
+            # Phase 16 — capture the electrical KPI snapshot from the
+            # per-path run (None when the model is off).
+            kpis_path = getattr(self.energy_simulator, "last_electrical_kpis", None)
+            if kpis_path is not None:
+                electrical_kpis_per_path.append(kpis_path)
 
             # Call progress callback if provided
             if progress_callback is not None:
@@ -1206,6 +1226,17 @@ class MonteCarloSimulator:
             # without conditionals.
             bonus_per_month_eur=bonus_per_month,
             tax_bonus_total_eur=tax_bonus_total_eur,
+            # Phase 16 — opt-in electrical KPIs. When the model is off
+            # the lists are empty and we leave both fields as None for
+            # backward-compat with legacy consumers.
+            electrical_kpis_per_path=(
+                electrical_kpis_per_path if electrical_kpis_per_path else None
+            ),
+            electrical_kpis_summary=(
+                _aggregate_electrical_kpis(electrical_kpis_per_path)
+                if electrical_kpis_per_path
+                else None
+            ),
         )
 
     # ---------- plotting utilities ----------

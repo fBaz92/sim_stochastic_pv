@@ -1,7 +1,8 @@
 <script>
     import { onMount } from "svelte";
+    import { get } from "svelte/store";
     import { api } from "../api";
-    import { activeJob } from "../lib/stores";
+    import { activeJob, pendingConfigurationId } from "../lib/stores";
 
     let loadingParams = true;
     let running = false;
@@ -281,7 +282,15 @@
         }
     }
 
-    onMount(loadHardware);
+    onMount(async () => {
+        await loadHardware();
+        const pending = get(pendingConfigurationId);
+        if (pending != null) {
+            pendingConfigurationId.set(null);
+            selectedSavedCampaignId = String(pending);
+            await handleLoadCampaign();
+        }
+    });
 </script>
 
 <div class="container">

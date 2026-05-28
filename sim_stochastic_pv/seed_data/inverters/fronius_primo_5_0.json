@@ -1,0 +1,21 @@
+{
+  "name": "Fronius Primo 5.0-1",
+  "manufacturer": "Fronius",
+  "model_number": "Primo 5.0-1",
+  "nominal_power_kw": 5.0,
+  "specs": {
+    "p_ac_max_kw": 5.0,
+    "p_dc_max_kw": 7.5,
+    "price_eur": 1500.0,
+    "install_cost_eur": 800.0,
+    "v_dc_min_v": 80.0,
+    "v_dc_max_v": 1000.0,
+    "v_mppt_min_v": 240.0,
+    "v_mppt_max_v": 800.0,
+    "n_mppt_trackers": 2,
+    "i_dc_max_per_mppt_a": 18.0,
+    "efficiency_max": 0.976,
+    "warranty_years": 10,
+    "datasheet_note": "Single-phase transformerless residential inverter"
+  }
+}

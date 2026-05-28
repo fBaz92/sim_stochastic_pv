@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from ..db.models import (
     BatteryModel,
+    ClimateProfileModel,
     InverterModel,
     LoadProfileModel,
     OptimizationRecord,
@@ -26,6 +27,7 @@ from ..db.models import (
     SolarProfileModel,
 )
 from ..db.session import SessionLocal
+from .climate_repo import ClimateProfileRepository
 from .configuration_repo import ConfigurationRepository
 from .execution_repo import ExecutionRepository
 from .hardware_repo import HardwareRepository
@@ -123,6 +125,8 @@ class PersistenceService:
         self.configurations = ConfigurationRepository(self._session_factory)
         self.executions = ExecutionRepository(self._session_factory)
         self.solar = SolarProfileRepository(self._session_factory)
+        # Phase 15 — calibrated stochastic thermal profiles.
+        self.climate = ClimateProfileRepository(self._session_factory)
 
     @contextmanager
     def session(self) -> Iterable[Session]:
@@ -198,6 +202,10 @@ class PersistenceService:
         """Delete an inverter by ID. Returns True if deleted, False if not found."""
         return self.hardware.delete_inverter(inverter_id)
 
+    def update_inverter(self, inverter_id: int, inverter_data: Any) -> InverterModel | None:
+        """Update an inverter by ID. Returns None if not found."""
+        return self.hardware.update_inverter(inverter_id, inverter_data)
+
     def list_panels(self) -> list[PanelModel]:
         """List all available panels."""
         return self.hardware.list_panels()
@@ -206,6 +214,10 @@ class PersistenceService:
         """Delete a panel by ID. Returns True if deleted, False if not found."""
         return self.hardware.delete_panel(panel_id)
 
+    def update_panel(self, panel_id: int, panel_data: Any) -> PanelModel | None:
+        """Update a panel by ID. Returns None if not found."""
+        return self.hardware.update_panel(panel_id, panel_data)
+
     def list_batteries(self) -> list[BatteryModel]:
         """List all available batteries."""
         return self.hardware.list_batteries()
@@ -213,6 +225,10 @@ class PersistenceService:
     def delete_battery(self, battery_id: int) -> bool:
         """Delete a battery by ID. Returns True if deleted, False if not found."""
         return self.hardware.delete_battery(battery_id)
+
+    def update_battery(self, battery_id: int, battery_data: Any) -> BatteryModel | None:
+        """Update a battery by ID. Returns None if not found."""
+        return self.hardware.update_battery(battery_id, battery_data)
 
     # Configuration operations (delegate to ConfigurationRepository)
     def upsert_load_profile(self, name: str, profile_type: str, data: dict) -> LoadProfileModel:
@@ -227,6 +243,12 @@ class PersistenceService:
         """Delete a load profile by ID. Returns True if deleted, False if not found."""
         return self.configurations.delete_load_profile(profile_id)
 
+    def update_load_profile(
+        self, profile_id: int, name: str, profile_type: str, data: dict
+    ) -> LoadProfileModel | None:
+        """Update a load profile by ID. Returns None if not found."""
+        return self.configurations.update_load_profile(profile_id, name, profile_type, data)
+
     def upsert_price_profile(self, name: str, data: dict) -> PriceProfileModel:
         """Insert or update a price profile."""
         return self.configurations.upsert_price_profile(name, data)
@@ -238,6 +260,12 @@ class PersistenceService:
     def delete_price_profile(self, profile_id: int) -> bool:
         """Delete a price profile by ID. Returns True if deleted, False if not found."""
         return self.configurations.delete_price_profile(profile_id)
+
+    def update_price_profile(
+        self, profile_id: int, name: str, data: dict
+    ) -> PriceProfileModel | None:
+        """Update a price profile by ID. Returns None if not found."""
+        return self.configurations.update_price_profile(profile_id, name, data)
 
     def save_configuration(self, name: str, config_type: str, data: dict) -> SavedConfigurationModel:
         """Save or update a configuration (scenario or optimization)."""
@@ -258,6 +286,12 @@ class PersistenceService:
     def delete_configuration(self, config_id: int) -> bool:
         """Delete a saved configuration by ID. Returns True if deleted, False if not found."""
         return self.configurations.delete_configuration(config_id)
+
+    def update_configuration(
+        self, config_id: int, name: str, config_type: str, data: dict
+    ) -> SavedConfigurationModel | None:
+        """Update a saved configuration by ID. Returns None if not found."""
+        return self.configurations.update_configuration(config_id, name, config_type, data)
 
     # Execution operations (delegate to ExecutionRepository)
     def record_scenario(
@@ -459,6 +493,49 @@ class PersistenceService:
             True if a profile was deleted, False if not found.
         """
         return self.solar.delete_solar_profile(profile_id)
+
+    def update_solar_profile(
+        self, profile_id: int, data: dict[str, Any]
+    ) -> SolarProfileModel | None:
+        """
+        Update solar profile by ID (allows rename).
+
+        Delegates to SolarProfileRepository.update_solar_profile().
+
+        Args:
+            profile_id: Primary key ID of the profile.
+            data: New field values (partial dict).
+
+        Returns:
+            Updated record, or None if the ID does not exist.
+        """
+        return self.solar.update_solar_profile(profile_id, data)
+
+    # ========================================================================
+    # Climate Profile Operations (Delegate to ClimateProfileRepository)
+    # ========================================================================
+
+    def list_climate_profiles(self) -> list[ClimateProfileModel]:
+        """List all climate profiles ordered by name."""
+        return self.climate.list_climate_profiles()
+
+    def get_climate_profile_by_id(self, profile_id: int) -> ClimateProfileModel | None:
+        """Fetch a climate profile by primary key."""
+        return self.climate.get_climate_profile_by_id(profile_id)
+
+    def delete_climate_profile(self, profile_id: int) -> bool:
+        """Delete a climate profile by ID. Returns True if deleted, False if not found."""
+        return self.climate.delete_climate_profile(profile_id)
+
+    def update_climate_profile(
+        self, profile_id: int, data: dict[str, Any]
+    ) -> ClimateProfileModel | None:
+        """Update a climate profile by ID (partial). Returns None if not found."""
+        return self.climate.update_climate_profile(profile_id, data)
+
+    def load_thermal_model(self, profile_id: int):
+        """Convenience: hydrate a runtime ThermalModel (Phase 15) by climate profile id."""
+        return self.climate.load_thermal_model(profile_id)
 
 
 __all__ = ["PersistenceService"]

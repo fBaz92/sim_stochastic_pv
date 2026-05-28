@@ -154,8 +154,15 @@ def build_argument_parser() -> argparse.ArgumentParser:
     scenario_run = scenario_sub.add_parser("run", help="Esegui uno scenario")
     _add_execution_arguments(scenario_run, "scenario", 123)
 
-    # Optimization management
-    optimization = sub.add_parser("optimization", help="Gestisci ottimizzazioni multi-scenario")
+    # Optimization management (a.k.a. "campaign" / "design" in the UI glossary
+    # — see CLAUDE.md §Glossario. All three command names dispatch to the same
+    # subparser group and back to the same DB config_type='optimization', so
+    # backward compat is preserved for any scripts still calling `optimization`.)
+    optimization = sub.add_parser(
+        "optimization",
+        aliases=["campaign", "design"],
+        help="Gestisci campagne multi-scenario (alias: campaign, design)",
+    )
     optimization_sub = optimization.add_subparsers(dest="optimization_command")
 
     optimization_list = optimization_sub.add_parser("list", help="Elenca le ottimizzazioni salvate")
@@ -523,9 +530,11 @@ def main(argv: Sequence[str] | None = None) -> None:
 
         parser.error(f"Sottocomando scenario non riconosciuto: {args.scenario_command}")
 
-    if args.command == "optimization":
+    if args.command in {"optimization", "campaign", "design"}:
         if not args.optimization_command:
-            parser.error("Specificare un sottocomando optimization (list/save/run).")
+            parser.error(
+                f"Specificare un sottocomando {args.command} (list/save/run)."
+            )
 
         if args.optimization_command == "list":
             configs = persistence.list_configurations("optimization")

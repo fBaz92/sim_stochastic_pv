@@ -13,7 +13,7 @@ from typing import Dict
 
 from sqlalchemy.orm import Session
 
-from .models import SolarProfileModel
+from .models import InverterModel, PanelModel, SolarProfileModel
 
 
 def seed_solar_profiles(session: Session, seed_dir: Path) -> int:
@@ -163,6 +163,97 @@ def backfill_solar_profiles_new_columns(
     return touched
 
 
+def seed_panels(session: Session, seed_dir: Path) -> int:
+    """
+    Load panel records from JSON seed files into the database.
+
+    Phase 16 — every shipped panel JSON carries the full electrical
+    datasheet (V_oc, V_mpp, temperature coefficients, NOCT, …) inside
+    its ``specs`` blob so the MPPT-window model has realistic
+    parameters out of the box.
+
+    Args:
+        session: Active SQLAlchemy session for database operations.
+        seed_dir: Root directory containing ``panels/`` subfolder.
+
+    Returns:
+        Number of new panel records inserted (existing names skipped).
+    """
+    panels_dir = seed_dir / "panels"
+    if not panels_dir.exists():
+        return 0
+    count = 0
+    for json_file in panels_dir.glob("*.json"):
+        try:
+            with open(json_file, encoding="utf-8") as f:
+                data = json.load(f)
+            existing = (
+                session.query(PanelModel).filter_by(name=data.get("name")).first()
+            )
+            if existing:
+                continue
+            record = PanelModel(
+                name=data.get("name"),
+                manufacturer=data.get("manufacturer"),
+                model_number=data.get("model_number"),
+                power_w=data.get("power_w"),
+                datasheet=data.get("datasheet"),
+                specs=data.get("specs", data),
+            )
+            session.add(record)
+            count += 1
+        except Exception as exc:
+            print(f"Warning: Failed to load panel from {json_file.name}: {exc}")
+            continue
+    session.commit()
+    return count
+
+
+def seed_inverters(session: Session, seed_dir: Path) -> int:
+    """
+    Load inverter records from JSON seed files into the database.
+
+    Phase 16 — every shipped inverter JSON carries the full electrical
+    datasheet (DC operating window, MPPT window, n_mppt_trackers, …)
+    inside its ``specs`` blob.
+
+    Args:
+        session: Active SQLAlchemy session.
+        seed_dir: Root directory containing ``inverters/`` subfolder.
+
+    Returns:
+        Number of new inverter records inserted (existing names skipped).
+    """
+    inverters_dir = seed_dir / "inverters"
+    if not inverters_dir.exists():
+        return 0
+    count = 0
+    for json_file in inverters_dir.glob("*.json"):
+        try:
+            with open(json_file, encoding="utf-8") as f:
+                data = json.load(f)
+            existing = (
+                session.query(InverterModel).filter_by(name=data.get("name")).first()
+            )
+            if existing:
+                continue
+            record = InverterModel(
+                name=data.get("name"),
+                manufacturer=data.get("manufacturer"),
+                model_number=data.get("model_number"),
+                nominal_power_kw=data.get("nominal_power_kw"),
+                datasheet=data.get("datasheet"),
+                specs=data.get("specs", data),
+            )
+            session.add(record)
+            count += 1
+        except Exception as exc:
+            print(f"Warning: Failed to load inverter from {json_file.name}: {exc}")
+            continue
+    session.commit()
+    return count
+
+
 def seed_database(session: Session, seed_dir: Path | None = None) -> Dict[str, int]:
     """
     Seed all database tables from JSON seed files.
@@ -202,9 +293,12 @@ def seed_database(session: Session, seed_dir: Path | None = None) -> Dict[str, i
 
     counts = {
         "solar_profiles": seed_solar_profiles(session, seed_dir),
+        # Phase 16 — ship a small but realistic catalog of panels and
+        # inverters complete with electrical datasheet specs so the
+        # MPPT-window model works out of the box.
+        "panels": seed_panels(session, seed_dir),
+        "inverters": seed_inverters(session, seed_dir),
         # Future expansion:
-        # "inverters": seed_hardware_inverters(session, seed_dir),
-        # "panels": seed_hardware_panels(session, seed_dir),
         # "batteries": seed_hardware_batteries(session, seed_dir),
     }
 

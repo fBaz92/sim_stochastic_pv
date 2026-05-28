@@ -29,7 +29,7 @@ from ...simulation.prices import (
 )
 from .. import dependencies
 from ..schemas import profiles as profile_schemas
-from ..schemas.profiles import SolarProfileResponse
+from ..schemas.profiles import SolarProfileResponse, SolarProfileUpdate
 
 
 _SUPPORTED_LOAD_KINDS = {"monthly_avg", "monthly_24h", "weekly"}
@@ -166,6 +166,34 @@ def create_load_profile(
     )
 
 
+@router.put("/profiles/load/{profile_id}", response_model=profile_schemas.LoadProfileResponse)
+def update_load_profile(
+    profile_id: int,
+    payload: profile_schemas.LoadProfileCreate,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> profile_schemas.LoadProfileResponse:
+    """
+    Update a load profile by primary key (allows rename).
+
+    Args:
+        profile_id: Primary-key ID of the profile to update.
+        payload: New profile data (name + profile_type + data).
+
+    Raises:
+        HTTPException 404: profile not found.
+        HTTPException 409: new ``name`` already used by another profile.
+    """
+    try:
+        record = persistence.update_load_profile(
+            profile_id, payload.name, payload.profile_type, payload.data
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Load profile id={profile_id} not found")
+    return record
+
+
 @router.delete("/profiles/load/{profile_id}")
 def delete_load_profile(
     profile_id: int,
@@ -296,6 +324,32 @@ def create_price_profile(
     return persistence.upsert_price_profile(payload.name, payload.data)
 
 
+@router.put("/profiles/price/{profile_id}", response_model=profile_schemas.PriceProfileResponse)
+def update_price_profile(
+    profile_id: int,
+    payload: profile_schemas.PriceProfileCreate,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> profile_schemas.PriceProfileResponse:
+    """
+    Update a price profile by primary key (allows rename).
+
+    Args:
+        profile_id: Primary-key ID of the profile to update.
+        payload: New profile data.
+
+    Raises:
+        HTTPException 404: profile not found.
+        HTTPException 409: new ``name`` already used by another profile.
+    """
+    try:
+        record = persistence.update_price_profile(profile_id, payload.name, payload.data)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Price profile id={profile_id} not found")
+    return record
+
+
 @router.delete("/profiles/price/{profile_id}")
 def delete_price_profile(
     profile_id: int,
@@ -375,6 +429,69 @@ def list_solar_profiles(
     # Sort alphabetically by name for a deterministic dropdown order.
     records_sorted = sorted(records, key=lambda r: r.name)
     return [SolarProfileResponse.model_validate(r) for r in records_sorted]
+
+
+@router.put("/profiles/solar/{profile_id}", response_model=SolarProfileResponse)
+def update_solar_profile(
+    profile_id: int,
+    payload: SolarProfileUpdate,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> SolarProfileResponse:
+    """
+    Update a solar profile by primary key (allows rename + metadata edits).
+
+    All fields in :class:`SolarProfileUpdate` are optional — only the keys
+    explicitly provided are written back to the record. This lets the UI
+    rename a profile or correct ``location_name`` / ``notes`` without
+    resubmitting the PVGIS-derived monthly arrays.
+
+    Args:
+        profile_id: Primary-key ID of the profile to update.
+        payload: Partial dict of new field values.
+
+    Raises:
+        HTTPException 404: profile not found.
+        HTTPException 409: new ``name`` already used by another profile.
+    """
+    data = payload.model_dump(exclude_unset=True)
+    try:
+        record = persistence.update_solar_profile(profile_id, data)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Solar profile id={profile_id} not found",
+        )
+    return SolarProfileResponse.model_validate(record)
+
+
+@router.delete("/profiles/solar/{profile_id}")
+def delete_solar_profile(
+    profile_id: int,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> dict:
+    """
+    Delete a solar profile by primary key.
+
+    Scenarios that reference this profile by ID will fail to hydrate the
+    location on next execution.
+
+    Args:
+        profile_id: Primary-key ID of the profile to delete.
+
+    Returns:
+        JSON ``{"ok": true, "id": <profile_id>}`` on success.
+
+    Raises:
+        HTTPException 404: profile not found.
+    """
+    if not persistence.delete_solar_profile(profile_id):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Solar profile id={profile_id} not found",
+        )
+    return {"ok": True, "id": profile_id}
 
 
 # ---------------------------------------------------------------------------

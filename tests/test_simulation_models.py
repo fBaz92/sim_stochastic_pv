@@ -763,6 +763,67 @@ def test_load_profile_legacy_shape_still_works() -> None:
     assert list(profile.min_days_home) == [18] * 12
 
 
+# ---------------------------------------------------------------------------
+# Phase 8 single-sided DB profiles — bug fix 2026-05-28
+# ---------------------------------------------------------------------------
+
+
+def test_load_profile_db_saved_custom_monthly_w_does_not_crash() -> None:
+    """
+    Bug regression — a saved DB load profile of UI type "custom" stores
+    only ``monthly_w`` at root (no ``kind`` field). Before the fix this
+    fell into the legacy branch and crashed with
+    ``Missing 'home_profiles_w' for custom profile``. After the fix the
+    Phase-8 single-side detection routes it through the standard
+    sub-profile factory with ARERA as the away side.
+    """
+    from sim_stochastic_pv.simulation.load_profiles import HomeAwayLoadProfile
+
+    scenario = {
+        "load_profile": {"monthly_w": [250] * 12},
+        "min_days_home": [18] * 12,
+        "max_days_home": [22] * 12,
+    }
+    profile = build_default_load_profile(scenario)
+    assert isinstance(profile, HomeAwayLoadProfile)
+
+
+def test_load_profile_db_saved_custom_24h_monthly_matrix() -> None:
+    """``monthly_24h_w`` saved as a single-sided DB profile must build."""
+    from sim_stochastic_pv.simulation.load_profiles import HomeAwayLoadProfile
+
+    scenario = {
+        "load_profile": {"monthly_24h_w": [[300] * 24] * 12},
+        "min_days_home": [15] * 12,
+        "max_days_home": [20] * 12,
+    }
+    profile = build_default_load_profile(scenario)
+    assert isinstance(profile, HomeAwayLoadProfile)
+
+
+def test_load_profile_db_saved_arera_only_uses_arera_both_sides() -> None:
+    """Saved "ARERA" profile (type:arera at root) → ARERA home, ARERA away."""
+    from sim_stochastic_pv.simulation.load_profiles import (
+        AreraLoadProfile,
+        HomeAwayLoadProfile,
+        VariableLoadProfile,
+    )
+
+    scenario = {
+        "load_profile": {"type": "arera"},
+        "min_days_home": [10] * 12,
+        "max_days_home": [15] * 12,
+    }
+    profile = build_default_load_profile(scenario)
+    assert isinstance(profile, HomeAwayLoadProfile)
+
+    def unwrap(p):
+        return p.base_profile if isinstance(p, VariableLoadProfile) else p
+
+    assert isinstance(unwrap(profile.home_profile), AreraLoadProfile)
+    assert isinstance(unwrap(profile.away_profile), AreraLoadProfile)
+
+
 def test_load_profile_home_away_rejects_missing_side() -> None:
     """Missing ``home`` or ``away`` sub-profile must raise a clear error."""
     import pytest as _pt

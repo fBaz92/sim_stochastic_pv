@@ -125,6 +125,38 @@ def create_inverter(
     return persistence.upsert_inverter(payload.model_dump())
 
 
+@router.put("/inverters/{inverter_id}", response_model=hw_schemas.InverterResponse)
+def update_inverter(
+    inverter_id: int,
+    payload: hw_schemas.InverterCreate,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> hw_schemas.InverterResponse:
+    """
+    Update an inverter in the hardware catalog by primary key.
+
+    Differs from POST in that the lookup is by ``inverter_id`` instead
+    of by name, so callers can edit *any* field — including ``name`` —
+    without producing a second record.
+
+    Args:
+        inverter_id: Primary-key ID of the inverter to update.
+        payload: New inverter data. All fields are written; specs are
+            normalized through the create schema so price/specs blob
+            stays consistent.
+
+    Raises:
+        HTTPException 404: inverter not found.
+        HTTPException 409: new ``name`` already used by another inverter.
+    """
+    try:
+        record = persistence.update_inverter(inverter_id, payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Inverter id={inverter_id} not found")
+    return record
+
+
 @router.delete("/inverters/{inverter_id}")
 def delete_inverter(
     inverter_id: int,
@@ -246,6 +278,28 @@ def create_panel(
     return persistence.upsert_panel(payload.model_dump())
 
 
+@router.put("/panels/{panel_id}", response_model=hw_schemas.PanelResponse)
+def update_panel(
+    panel_id: int,
+    payload: hw_schemas.PanelCreate,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> hw_schemas.PanelResponse:
+    """
+    Update a panel in the hardware catalog by primary key (allows rename).
+
+    Raises:
+        HTTPException 404: panel not found.
+        HTTPException 409: new ``name`` already used by another panel.
+    """
+    try:
+        record = persistence.update_panel(panel_id, payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Panel id={panel_id} not found")
+    return record
+
+
 @router.delete("/panels/{panel_id}")
 def delete_panel(
     panel_id: int,
@@ -363,6 +417,28 @@ def create_battery(
         - Updating propagates to all scenarios using this battery ID
     """
     return persistence.upsert_battery(payload.model_dump())
+
+
+@router.put("/batteries/{battery_id}", response_model=hw_schemas.BatteryResponse)
+def update_battery(
+    battery_id: int,
+    payload: hw_schemas.BatteryCreate,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> hw_schemas.BatteryResponse:
+    """
+    Update a battery in the hardware catalog by primary key (allows rename).
+
+    Raises:
+        HTTPException 404: battery not found.
+        HTTPException 409: new ``name`` already used by another battery.
+    """
+    try:
+        record = persistence.update_battery(battery_id, payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Battery id={battery_id} not found")
+    return record
 
 
 @router.delete("/batteries/{battery_id}")

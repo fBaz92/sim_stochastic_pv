@@ -109,6 +109,10 @@ def validate_scenario(data: Dict[str, Any]) -> List[str]:
         else:
             errors.extend(_validate_price_model(data["price"]))
 
+    # Phase 16 — detailed electrical model block (opt-in).
+    if "electrical" in data:
+        errors.extend(_validate_electrical(data["electrical"], data))
+
     return errors
 
 
@@ -268,6 +272,117 @@ def _validate_inflation(raw: Any) -> List[str]:
         errors.append(
             "economic.inflation.min_clip must be <= economic.inflation.max_clip"
         )
+    return errors
+
+
+_VALID_ELECTRICAL_MODES = {"off", "disabled", "mppt_window"}
+_REQUIRED_PANEL_ELECTRICAL = (
+    "power_w",
+    "v_oc_stc_v",
+    "v_mpp_stc_v",
+    "n_cells_series",
+    "beta_voc_pct_per_c",
+    "gamma_pmax_pct_per_c",
+    "noct_c",
+)
+_REQUIRED_INVERTER_ELECTRICAL = (
+    "v_dc_min_v",
+    "v_dc_max_v",
+    "v_mppt_min_v",
+    "v_mppt_max_v",
+)
+
+
+def _validate_electrical(raw: Any, full_data: Dict[str, Any]) -> List[str]:
+    """
+    Validate the ``electrical`` block (Phase 16).
+
+    Three regimes:
+
+    1. ``mode`` missing or set to ``"off"`` → block silently accepted.
+       Any extra fields are ignored (the simulator runs the legacy
+       energy path).
+    2. ``mode="mppt_window"`` → enforce the full datasheet schema:
+       panel + inverter must contain every required field, ``pv_strings``
+       (when present) must be a non-empty list of valid string entries,
+       and the scenario must reference a Phase-15 ``climate_profile_id``
+       so the simulator has hourly ``T_ambient`` to drive ``T_cell``.
+    3. Any other ``mode`` value → single, explanatory error.
+
+    The function NEVER raises — it accumulates messages in a list so
+    the UI can show all problems at once.
+
+    Args:
+        raw: The ``electrical`` sub-dict.
+        full_data: The whole scenario dict (needed for the cross-block
+            ``climate_profile_id`` requirement).
+
+    Returns:
+        List of human-readable error messages. Empty list when the
+        block is valid (or absent in legacy mode).
+    """
+    errors: List[str] = []
+    if not isinstance(raw, dict):
+        return ["electrical must be a dict/object"]
+    mode = str(raw.get("mode", "off")).lower()
+    if mode not in _VALID_ELECTRICAL_MODES:
+        return [
+            f"electrical.mode={raw.get('mode')!r} not recognised. "
+            f"Valid values: {sorted(_VALID_ELECTRICAL_MODES)}."
+        ]
+    if mode in ("off", "disabled"):
+        return errors
+    # mode == "mppt_window" — enforce full schema.
+    panel = raw.get("panel") or {}
+    inverter = raw.get("inverter") or {}
+    missing_panel = [k for k in _REQUIRED_PANEL_ELECTRICAL if panel.get(k) in (None, "")]
+    missing_inverter = [
+        k for k in _REQUIRED_INVERTER_ELECTRICAL if inverter.get(k) in (None, "")
+    ]
+    if missing_panel:
+        errors.append(
+            "electrical.mode='mppt_window' requires panel datasheet fields "
+            f"to be set; missing: {', '.join(missing_panel)}"
+        )
+    if missing_inverter:
+        errors.append(
+            "electrical.mode='mppt_window' requires inverter datasheet fields "
+            f"to be set; missing: {', '.join(missing_inverter)}"
+        )
+    if "climate_profile_id" not in full_data and "climate_profile_name" not in full_data:
+        errors.append(
+            "electrical.mode='mppt_window' requires a climate_profile_id "
+            "(or climate_profile_name) at the scenario root so the "
+            "simulator can derive hourly T_cell from a Phase-15 thermal "
+            "model."
+        )
+    pv_strings = raw.get("pv_strings")
+    if pv_strings is not None:
+        if not isinstance(pv_strings, list) or not pv_strings:
+            errors.append("electrical.pv_strings must be a non-empty list when present")
+        else:
+            for idx, entry in enumerate(pv_strings):
+                if not isinstance(entry, dict):
+                    errors.append(f"electrical.pv_strings[{idx}] must be a dict")
+                    continue
+                if "n_panels" not in entry:
+                    errors.append(
+                        f"electrical.pv_strings[{idx}] missing 'n_panels'"
+                    )
+                else:
+                    n = entry["n_panels"]
+                    if not isinstance(n, int) or n <= 0:
+                        errors.append(
+                            f"electrical.pv_strings[{idx}].n_panels must be a positive integer"
+                        )
+                mppt_id = entry.get("mppt_id", 0)
+                if not isinstance(mppt_id, int) or mppt_id < 0:
+                    errors.append(
+                        f"electrical.pv_strings[{idx}].mppt_id must be a non-negative integer"
+                    )
+    k = raw.get("derating_exponent_k")
+    if k is not None and (not isinstance(k, (int, float)) or k < 0):
+        errors.append("electrical.derating_exponent_k must be a non-negative number")
     return errors
 
 

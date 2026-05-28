@@ -19,10 +19,19 @@
         model_number: '',
         p_ac_max_kw: 0,
         datasheet: '',
+        // Phase 16 — optional inverter datasheet fields. Gated behind
+        // an accordion to keep the casual UI tidy.
+        v_dc_min_v: null,
+        v_dc_max_v: null,
+        v_mppt_min_v: null,
+        v_mppt_max_v: null,
+        n_mppt_trackers: null,
+        i_dc_max_per_mppt_a: null,
         specs: {},
     });
 
     let formData = emptyForm();
+    let showElectrical = false;
 
     async function loadItems() {
         loading = true;
@@ -39,15 +48,27 @@
     /** Pre-popola il form con i dati di un inverter esistente per la modifica. */
     function startEdit(item) {
         editingId = item.id;
+        const specs = item.specs ?? {};
         formData = {
             name: item.name ?? '',
             manufacturer: item.manufacturer ?? '',
             model_number: item.model_number ?? '',
             p_ac_max_kw: item.p_ac_max_kw ?? item.nominal_power_kw ?? 0,
             datasheet: item.datasheet ?? '',
-            specs: item.specs ?? {},
+            v_dc_min_v: item.v_dc_min_v ?? specs.v_dc_min_v ?? null,
+            v_dc_max_v: item.v_dc_max_v ?? specs.v_dc_max_v ?? null,
+            v_mppt_min_v: item.v_mppt_min_v ?? specs.v_mppt_min_v ?? null,
+            v_mppt_max_v: item.v_mppt_max_v ?? specs.v_mppt_max_v ?? null,
+            n_mppt_trackers: item.n_mppt_trackers ?? specs.n_mppt_trackers ?? null,
+            i_dc_max_per_mppt_a: item.i_dc_max_per_mppt_a ?? specs.i_dc_max_per_mppt_a ?? null,
+            specs: specs,
         };
         showForm = true;
+        showElectrical = (
+            formData.v_dc_max_v != null ||
+            formData.v_mppt_min_v != null ||
+            formData.v_mppt_max_v != null
+        );
         deleteConfirmId = null;
         // Scroll verso il form
         document.getElementById('inverter-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -57,11 +78,29 @@
         showForm = false;
         editingId = null;
         formData = emptyForm();
+        showElectrical = false;
     }
 
     async function handleSubmit() {
         try {
-            await api.createInverter(formData);   // upsert-by-name: funziona sia per create che update
+            // Phase 16 — mirror electrical datasheet fields into specs
+            // so the simulator picks them up even when the API surface
+            // only persists ``specs``.
+            const payload = { ...formData };
+            payload.specs = {
+                ...(formData.specs ?? {}),
+                ...(formData.v_dc_min_v != null ? { v_dc_min_v: Number(formData.v_dc_min_v) } : {}),
+                ...(formData.v_dc_max_v != null ? { v_dc_max_v: Number(formData.v_dc_max_v) } : {}),
+                ...(formData.v_mppt_min_v != null ? { v_mppt_min_v: Number(formData.v_mppt_min_v) } : {}),
+                ...(formData.v_mppt_max_v != null ? { v_mppt_max_v: Number(formData.v_mppt_max_v) } : {}),
+                ...(formData.n_mppt_trackers != null ? { n_mppt_trackers: Number(formData.n_mppt_trackers) } : {}),
+                ...(formData.i_dc_max_per_mppt_a != null ? { i_dc_max_per_mppt_a: Number(formData.i_dc_max_per_mppt_a) } : {}),
+            };
+            if (editingId != null) {
+                await api.updateInverter(editingId, payload);
+            } else {
+                await api.createInverter(payload);
+            }
             cancelForm();
             await loadItems();
         } catch (e) {
@@ -100,7 +139,7 @@
             <h3>{editingId ? 'Modifica inverter' : 'Nuovo inverter'}</h3>
             {#if editingId}
                 <p class="edit-hint">
-                    Il nome identifica univocamente l'inverter — modificarlo crea un duplicato.
+                    Stai modificando un inverter esistente. Puoi anche rinominarlo.
                 </p>
             {/if}
             <form on:submit={(e) => { e.preventDefault(); handleSubmit(); }}>
@@ -125,6 +164,54 @@
                     <label class="label" for="inv-datasheet">URL scheda tecnica</label>
                     <input id="inv-datasheet" class="input" bind:value={formData.datasheet} />
                 </div>
+
+                <!-- Phase 16 — optional electrical datasheet block. -->
+                <div class="form-group">
+                    <label class="toggle-row">
+                        <input type="checkbox" bind:checked={showElectrical} />
+                        <span class="toggle-label">Dati elettrici dettagliati (Phase 16 — finestra MPPT)</span>
+                    </label>
+                    <p class="hint">
+                        Compila questi campi per usare lo scenario con
+                        <strong>electrical.mode='mppt_window'</strong>: il simulatore controlla
+                        finestra MPPT, derating termico e shutdown V_dc ora per ora.
+                    </p>
+                </div>
+                {#if showElectrical}
+                    <div class="electrical-grid">
+                        <div class="form-group">
+                            <label class="label" for="inv-vdcmin">V_dc min (V)</label>
+                            <input id="inv-vdcmin" class="input" type="number" step="1"
+                                   bind:value={formData.v_dc_min_v} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="inv-vdcmax">V_dc max (V)</label>
+                            <input id="inv-vdcmax" class="input" type="number" step="1"
+                                   bind:value={formData.v_dc_max_v} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="inv-vmpptmin">V_mppt min (V)</label>
+                            <input id="inv-vmpptmin" class="input" type="number" step="1"
+                                   bind:value={formData.v_mppt_min_v} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="inv-vmpptmax">V_mppt max (V)</label>
+                            <input id="inv-vmpptmax" class="input" type="number" step="1"
+                                   bind:value={formData.v_mppt_max_v} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="inv-nmppt">N. MPPT tracker</label>
+                            <input id="inv-nmppt" class="input" type="number" step="1" min="1"
+                                   bind:value={formData.n_mppt_trackers} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="inv-idcmax">I_dc max per MPPT (A)</label>
+                            <input id="inv-idcmax" class="input" type="number" step="0.1"
+                                   bind:value={formData.i_dc_max_per_mppt_a} />
+                        </div>
+                    </div>
+                {/if}
+
                 <div class="form-actions">
                     <button type="button" class="btn btn-ghost" on:click={cancelForm}>Annulla</button>
                     <button type="submit" class="btn btn-primary">
@@ -230,4 +317,18 @@
         justify-content: flex-end;
     }
     .empty { color: var(--color-text-muted, #6c757d); font-style: italic; }
+    .toggle-row { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
+    .toggle-label { font-weight: 500; }
+    .hint { font-size: 0.82rem; color: var(--color-text-muted, #6c757d); margin: 0.3rem 0 0 1.5rem; }
+    .electrical-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+        gap: 0.5rem 1rem;
+        padding: 0.75rem;
+        background-color: var(--color-bg-secondary, #f8f9fb);
+        border-radius: 6px;
+        border: 1px solid var(--color-border, #e2e8f0);
+        margin-bottom: 1rem;
+    }
+    .electrical-grid .form-group { margin-bottom: 0; }
 </style>

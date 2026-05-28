@@ -14,9 +14,11 @@ import numpy as np
 
 from ..calendar_utils import build_calendar
 from .battery import BatteryBank, BatterySpecs
+from .electrical import ElectricalKPIs, ElectricalModel
 from .inverter import InverterAC
 from .load_profiles import LoadProfile
 from .solar import SolarModel
+from .thermal import ThermalModel
 
 
 @dataclass
@@ -49,6 +51,14 @@ class EnergySystemConfig:
     battery_max_discharge_kw: float | None = None
     dt_hours: float = 1.0
     calendar_start_weekday: int = 0
+    # Phase 16 — opt-in detailed electrical model. When ``electrical_model``
+    # is None (default) the simulator runs the legacy energy path
+    # byte-identical to pre-Phase-16. When provided, the simulator also
+    # requires a ``thermal_model`` so it can compute hourly cell
+    # temperatures and apply the MPPT-window derating + DC overvoltage
+    # shutdown logic to the PV power before it reaches the inverter.
+    electrical_model: ElectricalModel | None = None
+    thermal_model: ThermalModel | None = None
 
 
 class EnergySystemSimulator:
@@ -77,6 +87,21 @@ class EnergySystemSimulator:
             p_ac_max_kw=config.inverter_p_ac_max_kw,
             p_dc_max_kw=config.inverter_p_dc_max_kw,
         )
+        # Phase 16: pull the optional detailed-electrical components from
+        # the config. Both must be set together; the scenario_builder
+        # enforces this contract upstream.
+        self.electrical_model: ElectricalModel | None = config.electrical_model
+        self.thermal_model: ThermalModel | None = config.thermal_model
+        if self.electrical_model is not None and self.thermal_model is None:
+            raise ValueError(
+                "EnergySystemConfig.electrical_model requires a "
+                "thermal_model to source ambient temperatures (T_cell "
+                "depends on T_ambient via the NOCT relation)."
+            )
+        # The last per-path :class:`ElectricalKPIs` is cached here so
+        # ``MonteCarloSimulator`` can collect it after each call to
+        # ``run_one_path``. None when the electrical model is disabled.
+        self.last_electrical_kpis: ElectricalKPIs | None = None
 
         self.battery_bank = BatteryBank(
             specs=config.battery_specs,
@@ -139,6 +164,33 @@ class EnergySystemSimulator:
             rng=rng,
         )
 
+        # Phase 16 — pre-compute the entire hourly PV DC array, apply the
+        # electrical model (T_cell, V_string, MPPT-window derating, DC
+        # shutdown) in one vectorised pass, then feed the *adjusted*
+        # hourly PV into the existing inverter dispatch loop. This keeps
+        # the legacy code path byte-identical when ``electrical_model``
+        # is None (the conditional simply skips the adjustment step).
+        pv_hourly_kw_path = np.zeros(n_days * 24)
+        for d in range(n_days):
+            pv_hourly_kw_path[d * 24:(d + 1) * 24] = self.solar_model.daily_profile_kwh(
+                pv_daily_kwh[d]
+            )
+
+        electrical_kpis_path: ElectricalKPIs | None = None
+        if self.electrical_model is not None and self.thermal_model is not None:
+            # Simulate the path's daily mean ambient temperatures and
+            # broadcast them to hourly resolution via the Phase-15
+            # diurnal sinusoid. The thermal model consumes the same rng
+            # as the rest of the path — Markov solar and AR(1) thermal
+            # share path-level entropy so a "cold winter" path also has
+            # an aligned weather realisation.
+            daily_means = self.thermal_model.simulate_daily_means(n_days, rng)
+            t_ambient_hourly = self.thermal_model.to_hourly(daily_means)
+            pv_hourly_kw_path, electrical_kpis_path = self.electrical_model.apply_to_pv_dc(
+                pv_hourly_kw_path, t_ambient_hourly
+            )
+        self.last_electrical_kpis = electrical_kpis_path
+
         monthly_pv_prod_kwh = np.zeros(n_months)
         monthly_pv_direct_kwh = np.zeros(n_months)
         monthly_batt_to_load_kwh = np.zeros(n_months)
@@ -156,8 +208,7 @@ class EnergySystemSimulator:
             year_idx = self.year_index_for_day[d]
             weekday = self.weekday_for_day[d]
 
-            daily_pv_profile_kwh = self.solar_model.daily_profile_kwh(pv_daily_kwh[d])
-            pv_hourly_kw = daily_pv_profile_kwh
+            pv_hourly_kw = pv_hourly_kw_path[d * 24:(d + 1) * 24]
 
             for h in range(24):
                 p_load_kw = self.load_profile.get_hourly_load_kw(
