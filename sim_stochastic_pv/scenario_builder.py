@@ -11,11 +11,15 @@ from sim_stochastic_pv.simulation import (
     BatteryOption,
     BatterySpecs,
     DEFAULT_DERATING_EXPONENT_K,
+    DEFAULT_PHI_INTRA_DAY,
+    DEFAULT_SIGMA_LOG,
     EconomicConfig,
     ElectricalModel,
     EnergySystemConfig,
     EscalatingPriceModel,
     GBMPriceModel,
+    HeatPumpConfig,
+    HouseThermalConfig,
     InflationConfig,
     InverterElectricalSpecs,
     InverterOption,
@@ -28,8 +32,11 @@ from sim_stochastic_pv.simulation import (
     PanelOption,
     PriceModel,
     PvString,
+    SetpointConfig,
     SolarModel,
+    StochasticLoadConfig,
     TaxBonusConfig,
+    ThermalLoadConfig,
     WeeklyPatternLoadProfile,
     WEEKLY_PRESETS,
     make_default_solar_params_for_pavullo,
@@ -834,6 +841,103 @@ def build_default_electrical_model(
     )
 
 
+def build_default_stochastic_load_config(
+    scenario_data: Mapping[str, Any] | str | Path | None = None,
+) -> StochasticLoadConfig | None:
+    """
+    Resolve the Phase-17 ``load_profile.stochastic`` sub-block.
+
+    The block is opt-in. Absent block → ``None`` (legacy deterministic
+    behaviour). Present block → :class:`StochasticLoadConfig`.
+
+    Recognises both the canonical nested location
+    (``load_profile.stochastic``) and a back-compat root-level key
+    (``stochastic_load``) so the user can opt-in from a flat JSON if
+    preferred.
+    """
+    data = load_scenario_data(scenario_data)
+    raw: Mapping[str, Any] | None = None
+    load_cfg = data.get("load_profile")
+    if isinstance(load_cfg, Mapping):
+        raw = load_cfg.get("stochastic")
+    if raw is None:
+        raw = data.get("stochastic_load")
+    if not isinstance(raw, Mapping):
+        return None
+    return StochasticLoadConfig(
+        enabled=bool(raw.get("enabled", False)),
+        sigma_log=float(raw.get("sigma_log", DEFAULT_SIGMA_LOG)),
+        phi_intra_day=float(raw.get("phi_intra_day", DEFAULT_PHI_INTRA_DAY)),
+    )
+
+
+def build_default_thermal_load_config(
+    scenario_data: Mapping[str, Any] | str | Path | None = None,
+) -> ThermalLoadConfig | None:
+    """
+    Resolve the Phase-17 ``thermal_load`` block into a runtime config.
+
+    The block is opt-in. Returns ``None`` when missing or
+    ``enabled=False`` (the simulator then skips the HVAC controller
+    entirely). Otherwise hydrates the three nested dataclasses (house,
+    heat_pump, setpoint).
+
+    Args:
+        scenario_data: JSON path / mapping / None.
+
+    Returns:
+        :class:`ThermalLoadConfig` or ``None``.
+
+    Raises:
+        ValueError: When ``thermal_load.enabled=True`` but a required
+            sub-block contains a value that fails the dataclass
+            ``__post_init__`` checks (delegated to the dataclass).
+    """
+    data = load_scenario_data(scenario_data)
+    raw = data.get("thermal_load")
+    if not isinstance(raw, Mapping):
+        return None
+    enabled = bool(raw.get("enabled", False))
+    if not enabled:
+        return None
+    house_raw = raw.get("house") or {}
+    hp_raw = raw.get("heat_pump") or {}
+    sp_raw = raw.get("setpoint") or {}
+    house = HouseThermalConfig(
+        floor_area_m2=float(house_raw.get("floor_area_m2", 100.0)),
+        insulation_preset=str(house_raw.get("insulation_preset", "standard")),
+        ua_w_per_c_per_m2=(
+            float(house_raw["ua_w_per_c_per_m2"])
+            if house_raw.get("ua_w_per_c_per_m2") is not None
+            else None
+        ),
+        capacitance_kwh_per_c_per_m2=float(
+            house_raw.get("capacitance_kwh_per_c_per_m2", 0.05)
+        ),
+    )
+    heat_pump = HeatPumpConfig(
+        cop_heating=float(hp_raw.get("cop_heating", 3.5)),
+        cop_cooling=float(hp_raw.get("cop_cooling", 3.0)),
+        p_elec_max_kw=float(hp_raw.get("p_elec_max_kw", 3.0)),
+    )
+    setpoint = SetpointConfig(
+        t_setpoint_heating_c=float(sp_raw.get("t_setpoint_heating_c", 20.0)),
+        t_setpoint_cooling_c=float(sp_raw.get("t_setpoint_cooling_c", 26.0)),
+        t_setpoint_away_c=(
+            float(sp_raw["t_setpoint_away_c"])
+            if sp_raw.get("t_setpoint_away_c") is not None
+            else None
+        ),
+    )
+    return ThermalLoadConfig(
+        enabled=True,
+        house=house,
+        heat_pump=heat_pump,
+        setpoint=setpoint,
+        dynamic=bool(raw.get("dynamic", False)),
+    )
+
+
 def build_default_energy_config(
     scenario_data: Mapping[str, Any] | str | Path | None = None,
     persistence=None,
@@ -854,10 +958,14 @@ def build_default_energy_config(
     # ``None`` in legacy scenarios, preserving the byte-identical
     # pre-Phase-16 energy path.
     electrical_model = build_default_electrical_model(data, energy_cfg=energy_cfg)
+    # Phase 17 — Thermal HVAC and Phase 16 — Electrical MPPT both
+    # consume the same path-level ThermalModel. We resolve it once for
+    # either feature requesting it.
+    thermal_load_config = build_default_thermal_load_config(data)
+    stochastic_load_config = build_default_stochastic_load_config(data)
+    needs_thermal = electrical_model is not None or thermal_load_config is not None
     thermal_model = (
-        build_default_thermal_model(data, persistence)
-        if electrical_model is not None
-        else None
+        build_default_thermal_model(data, persistence) if needs_thermal else None
     )
     if electrical_model is not None and thermal_model is None:
         raise ValueError(
@@ -865,6 +973,13 @@ def build_default_energy_config(
             "(Phase 15) so the simulator can compute T_cell from hourly "
             "ambient temperatures. Either set climate_profile_id at the "
             "scenario root or downgrade electrical.mode to 'off'."
+        )
+    if thermal_load_config is not None and thermal_model is None:
+        raise ValueError(
+            "thermal_load.enabled=true requires a climate_profile_id "
+            "(Phase 15) so the HVAC controller has hourly T_ambient. "
+            "Wire climate_profile_id at the scenario root or disable "
+            "the thermal_load block."
         )
 
     return EnergySystemConfig(
@@ -875,6 +990,8 @@ def build_default_energy_config(
         inverter_p_ac_max_kw=energy_cfg.get("inverter_p_ac_max_kw", 1.0),
         electrical_model=electrical_model,
         thermal_model=thermal_model,
+        stochastic_load_config=stochastic_load_config,
+        thermal_load_config=thermal_load_config,
     )
 
 

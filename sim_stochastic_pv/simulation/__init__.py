@@ -35,14 +35,32 @@ from .energy_simulator import EnergySystemConfig, EnergySystemSimulator
 from .inverter import InverterAC
 from .load_profiles import (
     AreraLoadProfile,
+    DEFAULT_PHI_INTRA_DAY,
+    DEFAULT_SIGMA_LOG,
     HomeAwayLoadProfile,
     LoadProfile,
     LoadScenarioBlueprint,
     MonthlyAverageLoadProfile,
+    StochasticLoadConfig,
+    StochasticLoadProfile,
     VariableLoadProfile,
     WeeklyPatternLoadProfile,
     WEEKLY_PRESETS,
     make_flat_monthly_load_profiles,
+)
+from .thermal_load import (
+    DEFAULT_CAPACITANCE_KWH_PER_C_PER_M2,
+    HeatPumpConfig,
+    HouseThermalConfig,
+    HvacController,
+    INSULATION_PRESETS,
+    PRESET_GOOD_W_PER_C_PER_M2,
+    PRESET_POOR_W_PER_C_PER_M2,
+    PRESET_STANDARD_W_PER_C_PER_M2,
+    SetpointConfig,
+    ThermalLoadConfig,
+    ThermalLoadKPIs,
+    aggregate_thermal_kpis,
 )
 from .monte_carlo import (
     EconomicConfig,
@@ -99,6 +117,24 @@ __all__ = [
     "WEEKLY_PRESETS",
     "LoadScenarioBlueprint",
     "make_flat_monthly_load_profiles",
+    # Phase 17 — stochastic load decorator
+    "DEFAULT_PHI_INTRA_DAY",
+    "DEFAULT_SIGMA_LOG",
+    "StochasticLoadConfig",
+    "StochasticLoadProfile",
+    # Phase 17 — thermal load (HVAC)
+    "DEFAULT_CAPACITANCE_KWH_PER_C_PER_M2",
+    "HeatPumpConfig",
+    "HouseThermalConfig",
+    "HvacController",
+    "INSULATION_PRESETS",
+    "PRESET_GOOD_W_PER_C_PER_M2",
+    "PRESET_POOR_W_PER_C_PER_M2",
+    "PRESET_STANDARD_W_PER_C_PER_M2",
+    "SetpointConfig",
+    "ThermalLoadConfig",
+    "ThermalLoadKPIs",
+    "aggregate_thermal_kpis",
     # Energy system simulator
     "EnergySystemConfig",
     "EnergySystemSimulator",

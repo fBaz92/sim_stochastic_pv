@@ -445,6 +445,10 @@ class SimulationApplication:
             # block to render the new "Salute hardware" card with
             # hours_dc_overvoltage / hours_outside_mppt / peak voltages.
             "electrical": results.electrical_kpis_summary,
+            # Phase 17 — aggregated thermal/HVAC KPIs (None when off).
+            # Dashboard renders hvac_kwh_annual, share-of-load,
+            # comfort_breach_hours_per_year, p_elec_hvac_peak_kw.
+            "thermal": results.thermal_kpis_summary,
             "plots_data": {
                 "profit": {
                     "months": results.df_profit["month_index"].tolist(),

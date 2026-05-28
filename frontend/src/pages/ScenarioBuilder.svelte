@@ -393,6 +393,20 @@
     let homeVariationPercent = 10;   // ±%, both sides symmetric
     let awayVariationPercent = 5;
 
+    // ── Phase 17 — stochastic intra-day variability + HVAC additive load ──
+    let stochasticLoadEnabled = false;
+    let stochasticSigmaLog = 0.20;
+    let stochasticPhiIntraDay = 0.5;
+
+    let thermalLoadEnabled = false;
+    let thermalFloorAreaM2 = 100;
+    let thermalInsulationPreset = "standard"; // "poor" | "standard" | "good"
+    let thermalCopHeating = 3.5;
+    let thermalCopCooling = 3.0;
+    let thermalPMaxKw = 3.0;
+    let thermalTSetpointHeatingC = 20;
+    let thermalTSetpointCoolingC = 26;
+
     // Status banner for the Excel template / import actions.
     let loadProfileStatus = "";
     let loadProfileError = "";
@@ -761,6 +775,41 @@
         }
 
         applyLoadProfile(scenarioClone);
+
+        // Phase 17 — append the optional stochastic-load block under
+        // load_profile.stochastic. The simulator reads it from there.
+        if (stochasticLoadEnabled && scenarioClone.load_profile) {
+            scenarioClone.load_profile.stochastic = {
+                enabled: true,
+                sigma_log: Number(stochasticSigmaLog),
+                phi_intra_day: Number(stochasticPhiIntraDay),
+            };
+        }
+
+        // Phase 17 — append the optional thermal_load (HVAC) block. The
+        // climate_profile_id is propagated up so the backend can wire
+        // the ThermalModel from the climate DB.
+        if (thermalLoadEnabled) {
+            scenarioClone.thermal_load = {
+                enabled: true,
+                house: {
+                    floor_area_m2: Number(thermalFloorAreaM2),
+                    insulation_preset: thermalInsulationPreset,
+                },
+                heat_pump: {
+                    cop_heating: Number(thermalCopHeating),
+                    cop_cooling: Number(thermalCopCooling),
+                    p_elec_max_kw: Number(thermalPMaxKw),
+                },
+                setpoint: {
+                    t_setpoint_heating_c: Number(thermalTSetpointHeatingC),
+                    t_setpoint_cooling_c: Number(thermalTSetpointCoolingC),
+                },
+            };
+            if (climateProfileId != null && scenarioClone.climate_profile_id == null) {
+                scenarioClone.climate_profile_id = climateProfileId;
+            }
+        }
 
         return {
             n_mc: nMc,
@@ -1645,6 +1694,110 @@
             </p>
             <MonthInput label="Giorni minimi a casa / mese" bind:values={minDaysHome} />
             <MonthInput label="Giorni massimi a casa / mese" bind:values={maxDaysHome} />
+
+            <!-- Phase 17 — opt-in stochastic intra-day variability. -->
+            <hr class="section-divider" />
+            <div class="form-group">
+                <label class="toggle-row">
+                    <input type="checkbox" bind:checked={stochasticLoadEnabled} />
+                    <span class="toggle-label">Variabilità giornaliera del consumo (Phase 17 — opzionale)</span>
+                </label>
+                <p class="hint">
+                    Aggiunge un moltiplicatore stocastico LogN ora-per-ora con
+                    autocorrelazione AR(1). Preserva per costruzione il consumo
+                    medio mensile. Default ±20% 1-σ con φ=0.5.
+                </p>
+            </div>
+            {#if stochasticLoadEnabled}
+                <div class="thermal-section">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="label" for="stoch-sigma">σ log-multiplier</label>
+                            <input id="stoch-sigma" class="input" type="number" step="0.01" min="0"
+                                   bind:value={stochasticSigmaLog} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="stoch-phi">φ autocorrelazione AR(1)</label>
+                            <input id="stoch-phi" class="input" type="number" step="0.05" min="-0.99" max="0.99"
+                                   bind:value={stochasticPhiIntraDay} />
+                        </div>
+                    </div>
+                </div>
+            {/if}
+
+            <!-- Phase 17 — opt-in HVAC additive load. -->
+            <hr class="section-divider" />
+            <div class="form-group">
+                <label class="toggle-row">
+                    <input type="checkbox" bind:checked={thermalLoadEnabled} />
+                    <span class="toggle-label">Pompa di calore / HVAC con modello casa (Phase 17 — opzionale)</span>
+                </label>
+                <p class="hint">
+                    Calcola il consumo elettrico orario di una pompa di calore
+                    che mantiene la casa al setpoint con un modello RC del 1° ordine.
+                    Richiede un profilo climatico Phase 15 dallo step Luogo.
+                </p>
+            </div>
+            {#if thermalLoadEnabled}
+                <div class="thermal-section">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="label" for="th-area">Superficie pavimento (m²)</label>
+                            <input id="th-area" class="input" type="number" step="5" min="20"
+                                   bind:value={thermalFloorAreaM2} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="th-preset">Isolamento dell'edificio</label>
+                            <select id="th-preset" class="select" bind:value={thermalInsulationPreset}>
+                                <option value="poor">Scarso (~2.5 W/°C/m²) — case anni '60-'70</option>
+                                <option value="standard">Standard (~1.5 W/°C/m²) — anni '90</option>
+                                <option value="good">Buono (~0.8 W/°C/m²) — NZEB / classe A</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="label" for="th-cop-h">COP riscaldamento</label>
+                            <input id="th-cop-h" class="input" type="number" step="0.1" min="0.5"
+                                   bind:value={thermalCopHeating} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="th-cop-c">COP raffrescamento</label>
+                            <input id="th-cop-c" class="input" type="number" step="0.1" min="0.5"
+                                   bind:value={thermalCopCooling} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="th-pmax">P_elec max (kW)</label>
+                            <input id="th-pmax" class="input" type="number" step="0.1" min="0.5"
+                                   bind:value={thermalPMaxKw} />
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="label" for="th-tset-h">Setpoint riscaldamento (°C)</label>
+                            <input id="th-tset-h" class="input" type="number" step="0.5"
+                                   bind:value={thermalTSetpointHeatingC} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="th-tset-c">Setpoint raffrescamento (°C)</label>
+                            <input id="th-tset-c" class="input" type="number" step="0.5"
+                                   bind:value={thermalTSetpointCoolingC} />
+                        </div>
+                    </div>
+                    <p class="hint">
+                        {#if climateProfileId == null}
+                            ⚠️ Manca il profilo climatico — torna allo step Luogo,
+                            attiva la checkbox "Calibra anche il modello termico stocastico"
+                            e importa il profilo PVGIS prima di proseguire.
+                        {:else}
+                            ✓ Profilo climatico {climateProfileId} pronto. La pompa
+                            di calore aggiungerà il proprio consumo elettrico orario
+                            al profilo base nelle ore in cui T_ambient esce dal
+                            dead-band {thermalTSetpointHeatingC}°C–{thermalTSetpointCoolingC}°C.
+                        {/if}
+                    </p>
+                </div>
+            {/if}
         </div>
 
     <!-- ══════════════════════════════════════════════════════════════════ -->
@@ -2335,7 +2488,8 @@
         font-size: 0.95rem;
     }
     .toggle-label { font-weight: 500; }
-    .electrical-section {
+    .electrical-section,
+    .thermal-section {
         padding: 0.75rem 1rem;
         background-color: var(--color-bg-secondary, #f8f9fb);
         border: 1px solid var(--color-border, #e2e8f0);

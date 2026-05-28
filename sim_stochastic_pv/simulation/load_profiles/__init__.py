@@ -13,6 +13,12 @@ from .variable import VariableLoadProfile
 from .weekly import WeeklyPatternLoadProfile, WEEKLY_PRESETS
 from .helpers import make_flat_monthly_load_profiles, get_load_w
 from .blueprint import LoadScenarioBlueprint
+from .stochastic import (
+    DEFAULT_PHI_INTRA_DAY,
+    DEFAULT_SIGMA_LOG,
+    StochasticLoadConfig,
+    StochasticLoadProfile,
+)
 
 __all__ = [
     # Base
@@ -31,4 +37,9 @@ __all__ = [
     "get_load_w",
     # Blueprint
     "LoadScenarioBlueprint",
+    # Phase 17 — stochastic decorator
+    "DEFAULT_PHI_INTRA_DAY",
+    "DEFAULT_SIGMA_LOG",
+    "StochasticLoadConfig",
+    "StochasticLoadProfile",
 ]

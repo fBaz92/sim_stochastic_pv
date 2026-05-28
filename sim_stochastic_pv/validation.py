@@ -113,6 +113,14 @@ def validate_scenario(data: Dict[str, Any]) -> List[str]:
     if "electrical" in data:
         errors.extend(_validate_electrical(data["electrical"], data))
 
+    # Phase 17 — stochastic load decorator + thermal HVAC additive load.
+    if isinstance(data.get("load_profile"), dict) and "stochastic" in data["load_profile"]:
+        errors.extend(_validate_stochastic_load(data["load_profile"]["stochastic"]))
+    if "stochastic_load" in data:
+        errors.extend(_validate_stochastic_load(data["stochastic_load"]))
+    if "thermal_load" in data:
+        errors.extend(_validate_thermal_load(data["thermal_load"], data))
+
     return errors
 
 
@@ -383,6 +391,117 @@ def _validate_electrical(raw: Any, full_data: Dict[str, Any]) -> List[str]:
     k = raw.get("derating_exponent_k")
     if k is not None and (not isinstance(k, (int, float)) or k < 0):
         errors.append("electrical.derating_exponent_k must be a non-negative number")
+    return errors
+
+
+_VALID_INSULATION_PRESETS = {"poor", "standard", "good"}
+
+
+def _validate_stochastic_load(raw: Any) -> List[str]:
+    """
+    Validate the Phase-17 ``load_profile.stochastic`` (or
+    root ``stochastic_load``) block.
+
+    Enforces ``sigma_log >= 0`` and ``|phi_intra_day| < 1``. Does not
+    require ``enabled=True``: the user may legitimately store the
+    parameters but keep the feature off.
+    """
+    errors: List[str] = []
+    if not isinstance(raw, dict):
+        return ["stochastic_load must be a dict/object"]
+    if "enabled" in raw and not isinstance(raw["enabled"], bool):
+        errors.append("stochastic_load.enabled must be a boolean")
+    if "sigma_log" in raw:
+        s = raw["sigma_log"]
+        if not isinstance(s, (int, float)):
+            errors.append("stochastic_load.sigma_log must be a number")
+        elif s < 0:
+            errors.append("stochastic_load.sigma_log must be >= 0")
+    if "phi_intra_day" in raw:
+        p = raw["phi_intra_day"]
+        if not isinstance(p, (int, float)):
+            errors.append("stochastic_load.phi_intra_day must be a number")
+        elif not (-1.0 < float(p) < 1.0):
+            errors.append("stochastic_load.phi_intra_day must be strictly within (-1, 1)")
+    return errors
+
+
+def _validate_thermal_load(raw: Any, full_data: Dict[str, Any]) -> List[str]:
+    """
+    Validate the Phase-17 ``thermal_load`` block.
+
+    When ``enabled=False`` (or absent) the block is silently accepted.
+    When ``enabled=True`` the function enforces:
+        - presence of ``climate_profile_id`` (or ``_name``) at the
+          scenario root (the HVAC controller depends on T_ambient);
+        - ``house.insulation_preset`` ∈ ``{poor, standard, good}`` when
+          no explicit ``ua_w_per_c_per_m2`` is supplied;
+        - ``house.floor_area_m2 > 0``;
+        - ``heat_pump.cop_heating > 0``, ``cop_cooling > 0``,
+          ``p_elec_max_kw > 0``;
+        - ``setpoint.t_setpoint_heating_c < t_setpoint_cooling_c``.
+    """
+    errors: List[str] = []
+    if not isinstance(raw, dict):
+        return ["thermal_load must be a dict/object"]
+    if "enabled" in raw and not isinstance(raw["enabled"], bool):
+        errors.append("thermal_load.enabled must be a boolean")
+    enabled = bool(raw.get("enabled", False))
+    if not enabled:
+        return errors
+    if (
+        "climate_profile_id" not in full_data
+        and "climate_profile_name" not in full_data
+    ):
+        errors.append(
+            "thermal_load.enabled=true requires a climate_profile_id "
+            "(or climate_profile_name) at the scenario root."
+        )
+
+    house = raw.get("house") or {}
+    if not isinstance(house, dict):
+        errors.append("thermal_load.house must be a dict/object")
+    else:
+        if "floor_area_m2" in house:
+            fa = house["floor_area_m2"]
+            if not isinstance(fa, (int, float)) or fa <= 0:
+                errors.append("thermal_load.house.floor_area_m2 must be > 0")
+        ua_user = house.get("ua_w_per_c_per_m2")
+        if ua_user is None:
+            preset = str(house.get("insulation_preset", "standard")).lower()
+            if preset not in _VALID_INSULATION_PRESETS:
+                errors.append(
+                    "thermal_load.house.insulation_preset must be one of "
+                    f"{sorted(_VALID_INSULATION_PRESETS)}; got {preset!r}"
+                )
+        elif not isinstance(ua_user, (int, float)) or ua_user < 0:
+            errors.append("thermal_load.house.ua_w_per_c_per_m2 must be >= 0")
+
+    hp = raw.get("heat_pump") or {}
+    if not isinstance(hp, dict):
+        errors.append("thermal_load.heat_pump must be a dict/object")
+    else:
+        for key in ("cop_heating", "cop_cooling", "p_elec_max_kw"):
+            if key in hp:
+                v = hp[key]
+                if not isinstance(v, (int, float)) or v <= 0:
+                    errors.append(f"thermal_load.heat_pump.{key} must be > 0")
+
+    sp = raw.get("setpoint") or {}
+    if not isinstance(sp, dict):
+        errors.append("thermal_load.setpoint must be a dict/object")
+    else:
+        heat = sp.get("t_setpoint_heating_c")
+        cool = sp.get("t_setpoint_cooling_c")
+        if isinstance(heat, (int, float)) and isinstance(cool, (int, float)):
+            if heat >= cool:
+                errors.append(
+                    "thermal_load.setpoint.t_setpoint_heating_c must be < "
+                    "t_setpoint_cooling_c (dead-band)"
+                )
+        away = sp.get("t_setpoint_away_c")
+        if away is not None and not isinstance(away, (int, float)):
+            errors.append("thermal_load.setpoint.t_setpoint_away_c must be a number")
     return errors
 
 

@@ -770,6 +770,205 @@ della casa (l'edificio è single-zone). Acqua calda sanitaria
 
 ---
 
+## Fase 17-bis — Carico event-based con appliance discreti
+
+**Problema**: la Fase 17 ha aggiunto al carico due livelli di realismo —
+varianza intra-day LogN/AR(1) e contributo HVAC continuo — ma il consumo
+domestico reale non è una curva *liscia* moltiplicata per un fattore
+stocastico. È una sequenza di **eventi discreti**: la lavatrice si
+accende per 90 minuti a 1.5 kW, l'auto EV si attacca alla colonnina per
+8 ore a 2.3 kW, il forno cuoce per 45 minuti a 2.5 kW. La firma oraria
+(spike + ritorno alla baseline) è bimodale per costruzione, e nessun
+moltiplicatore log-normale può riprodurla.
+
+Questo impatta tre conti economici reali del simulatore:
+
+1. **Autoconsumo PV** — quando un evento da 2 kW capita alle 13:00 (sole
+   pieno) l'autoconsumo è ~100 %; lo stesso evento alle 21:00 (sole
+   zero) si imputa interamente alla rete. Il LogN della Fase 17, per
+   costruzione mean-1, *diluisce* questi picchi su tutte le ore e
+   sottostima entrambi i casi estremi.
+2. **Dimensionamento batteria** — la batteria viene caricata e scaricata
+   in base ai picchi orari, non ai valori medi. Il `peak_load_kw` di
+   un MC path con appliance discreti è 2–5 volte quello calcolato dal
+   profilo liscio + moltiplicatore stocastico, e questo si trasla in
+   un dimensionamento *molto* diverso (cap charge/discharge rate,
+   numero di cicli, fine vita).
+3. **Strategie di scheduling** — la versione "smart PV" (l'utente avvia
+   lavatrice/lavastoviglie/auto EV durante le ore di sole) cambia
+   completamente il payback dell'impianto rispetto a "naive timer"
+   (eventi distribuiti uniformemente nelle ore consentite). Senza un
+   modello a eventi non è possibile *confrontare* queste due strategie
+   nello stesso scenario.
+
+**Deliverable**:
+
+- Nuovo modulo `sim_stochastic_pv/simulation/load_profiles/appliances.py`:
+  - `ApplianceEvent(dataclass frozen)` con campi:
+    - `name: str` — identificatore leggibile (per i KPI).
+    - `p_kw: float` — potenza istantanea durante l'evento (kW).
+    - `duration_hours: float` — durata, *non* arrotondata a un'ora
+      intera (es. 0.75 h per il forno).
+    - `monthly_frequency: list[float] (12)` — eventi attesi al mese
+      (12 valori, calibrabili stagionalmente: es. lavatrice 12/mese
+      costante, condizionatore-cucina 0 d'inverno).
+    - `allowed_hours: list[int]` — sottoinsieme di `range(24)` delle
+      ore in cui l'evento può *iniziare* (lavatrice prefere 9-18,
+      forno 11-13 ∪ 18-20).
+    - `hour_of_day_weights: list[float] (24)` — pesi morbidi sull'ora
+      di partenza all'interno di `allowed_hours`. Quando ``None`` si
+      usa una distribuzione uniforme.
+    - `schedule_mode: Literal["naive_timer", "smart_pv"]` (default
+      `"naive_timer"`). In modalità `"smart_pv"` i pesi vengono
+      riponderati dalla curva oraria di produzione PV deterministica
+      (`SolarModel.hourly_shape`) — gli eventi vengono biasati verso
+      le ore di sole.
+  - `ApplianceCatalog` con preset realistici per il mercato residenziale
+    italiano (potenze e durate medie da indagini ISTAT/RSE):
+    - `washing_machine` (1.5 kW × 1.5 h, ~12/mese, allowed 9-18)
+    - `dishwasher` (1.2 kW × 1.0 h, ~15/mese, allowed 13-22)
+    - `oven` (2.5 kW × 0.75 h, ~8/mese, allowed 11-13 ∪ 18-20)
+    - `dryer` (2.2 kW × 1.0 h, ~6/mese, prefere 10-14)
+    - `ev_charger_slow` (2.3 kW × 8 h, ~20/mese, allowed 22-06 in
+      naive_timer / 9-16 in smart_pv)
+    - `ev_charger_fast` (7.4 kW × 2.5 h, ~15/mese, allowed 22-06)
+    - `induction_cooktop` (1.8 kW × 0.5 h, ~30/mese, allowed 11-13
+      ∪ 19-21)
+    - `dhw_heat_pump_cycle` (1.8 kW × 0.5 h, ~30/mese, allowed 7-9 ∪
+      17-19) — vita autonoma rispetto al modello HVAC della Fase 17,
+      che resta dedicato al riscaldamento/raffrescamento d'ambiente.
+- Nuovo `EventBasedApplianceProfile(LoadProfile)` *additivo* sul
+  profilo base (come l'HVAC della Fase 17, non sostitutivo). API:
+  - `__init__(appliances: list[ApplianceEvent], smart_pv_hourly_shape:
+    np.ndarray | None)` — `smart_pv_hourly_shape` è la curva PV
+    deterministica letta da `SolarModel.hourly_shape`, usata solo
+    quando almeno un `ApplianceEvent` ha `schedule_mode="smart_pv"`.
+  - `reset_for_run(rng, n_years)` — per ogni appliance × mese × anno
+    estrae N ~ Poisson(`monthly_frequency[m]`), poi per ogni evento
+    estrae uniformemente un giorno e un'ora di partenza
+    secondo `hour_of_day_weights`. Memorizza la lista di tuple
+    `(day_global, start_hour, duration_hours, p_kw, appliance_name)`
+    ordinate per indice orario per ricerca O(1).
+  - `get_hourly_load_kw(year_index, month_in_year, day_in_month,
+    hour_in_day, weekday)` — somma `p_kw` di tutti gli eventi che
+    *coprono* l'ora corrente (un evento iniziato all'ora *h* con durata
+    `d` copre le ore `h, h+1, …, h+⌈d⌉-1`, con peso *frazionario*
+    sull'ultima ora pari a `d - floor(d)` per preservare l'energia
+    totale dell'evento).
+  - Picco di concorrenza tracciato lato simulatore via il
+    consolidato `peak_p_load_kw` (vedi sotto KPI).
+- Decoratore composto in `EnergySystemSimulator`: la pipeline diventa
+  `base_load → StochasticLoadProfile (Fase 17) → EventBasedApplianceProfile
+  → HVAC additivo (Fase 17)`. L'ordine *moltiplicativo prima, additivo
+  dopo* è importante: applicare il moltiplicatore LogN agli eventi
+  discreti li sporcherebbe (un evento da 1.5 kW × 0.85 = 1.275 kW non
+  è realistico — un appliance accende o spegne, non si modula). Gli
+  eventi e l'HVAC restano *deterministicamente* additivi sopra il
+  carico-base-rumorizzato.
+- `EnergySystemConfig` esteso con `appliance_profile_config:
+  ApplianceProfileConfig | None` (lista di `ApplianceEvent` +
+  `smart_pv_enabled` flag globale che propaga `schedule_mode` agli
+  appliance).
+- Nuovo blocco `summary.appliances` (solo se attivo):
+  - `total_appliance_kwh_annual` — totale kWh/anno della somma di
+    tutti gli appliance (utile per sanity-check: confrontarlo con il
+    profilo base aiuta a capire se la calibrazione è realistica).
+  - `appliance_kwh_annual_by_name` — dizionario `{name: kWh/anno}`
+    per i grafici a barre nella Dashboard.
+  - `peak_simultaneous_kw_mean` — picco simultaneo medio tra i path
+    (E[max_h sum_a P_a(h)]). Quando alto rispetto a `inverter_p_ac_max_kw`
+    indica clipping inverter probabile.
+  - `share_of_total_load_pct_mean` — frazione del carico totale
+    imputabile agli appliance discreti.
+  - `smart_pv_self_consumption_pct` — quando `smart_pv` è abilitato,
+    quota di kWh degli eventi che cade sotto la curva PV oraria di
+    quel path. KPI di efficacia dello scheduling intelligente.
+- `scenario_builder.build_default_appliance_profile_config(scenario)`
+  — parsing del blocco `load_profile.appliances`. Forma JSON:
+  ```json
+  "load_profile": {
+    ...
+    "appliances": {
+      "enabled": true,
+      "smart_pv": true,
+      "items": [
+        {"type": "washing_machine"},
+        {"type": "ev_charger_slow", "schedule_mode": "smart_pv"},
+        {"type": "dishwasher", "monthly_frequency_override": [10, 10, ...]}
+      ]
+    }
+  }
+  ```
+- `validation._validate_appliances(raw)` — enforce:
+  - `items` lista non vuota di dict;
+  - ogni `type` ∈ catalogo (oppure `custom` con campi pieni esplicitamente);
+  - `monthly_frequency` lunghezza 12, valori ≥ 0;
+  - `p_kw > 0`, `duration_hours > 0`;
+  - `allowed_hours` subset di `range(24)`, non vuoto;
+  - `schedule_mode ∈ {"naive_timer", "smart_pv"}`.
+- Frontend wizard step Carico: terzo toggle gated "Appliance discreti"
+  con multi-select dei preset + per-appliance toggle "Avvia durante le
+  ore di sole". Mostra una tabella riassuntiva "kWh/anno previsti per
+  appliance" calcolata dal frontend come
+  `Σ_m frequency[m] × p_kw × duration_hours` per dare feedback
+  immediato all'utente prima di lanciare la simulazione.
+- Dashboard: nuovo widget "Carico appliance" con bar chart
+  `appliance_kwh_annual_by_name` + card `peak_simultaneous_kw_mean` +
+  (se smart_pv abilitato) card `smart_pv_self_consumption_pct` con
+  delta vs naive_timer di riferimento.
+- Test (~12 backend in `tests/test_phase17bis_appliances.py`):
+  - long-run kWh/anno medio per appliance entro 5 % di
+    `n_events_expected × p_kw × duration_hours`;
+  - distribuzione delle ore di partenza confinata in `allowed_hours`
+    (no leak);
+  - `smart_pv` shifta il centroide degli avvii verso le ore PV peak;
+  - `peak_simultaneous_kw` cresce monotonicamente col numero di
+    appliance concorrenti;
+  - byte-identità legacy quando il blocco è assente / `enabled=false`;
+  - integrazione end-to-end con HVAC (Fase 17) e stocastico (Fase 17)
+    — i tre contributi si sommano correttamente nell'`p_load_kw`
+    visto dal dispatcher inverter;
+  - validazione rifiuta `monthly_frequency` con shape sbagliata, ore
+    illegali, durate negative;
+  - reproducibility byte-identica con stesso seed.
+
+**Out of scope ora**:
+
+- **Demand response price-responsive** (rinviare l'avvio degli eventi
+  in base al PUN orario o a un segnale dell'inverter ibrido). Resta una
+  potenziale **Fase 17-ter**: richiederebbe un modello di prezzo
+  orario, che oggi non esiste (la Fase 2 lavora con prezzi mensili).
+- **Comportamento occupante differenziato per weekday/weekend**: la
+  Fase 5 ha introdotto `WeeklyPatternLoadProfile` lato baseline, ma
+  qui assumiamo `monthly_frequency` indipendente dal giorno della
+  settimana. Un'estensione naturale è suddividere
+  `monthly_frequency_weekday` vs `_weekend`. Schedulabile in coda alla
+  Fase 17-bis se serve.
+- **Modello termico interno dell'appliance**: il forno non parte a
+  2.5 kW istantanei, c'è un ramp di preriscaldamento; il
+  condizionatore-cucina ha un duty cycle interno. Tutti questi
+  dettagli vengono assorbiti nell'astrazione "evento rettangolare
+  p_kw × duration_hours" — per gli scopi di valutazione economica
+  l'errore è trascurabile rispetto alle altre approssimazioni del
+  simulatore.
+- **Coordinazione tra appliance** (es. la lavatrice non può partire
+  se l'EV è in carica perché supera il contratto in kW). Il
+  `peak_simultaneous_kw_mean` viene calcolato post-hoc come KPI
+  diagnostico, ma il *clipping* viene fatto dal contratto-utente
+  ipotizzando che superare il limite porta semplicemente al distacco
+  dell'utenza — schedulabile in coda alla Fase 17-bis se serve.
+- **EV vehicle-to-home (V2H)**: l'auto come batteria scaricata verso
+  la casa nelle ore serali. Richiederebbe estendere `BatteryBank` con
+  una sorgente esterna disponibile solo in alcune ore — fuori scope
+  per ora.
+- **DHW (acqua calda sanitaria) modellata come *flusso* anziché
+  *eventi*** — la modalità "eventi" qui inclusa è sufficiente per il
+  payback economico; una vera modellazione DHW richiederebbe un
+  serbatoio termico (capacitanza separata dal modello HVAC della
+  Fase 17). Fuori scope.
+
+---
+
 ## Dipendenze fra fasi
 
 ```
@@ -797,12 +996,17 @@ Fase 15 (modello termico) ◄─ Fase 14 ──────┤    (Fase 14 alime
                             ↓
                             ├─→ Fase 16 (modello elettrico opt-in)
                             └─→ Fase 17 (carico stocastico + HVAC)
+                                          │
+                                          ↓
+                                Fase 17-bis (appliance discreti event-based)
 ```
 
 Sequenza consigliata se si vuole valore precoce:
-**13 → 14 → 15 → (16 ∥ 17)** — la 13 è cheap e ripulisce il punto
-d'ingresso, la 14 sblocca due colli di bottiglia sotto (dati reali per
-clima e solare), la 15 è il prerequisito comune di 16 e 17.
+**13 → 14 → 15 → (16 ∥ 17) → 17-bis** — la 13 è cheap e ripulisce il
+punto d'ingresso, la 14 sblocca due colli di bottiglia sotto (dati reali
+per clima e solare), la 15 è il prerequisito comune di 16 e 17, la
+17-bis estende la 17 con il modello a eventi per chi vuole valutare
+strategie di scheduling intelligente (auto EV su PV, smart timer).
 
 ## Stato
 
@@ -816,6 +1020,128 @@ clima e solare), la 15 è il prerequisito comune di 16 e 17.
 Nessuna fase attivamente in corso.
 
 ### ✅ Completate
+
+**Fase 17 — Carico stocastico con accoppiamento termico** — chiusa 2026-05-28.
+
+Consegnato:
+- **Nuovo modulo `sim_stochastic_pv/simulation/load_profiles/stochastic.py`**:
+  - `StochasticLoadConfig(enabled, sigma_log, phi_intra_day)` dataclass
+    con validazione (sigma_log ≥ 0, |phi| < 1).
+  - `StochasticLoadProfile(base, config)` decorator. `reset_for_run`
+    pre-genera l'intero path orario di moltiplicatori tramite
+    `_sample_lognormal_ar1_path(n_hours, sigma_log, phi, rng)` —
+    formula:
+        z[h] = phi · z[h-1] + sigma_innov · w[h],
+        eps[h] = exp(z[h] − σ²/2),
+    con `sigma_innov = sigma_log · √(1−φ²)` che rende la varianza
+    marginale di z esattamente `σ_log²` e la correzione di Itō tiene
+    `E[eps]=1` (verificato empiricamente: mean=0.9987, std(log)=0.2007,
+    lag-1=0.5000 su 100k samples). `get_hourly_load_kw` è O(1).
+- **Nuovo modulo `sim_stochastic_pv/simulation/thermal_load.py`**:
+  - 3 preset isolamento (`poor`=2.5, `standard`=1.5, `good`=0.8 W/°C/m²).
+  - `HouseThermalConfig(floor_area_m2, insulation_preset,
+    ua_w_per_c_per_m2 override, capacitance_kwh_per_c_per_m2)` con
+    derived `ua_kw_per_c`.
+  - `HeatPumpConfig(cop_heating, cop_cooling, p_elec_max_kw)`.
+  - `SetpointConfig(t_setpoint_heating_c=20, _cooling_c=26, _away_c)`.
+  - `ThermalLoadConfig(enabled, house, heat_pump, setpoint, dynamic)`.
+  - `HvacController.compute_hourly_p_elec_kw(t_ambient_hourly_c,
+    at_home_hourly)` — steady-state vettoriale:
+        P_thermal_heating = UA · max(0, T_set − T_out),
+        P_elec = P_thermal / COP, capped al p_elec_max_kw;
+        away → setpoint=T_out (HVAC off) o setpoint_away_c se set.
+    Ritorna `(p_elec_kw_hourly, ThermalLoadKPIs)`. Il flag dinamico è
+    riservato per Fase 17.x.
+  - `ThermalLoadKPIs(hvac_kwh_annual, hvac_share_of_total_load_pct,
+    comfort_breach_hours_per_year, p_elec_hvac_peak_kw)` +
+    `aggregate_thermal_kpis(list) → dict` per il summary.
+- **Wiring `EnergySystemSimulator`**:
+  - `EnergySystemConfig` esteso con `stochastic_load_config` +
+    `thermal_load_config` (entrambi Optional, None → legacy
+    byte-identico). `__init__` wrappa il LoadProfile con
+    `StochasticLoadProfile` solo se `enabled && sigma_log > 0`;
+    istanzia `HvacController` solo se `thermal_load_config.enabled`
+    (richiede esplicitamente `thermal_model` settato, altrimenti
+    raise).
+  - `run_one_path`: precompone `t_ambient_hourly` una sola volta
+    (riusato sia da electrical che da HVAC), chiama
+    `hvac_controller.compute_hourly_p_elec_kw`, somma il P_elec HVAC
+    al `p_load_kw` ora-per-ora prima del dispatch dell'inverter.
+  - Helper `_compute_at_home_hourly` (per v1 sempre at-home; il
+    legame con il HomeAwayLoadProfile è documentato per una mini-fase
+    futura).
+  - `last_thermal_kpis` cache, raccolta dal MC orchestrator in
+    `thermal_kpis_per_path`.
+  - Finalizzazione di `hvac_share_of_total_load_pct` dopo il loop
+    monthly_load_kwh quando il KPI dipende dal totale aggregato.
+- **`MonteCarloResults`** esteso con `thermal_kpis_per_path` e
+  `thermal_kpis_summary` (None in legacy).
+- **`application.run_analysis`** espone `summary["thermal"]` (None se
+  off) accanto a `summary["electrical"]`.
+- **`scenario_builder.py`** esteso con:
+  - `build_default_stochastic_load_config(scenario_data)` — riconosce
+    sia `load_profile.stochastic` (canonical) sia `stochastic_load`
+    al root (compat).
+  - `build_default_thermal_load_config(scenario_data)` — hydrazione
+    completa dei 3 sotto-dataclass.
+  - `build_default_energy_config` ora pulla anche thermal/stochastic
+    config; richiede `climate_profile_id` se thermal_load enabled o
+    electrical mppt_window.
+- **`validation._validate_stochastic_load(raw)`** e
+  **`_validate_thermal_load(raw, full_data)`**: enforce sigma_log≥0,
+  |phi|<1, COP>0, p_elec_max>0, dead-band coerente,
+  insulation_preset whitelist, presenza climate_profile_id.
+- **Frontend Svelte (ScenarioBuilder step Carico)**:
+  - Stato JS: `stochasticLoadEnabled`, `stochasticSigmaLog`,
+    `stochasticPhiIntraDay`, `thermalLoadEnabled`, `thermalFloorAreaM2`,
+    `thermalInsulationPreset`, `thermalCopHeating`, `thermalCopCooling`,
+    `thermalPMaxKw`, `thermalTSetpointHeatingC`, `thermalTSetpointCoolingC`.
+  - Due toggle gated end-of-step in step Carico ("Variabilità
+    giornaliera del consumo" + "Pompa di calore / HVAC con modello casa")
+    con accordion form rispettivi.
+  - Il selector preset isolamento spiega in italiano la corrispondenza
+    W/°C/m² ↔ tipo edificio (anni '60-'70, anni '90, NZEB).
+  - HVAC mostra hint diagnostico contestuale: se `climateProfileId == null`
+    avvisa di tornare allo step Luogo, altrimenti conferma con il
+    dead-band scelto.
+  - `buildPayload` aggiunge `scenarioClone.load_profile.stochastic` e
+    `scenarioClone.thermal_load` solo quando i rispettivi toggle sono
+    attivi; `climate_profile_id` propagato automaticamente.
+- **Test** (`tests/test_phase17_stochastic_load_and_hvac.py`): **27 nuovi
+  test**:
+  - `TestPhase17StochasticPathStats` (4): mean ≈ 1, marginal std(log) ≈
+    sigma_log, lag-1 ≈ phi (200k samples ciascuno), zero sigma → unity.
+  - `TestPhase17StochasticDecorator` (3): long-run mean preservato
+    entro 1% su 3 anni, sigma=0 byte-identico, config rejection.
+  - `TestPhase17HvacController` (7): formula UA·ΔT/COP, dead-band zero,
+    scaling lineare con area, miglior isolamento → meno kWh, comfort
+    breach con p_max insufficiente (kpi per year), away setpoint None
+    → HVAC off, away setpoint settato → run parziale.
+  - `TestPhase17ThermalAggregation` (2): empty/mean.
+  - `TestPhase17ScenarioBuilder` (3): blocchi mancanti → None,
+    stochastic hydration, thermal hydration in 3 sotto-oggetti.
+  - `TestPhase17ValidationIntegration` (4): rifiuto thermal senza
+    climate, rifiuto setpoint invertito, rifiuto COP negativo,
+    accetta stochastic block.
+  - `TestPhase17LegacyByteIdentity` (4): no blocchi → no models,
+    stochastic disabled, thermal senza climate raise, end-to-end MC
+    byte-identico tra "no block" e "block enabled=false".
+- Suite totale: **402/402 verde** (375 pre-Fase-17 + 27 nuovi).
+
+Note operative:
+- Per esercitare il modello live serve: step Luogo → import PVGIS con
+  "Calibra anche il modello termico stocastico" → step Carico →
+  toggle "Pompa di calore" → Esegui. Il summary del run include
+  `summary.thermal` con `hvac_kwh_annual_mean`,
+  `comfort_breach_hours_per_year_mean`, ecc.
+- Out of scope (Fase 17-bis non schedulata):
+  modello event-based con appliance discreti, pattern di assenza
+  stocastici (vacanze), demand response / PUN orario, multi-zona
+  della casa, acqua calda sanitaria separata dalla pompa di calore.
+- La capacità termica `C` resta esposta come parametro avanzato
+  (`capacitance_kwh_per_c_per_m2`) ma è inutilizzata dalla modalità
+  steady-state corrente; il flag `dynamic=true` è documentato ma
+  non implementato — è il primo step di una Fase 17.x dedicata.
 
 **Fase 16 — Modello elettrico inverter + pannelli (opt-in)** — chiusa 2026-05-28.
 
@@ -1588,3 +1914,12 @@ Aggiunte 2026-05-27 dopo prima sessione di prova manuale dell'app:
 - [ ] Fase 9-bis — UI toggle simplified/advanced sizing nel CampaignBuilder
       (slider overcapacity, gated dietro un toggle per non confondere chi
       vuole il default semplice) — backend già pronto da Fase 9.
+
+Aggiunta 2026-05-28 dopo la chiusura della Fase 17:
+
+- [ ] **Fase 17-bis** — Carico event-based con appliance discreti
+      (lavatrice, lavastoviglie, forno, EV charger, …). Modella spike
+      bimodali di carico per ora con scheduler `naive_timer` vs
+      `smart_pv`, abilita confronto autoconsumo / strategie di
+      scheduling intelligente. Specifica completa nella sezione
+      "Fase 17-bis" sopra. Dipende dalla Fase 17 chiusa.

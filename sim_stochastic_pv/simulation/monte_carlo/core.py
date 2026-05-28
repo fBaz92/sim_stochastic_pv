@@ -18,6 +18,7 @@ from tqdm import tqdm
 from ..electrical import aggregate_kpis as _aggregate_electrical_kpis
 from ..energy_simulator import EnergySystemSimulator
 from ..prices import PriceModel
+from ..thermal_load import aggregate_thermal_kpis as _aggregate_thermal_kpis
 
 from .finance import _npv, _compute_irr_monthly, _compute_irr_annual
 
@@ -450,6 +451,10 @@ class MonteCarloResults:
     # stay unaffected.
     electrical_kpis_per_path: Optional[list] = None
     electrical_kpis_summary: Optional[dict] = None
+    # Phase 17 — opt-in thermal (HVAC) KPIs. Populated when the scenario
+    # enables ``thermal_load.enabled=true``. Both ``None`` otherwise.
+    thermal_kpis_per_path: Optional[list] = None
+    thermal_kpis_summary: Optional[dict] = None
 
 
 class MonteCarloSimulator:
@@ -939,6 +944,8 @@ class MonteCarloSimulator:
         # electrical model is wired. Remains an empty list (then None)
         # in legacy runs.
         electrical_kpis_per_path: list = []
+        # Phase 17 — same idea for HVAC KPIs.
+        thermal_kpis_per_path: list = []
 
         # Use tqdm for progress tracking when appropriate
         iterator = range(n_mc)
@@ -1006,6 +1013,10 @@ class MonteCarloSimulator:
             kpis_path = getattr(self.energy_simulator, "last_electrical_kpis", None)
             if kpis_path is not None:
                 electrical_kpis_per_path.append(kpis_path)
+            # Phase 17 — capture the HVAC KPI snapshot (None when off).
+            thermal_path_kpis = getattr(self.energy_simulator, "last_thermal_kpis", None)
+            if thermal_path_kpis is not None:
+                thermal_kpis_per_path.append(thermal_path_kpis)
 
             # Call progress callback if provided
             if progress_callback is not None:
@@ -1235,6 +1246,15 @@ class MonteCarloSimulator:
             electrical_kpis_summary=(
                 _aggregate_electrical_kpis(electrical_kpis_per_path)
                 if electrical_kpis_per_path
+                else None
+            ),
+            # Phase 17 — opt-in thermal (HVAC) KPIs. Same legacy contract.
+            thermal_kpis_per_path=(
+                thermal_kpis_per_path if thermal_kpis_per_path else None
+            ),
+            thermal_kpis_summary=(
+                _aggregate_thermal_kpis(thermal_kpis_per_path)
+                if thermal_kpis_per_path
                 else None
             ),
         )

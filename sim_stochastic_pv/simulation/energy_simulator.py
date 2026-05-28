@@ -16,9 +16,10 @@ from ..calendar_utils import build_calendar
 from .battery import BatteryBank, BatterySpecs
 from .electrical import ElectricalKPIs, ElectricalModel
 from .inverter import InverterAC
-from .load_profiles import LoadProfile
+from .load_profiles import LoadProfile, StochasticLoadConfig, StochasticLoadProfile
 from .solar import SolarModel
 from .thermal import ThermalModel
+from .thermal_load import HvacController, ThermalLoadConfig, ThermalLoadKPIs
 
 
 @dataclass
@@ -59,6 +60,14 @@ class EnergySystemConfig:
     # shutdown logic to the PV power before it reaches the inverter.
     electrical_model: ElectricalModel | None = None
     thermal_model: ThermalModel | None = None
+    # Phase 17 — opt-in stochastic load decorator. When ``enabled=False``
+    # (default) the wrapper is skipped and the baseline LoadProfile
+    # behaves byte-identically to pre-Phase-17.
+    stochastic_load_config: StochasticLoadConfig | None = None
+    # Phase 17 — opt-in thermal (HVAC) additive load. Requires a
+    # thermal_model to source hourly ambient temperatures. ``None`` or
+    # ``enabled=False`` keeps the legacy load path intact.
+    thermal_load_config: ThermalLoadConfig | None = None
 
 
 class EnergySystemSimulator:
@@ -82,7 +91,15 @@ class EnergySystemSimulator:
         """
         self.config = config
         self.solar_model = solar_model
-        self.load_profile = load_profile
+        # Phase 17 — wrap the base LoadProfile with the stochastic
+        # decorator when the scenario enables it. The wrapper preserves
+        # the long-run mean by construction (LogN with Itō correction)
+        # so the wrapped profile keeps the user's energy budget.
+        stoch_cfg = config.stochastic_load_config
+        if stoch_cfg is not None and stoch_cfg.enabled and stoch_cfg.sigma_log > 0:
+            self.load_profile = StochasticLoadProfile(load_profile, stoch_cfg)
+        else:
+            self.load_profile = load_profile
         self.inverter = InverterAC(
             p_ac_max_kw=config.inverter_p_ac_max_kw,
             p_dc_max_kw=config.inverter_p_dc_max_kw,
@@ -102,6 +119,21 @@ class EnergySystemSimulator:
         # ``MonteCarloSimulator`` can collect it after each call to
         # ``run_one_path``. None when the electrical model is disabled.
         self.last_electrical_kpis: ElectricalKPIs | None = None
+        # Phase 17 — opt-in HVAC controller. When the user enables
+        # ``thermal_load_config`` we instantiate the controller once and
+        # use it on every path. The controller is stateless across paths;
+        # the per-hour T_ambient + at_home arrays are passed at run time.
+        self.hvac_controller: HvacController | None = None
+        if config.thermal_load_config is not None and config.thermal_load_config.enabled:
+            if self.thermal_model is None:
+                raise ValueError(
+                    "thermal_load_config.enabled=True requires a thermal_model "
+                    "to source hourly T_ambient. Wire a climate_profile_id in "
+                    "the scenario JSON or disable the HVAC block."
+                )
+            self.hvac_controller = HvacController(config.thermal_load_config)
+        # Phase 17 — cached per-path KPIs picked up by the MC orchestrator.
+        self.last_thermal_kpis: ThermalLoadKPIs | None = None
 
         self.battery_bank = BatteryBank(
             specs=config.battery_specs,
@@ -176,20 +208,39 @@ class EnergySystemSimulator:
                 pv_daily_kwh[d]
             )
 
-        electrical_kpis_path: ElectricalKPIs | None = None
-        if self.electrical_model is not None and self.thermal_model is not None:
-            # Simulate the path's daily mean ambient temperatures and
-            # broadcast them to hourly resolution via the Phase-15
-            # diurnal sinusoid. The thermal model consumes the same rng
-            # as the rest of the path — Markov solar and AR(1) thermal
-            # share path-level entropy so a "cold winter" path also has
-            # an aligned weather realisation.
+        # Phase 17 — pre-compute the hourly T_ambient when either the
+        # electrical OR thermal-load (HVAC) model is active. Both
+        # features consume the same path-level temperature realisation,
+        # so we share the array between them.
+        t_ambient_hourly: np.ndarray | None = None
+        if self.thermal_model is not None and (
+            self.electrical_model is not None or self.hvac_controller is not None
+        ):
             daily_means = self.thermal_model.simulate_daily_means(n_days, rng)
             t_ambient_hourly = self.thermal_model.to_hourly(daily_means)
+
+        electrical_kpis_path: ElectricalKPIs | None = None
+        if self.electrical_model is not None and t_ambient_hourly is not None:
             pv_hourly_kw_path, electrical_kpis_path = self.electrical_model.apply_to_pv_dc(
                 pv_hourly_kw_path, t_ambient_hourly
             )
         self.last_electrical_kpis = electrical_kpis_path
+
+        # Phase 17 — pre-compute the hourly additive HVAC load. The
+        # per-hour occupancy mask uses the load profile's home/away
+        # decision when available; otherwise we treat every hour as
+        # occupied (the steady-state controller produces the same
+        # numbers as a continuously-occupied home).
+        hvac_p_elec_hourly: np.ndarray | None = None
+        thermal_kpis_path: ThermalLoadKPIs | None = None
+        if self.hvac_controller is not None and t_ambient_hourly is not None:
+            at_home_hourly = self._compute_at_home_hourly(n_days)
+            hvac_p_elec_hourly, thermal_kpis_path = (
+                self.hvac_controller.compute_hourly_p_elec_kw(
+                    t_ambient_hourly, at_home_hourly
+                )
+            )
+        self.last_thermal_kpis = thermal_kpis_path
 
         monthly_pv_prod_kwh = np.zeros(n_months)
         monthly_pv_direct_kwh = np.zeros(n_months)
@@ -218,6 +269,12 @@ class EnergySystemSimulator:
                     hour_in_day=h,
                     weekday=weekday,
                 )
+                # Phase 17 — add the HVAC additive load (heating/cooling)
+                # on top of the appliance baseline before the inverter
+                # dispatch. When HVAC is disabled the array is None and
+                # the legacy path stays untouched.
+                if hvac_p_elec_hourly is not None:
+                    p_load_kw = p_load_kw + float(hvac_p_elec_hourly[d * 24 + h])
                 p_pv_kw = pv_hourly_kw[h]
 
                 (
@@ -251,6 +308,21 @@ class EnergySystemSimulator:
         mask = soc_count > 0
         soc_profile_first_year[mask] = soc_accum[mask] / soc_count[mask]
 
+        # Phase 17 — finalise the HVAC share-of-total-load KPI now that
+        # the simulator knows the full monthly_load_kwh aggregate. Total
+        # load includes both the baseline (already inside
+        # ``monthly_load_kwh``) and the HVAC additive contribution.
+        if thermal_kpis_path is not None and monthly_load_kwh.sum() > 0:
+            total_load_kwh = float(monthly_load_kwh.sum())
+            # ``hvac_kwh_annual`` is per year; total_load_kwh covers the
+            # whole horizon. Convert HVAC back to total then take the
+            # ratio so the share is a pure dimensionless number.
+            n_years = max(1, int(self.config.n_years))
+            hvac_total_kwh = thermal_kpis_path.hvac_kwh_annual * n_years
+            thermal_kpis_path.hvac_share_of_total_load_pct = (
+                100.0 * hvac_total_kwh / total_load_kwh
+            )
+
         return (
             monthly_pv_prod_kwh,
             monthly_pv_direct_kwh,
@@ -260,3 +332,18 @@ class EnergySystemSimulator:
             soh_end_of_month,
             soc_profile_first_year,
         )
+
+    def _compute_at_home_hourly(self, n_days: int) -> np.ndarray:
+        """
+        Build an hourly occupancy boolean mask for the whole path.
+
+        Currently uses the calendar plus a flat "always at home" default
+        — the home/away mask of :class:`HomeAwayLoadProfile` lives
+        inside that profile and is not exposed cleanly. A future
+        refinement could read it via ``self.load_profile.is_at_home(...)``
+        once the interface is added. For now we mark all hours as
+        occupied, which is conservative for the HVAC sizing (the heat
+        pump runs whenever T_out is outside the dead-band) and keeps
+        ``t_setpoint_away_c`` as an opt-in advanced knob.
+        """
+        return np.ones(n_days * 24, dtype=bool)
