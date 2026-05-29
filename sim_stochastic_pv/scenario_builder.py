@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from sim_stochastic_pv.simulation import (
+    APPLIANCE_PRESETS,
+    ApplianceEvent,
+    ApplianceProfileConfig,
     AreraLoadProfile,
     BatteryOption,
     BatterySpecs,
@@ -39,6 +42,7 @@ from sim_stochastic_pv.simulation import (
     ThermalLoadConfig,
     WeeklyPatternLoadProfile,
     WEEKLY_PRESETS,
+    get_appliance_preset,
     make_default_solar_params_for_pavullo,
 )
 from sim_stochastic_pv.simulation.thermal import ThermalModel
@@ -938,6 +942,144 @@ def build_default_thermal_load_config(
     )
 
 
+def _resolve_appliance_item(
+    raw: Mapping[str, Any],
+    smart_pv_default: bool,
+) -> ApplianceEvent:
+    """
+    Resolve one ``load_profile.appliances.items[]`` entry into an
+    :class:`ApplianceEvent`.
+
+    The entry may either reference a preset (``type: "washing_machine"``)
+    or fully describe a custom appliance (``type: "custom"`` plus the
+    full set of fields). Per-item overrides win over preset values
+    (e.g. ``monthly_frequency_override`` lets the user replace just the
+    monthly distribution without touching power or duration).
+
+    Args:
+        raw: One ``items[]`` entry from the scenario JSON.
+        smart_pv_default: Global scenario default for ``schedule_mode``
+            — used only when the entry omits the field explicitly.
+
+    Returns:
+        Fully populated :class:`ApplianceEvent` ready for the
+        :class:`EventBasedApplianceProfile`.
+
+    Raises:
+        ValueError: When ``type`` is missing, references an unknown
+            preset, or — for ``type="custom"`` — omits required fields.
+    """
+    type_str = str(raw.get("type", "")).strip().lower()
+    if not type_str:
+        raise ValueError("Each appliance item must include a 'type' field.")
+
+    if type_str == "custom":
+        # Custom appliance: every field must come from the JSON.
+        try:
+            base = ApplianceEvent(
+                name=str(raw.get("name", "custom")),
+                p_kw=float(raw["p_kw"]),
+                duration_hours=float(raw["duration_hours"]),
+                monthly_frequency=tuple(float(x) for x in raw["monthly_frequency"]),
+                allowed_hours=tuple(int(h) for h in raw["allowed_hours"]),
+                hour_of_day_weights=(
+                    tuple(float(w) for w in raw["hour_of_day_weights"])
+                    if raw.get("hour_of_day_weights") is not None
+                    else None
+                ),
+                schedule_mode=raw.get(
+                    "schedule_mode",
+                    "smart_pv" if smart_pv_default else "naive_timer",
+                ),
+            )
+        except KeyError as e:
+            raise ValueError(
+                f"appliance type='custom' is missing required field: {e.args[0]}"
+            ) from None
+        return base
+
+    # Preset path: start from the catalog entry, then apply overrides.
+    try:
+        base = get_appliance_preset(type_str)
+    except KeyError as e:
+        raise ValueError(str(e)) from None
+
+    # Build replacement keyword arguments for dataclasses.replace.
+    schedule_mode = raw.get("schedule_mode")
+    if schedule_mode is None:
+        schedule_mode = "smart_pv" if smart_pv_default else base.schedule_mode
+
+    overrides: dict[str, Any] = {"schedule_mode": schedule_mode}
+    if "monthly_frequency_override" in raw:
+        overrides["monthly_frequency"] = tuple(
+            float(x) for x in raw["monthly_frequency_override"]
+        )
+    if "p_kw" in raw:
+        overrides["p_kw"] = float(raw["p_kw"])
+    if "duration_hours" in raw:
+        overrides["duration_hours"] = float(raw["duration_hours"])
+    if "allowed_hours" in raw:
+        overrides["allowed_hours"] = tuple(int(h) for h in raw["allowed_hours"])
+    if "hour_of_day_weights" in raw:
+        overrides["hour_of_day_weights"] = (
+            tuple(float(w) for w in raw["hour_of_day_weights"])
+            if raw["hour_of_day_weights"] is not None
+            else None
+        )
+    if "name" in raw:
+        overrides["name"] = str(raw["name"])
+    # ApplianceEvent is a frozen dataclass — rebuild via replace.
+    from dataclasses import replace as _dc_replace
+    return _dc_replace(base, **overrides)
+
+
+def build_default_appliance_profile_config(
+    scenario_data: Mapping[str, Any] | str | Path | None = None,
+) -> ApplianceProfileConfig | None:
+    """
+    Resolve the Phase-17-bis ``load_profile.appliances`` block.
+
+    Reads the canonical nested location (``load_profile.appliances``)
+    and assembles a list of :class:`ApplianceEvent` from the preset
+    catalog plus any per-item override. Returns ``None`` when the
+    block is missing or ``enabled=false`` — the simulator then
+    skips the appliance decorator and the legacy load path stays
+    unchanged.
+
+    Args:
+        scenario_data: JSON path / dict / None.
+
+    Returns:
+        :class:`ApplianceProfileConfig` or ``None``.
+
+    Raises:
+        ValueError: When ``items`` references an unknown preset or
+            omits required fields for ``type='custom'``.
+    """
+    data = load_scenario_data(scenario_data)
+    load_cfg = data.get("load_profile")
+    if not isinstance(load_cfg, Mapping):
+        return None
+    raw = load_cfg.get("appliances")
+    if not isinstance(raw, Mapping):
+        return None
+    enabled = bool(raw.get("enabled", False))
+    if not enabled:
+        return None
+    smart_pv_default = bool(raw.get("smart_pv", False))
+    items_raw = raw.get("items")
+    if not isinstance(items_raw, list) or not items_raw:
+        return None
+    appliances = tuple(
+        _resolve_appliance_item(item, smart_pv_default) for item in items_raw
+    )
+    return ApplianceProfileConfig(
+        enabled=True,
+        smart_pv_default=smart_pv_default,
+        appliances=appliances,
+    )
+
+
 def build_default_energy_config(
     scenario_data: Mapping[str, Any] | str | Path | None = None,
     persistence=None,
@@ -982,6 +1124,8 @@ def build_default_energy_config(
             "the thermal_load block."
         )
 
+    appliance_profile_config = build_default_appliance_profile_config(data)
+
     return EnergySystemConfig(
         n_years=energy_cfg.get("n_years", 20),
         pv_kwp=energy_cfg.get("pv_kwp", 2.0),
@@ -992,6 +1136,7 @@ def build_default_energy_config(
         thermal_model=thermal_model,
         stochastic_load_config=stochastic_load_config,
         thermal_load_config=thermal_load_config,
+        appliance_profile_config=appliance_profile_config,
     )
 
 

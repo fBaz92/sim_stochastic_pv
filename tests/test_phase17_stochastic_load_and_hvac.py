@@ -156,16 +156,23 @@ def _make_thermal_cfg(
     t_heat: float = 20.0,
     t_cool: float = 26.0,
     away_c: float | None = None,
+    dynamic: bool = False,
+    internal_gains_kw: float = 0.0,
 ) -> ThermalLoadConfig:
     return ThermalLoadConfig(
         enabled=True,
-        house=HouseThermalConfig(floor_area_m2=area, insulation_preset=preset),
+        house=HouseThermalConfig(
+            floor_area_m2=area,
+            insulation_preset=preset,
+            internal_gains_kw=internal_gains_kw,
+        ),
         heat_pump=HeatPumpConfig(cop_heating=cop_h, cop_cooling=cop_c, p_elec_max_kw=p_max),
         setpoint=SetpointConfig(
             t_setpoint_heating_c=t_heat,
             t_setpoint_cooling_c=t_cool,
             t_setpoint_away_c=away_c,
         ),
+        dynamic=dynamic,
     )
 
 
@@ -234,6 +241,106 @@ class TestPhase17HvacController:
         ua = INSULATION_PRESETS["standard"] * 100.0 / 1000.0  # 0.15
         expected = ua * (16.0 - (-5.0)) / 3.5
         assert np.allclose(p_elec, expected)
+
+
+# ---------------------------------------------------------------------------
+# Phase 18 — dynamic RC mode (indoor-temperature trajectory)
+# ---------------------------------------------------------------------------
+
+
+class TestPhase18DynamicRc:
+    """Dynamic implicit-Euler RC integration and its invariants."""
+
+    def test_invariant_matches_steady_state_on_constant_tout(self) -> None:
+        # Constant T_out below the heating setpoint, uncapped pump, no
+        # internal gains, start at setpoint → the deadbeat controller holds
+        # the setpoint every hour, so the per-hour electric draw is byte-for
+        # -byte the steady-state result and the indoor temp stays at 20°C.
+        t_amb = np.full(48, 5.0)
+        ss, _ = HvacController(_make_thermal_cfg(p_max=1e6)).compute_hourly_p_elec_kw(t_amb)
+        ctrl = HvacController(_make_thermal_cfg(p_max=1e6, dynamic=True))
+        dy, _ = ctrl.compute_hourly_p_elec_kw(t_amb)
+        assert np.allclose(dy, ss)
+        assert np.allclose(ctrl.last_indoor_temp_c, 20.0)
+
+    def test_annual_energy_close_to_steady_state_when_uncapped(self) -> None:
+        # With gains=0 and no capping the dynamic energy differs from the
+        # steady-state one only by the (small) stored-energy term at mode
+        # transitions → within a few % over a full year. This underpins the
+        # ROADMAP claim that the dynamic mode is "marginal for the economics".
+        hours = np.arange(8760)
+        t_amb = 12.0 + 10.0 * np.sin(hours * 2 * np.pi / 8760) + 5.0 * np.sin(hours * 2 * np.pi / 24)
+        ss, _ = HvacController(_make_thermal_cfg("poor", 120.0, p_max=1e6)).compute_hourly_p_elec_kw(t_amb)
+        dy, _ = HvacController(_make_thermal_cfg("poor", 120.0, p_max=1e6, dynamic=True)).compute_hourly_p_elec_kw(t_amb)
+        assert dy.sum() == pytest.approx(ss.sum(), rel=0.05)
+
+    def test_indoor_temp_drops_below_setpoint_when_capped(self) -> None:
+        # Poorly insulated 120 m² home, undersized 2 kW pump, week-long cold
+        # snap → the heat pump saturates and the house cannot hold 20°C.
+        t_amb = np.full(168, -10.0) + 3.0 * np.sin(np.arange(168) * 2 * np.pi / 24)
+        poor = HvacController(_make_thermal_cfg("poor", 120.0, p_max=2.0, dynamic=True))
+        _, kp = poor.compute_hourly_p_elec_kw(t_amb)
+        assert kp.t_in_min_c < 18.0           # visibly cold indoors
+        assert kp.comfort_breach_hours_per_year > 0
+        assert kp.p_elec_hvac_peak_kw == pytest.approx(2.0)  # pinned at the cap
+        # A well-insulated home with the same pump holds the setpoint.
+        good = HvacController(_make_thermal_cfg("good", 120.0, p_max=2.0, dynamic=True))
+        _, kg = good.compute_hourly_p_elec_kw(t_amb)
+        assert kg.t_in_min_c >= 19.0
+
+    def test_implicit_euler_is_stable_with_short_time_constant(self) -> None:
+        # Tiny thermal mass + leaky envelope → very short tau. Implicit Euler
+        # must stay finite and bounded (no explicit-scheme oscillation).
+        cfg = ThermalLoadConfig(
+            enabled=True,
+            house=HouseThermalConfig(
+                floor_area_m2=200.0,
+                insulation_preset="poor",
+                capacitance_kwh_per_c_per_m2=0.005,  # tau ≈ 2 h
+            ),
+            heat_pump=HeatPumpConfig(cop_heating=3.5, cop_cooling=3.0, p_elec_max_kw=2.0),
+            setpoint=SetpointConfig(t_setpoint_heating_c=20.0, t_setpoint_cooling_c=26.0),
+            dynamic=True,
+        )
+        ctrl = HvacController(cfg)
+        t_amb = np.full(72, -15.0)
+        ctrl.compute_hourly_p_elec_kw(t_amb)
+        t_in = ctrl.last_indoor_temp_c
+        assert np.all(np.isfinite(t_in))
+        # Heating only → bounded below by outdoor, above by the setpoint.
+        assert t_in.min() >= t_amb.min() - 0.5
+        assert t_in.max() <= 20.0 + 0.5
+
+    def test_dead_band_no_load_dynamic(self) -> None:
+        ctrl = HvacController(_make_thermal_cfg(dynamic=True))
+        p_elec, _ = ctrl.compute_hourly_p_elec_kw(np.full(24, 23.0))
+        assert np.allclose(p_elec, 0.0)
+
+    def test_internal_gains_reduce_heating_energy(self) -> None:
+        # Free internal heat offsets part of the heating demand.
+        t_amb = np.full(168, 2.0)
+        no_gain, _ = HvacController(
+            _make_thermal_cfg("poor", 120.0, p_max=1e6, dynamic=True, internal_gains_kw=0.0)
+        ).compute_hourly_p_elec_kw(t_amb)
+        with_gain, _ = HvacController(
+            _make_thermal_cfg("poor", 120.0, p_max=1e6, dynamic=True, internal_gains_kw=0.5)
+        ).compute_hourly_p_elec_kw(t_amb)
+        assert with_gain.sum() < no_gain.sum()
+
+    def test_last_indoor_temp_none_in_steady_state(self) -> None:
+        ctrl = HvacController(_make_thermal_cfg())  # dynamic=False
+        _, kpis = ctrl.compute_hourly_p_elec_kw(np.full(24, 0.0))
+        assert ctrl.last_indoor_temp_c is None
+        # Steady-state exposes the setpoints as the indoor-temp KPIs.
+        assert kpis.t_in_min_c == pytest.approx(20.0)
+        assert kpis.t_in_max_c == pytest.approx(26.0)
+
+    def test_aggregate_takes_worst_case_indoor_temp(self) -> None:
+        cold = ThermalLoadKPIs(t_in_min_c=14.0, t_in_max_c=27.0)
+        mild = ThermalLoadKPIs(t_in_min_c=19.0, t_in_max_c=30.0)
+        agg = aggregate_thermal_kpis([cold, mild])
+        assert agg["t_in_min_c"] == pytest.approx(14.0)  # coldest path
+        assert agg["t_in_max_c"] == pytest.approx(30.0)  # hottest path
 
 
 # ---------------------------------------------------------------------------

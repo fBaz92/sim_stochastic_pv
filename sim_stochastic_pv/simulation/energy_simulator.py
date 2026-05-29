@@ -16,7 +16,14 @@ from ..calendar_utils import build_calendar
 from .battery import BatteryBank, BatterySpecs
 from .electrical import ElectricalKPIs, ElectricalModel
 from .inverter import InverterAC
-from .load_profiles import LoadProfile, StochasticLoadConfig, StochasticLoadProfile
+from .load_profiles import (
+    ApplianceProfileConfig,
+    AppliancesKPIs,
+    EventBasedApplianceProfile,
+    LoadProfile,
+    StochasticLoadConfig,
+    StochasticLoadProfile,
+)
 from .solar import SolarModel
 from .thermal import ThermalModel
 from .thermal_load import HvacController, ThermalLoadConfig, ThermalLoadKPIs
@@ -68,6 +75,10 @@ class EnergySystemConfig:
     # thermal_model to source hourly ambient temperatures. ``None`` or
     # ``enabled=False`` keeps the legacy load path intact.
     thermal_load_config: ThermalLoadConfig | None = None
+    # Phase 17-bis — opt-in event-based discrete appliance load.
+    # ``None`` or ``enabled=False`` keeps the load path untouched and
+    # the legacy energy flow byte-identical.
+    appliance_profile_config: ApplianceProfileConfig | None = None
 
 
 class EnergySystemSimulator:
@@ -134,6 +145,29 @@ class EnergySystemSimulator:
             self.hvac_controller = HvacController(config.thermal_load_config)
         # Phase 17 — cached per-path KPIs picked up by the MC orchestrator.
         self.last_thermal_kpis: ThermalLoadKPIs | None = None
+        # Phase 18 — the hourly indoor-temperature series of the most recent
+        # path (dynamic RC mode only; None in steady-state). Cached for the
+        # future timeseries-preview endpoint of the thermal lab (Phase 19).
+        self.last_indoor_temp_c: np.ndarray | None = None
+
+        # Phase 17-bis — opt-in event-based appliance profile. The
+        # decorator owns its own random schedule and is reset before
+        # each path. The simulator passes the solar hourly shape so
+        # smart_pv-mode appliances can bias their start hours toward
+        # the sun.
+        self.appliance_profile: EventBasedApplianceProfile | None = None
+        appliance_cfg = config.appliance_profile_config
+        if (
+            appliance_cfg is not None
+            and appliance_cfg.enabled
+            and appliance_cfg.appliances
+        ):
+            shape = getattr(solar_model, "hourly_shape", None)
+            self.appliance_profile = EventBasedApplianceProfile(
+                appliances=appliance_cfg.appliances,
+                solar_hourly_shape=shape,
+            )
+        self.last_appliances_kpis: AppliancesKPIs | None = None
 
         self.battery_bank = BatteryBank(
             specs=config.battery_specs,
@@ -188,6 +222,13 @@ class EnergySystemSimulator:
 
         self.battery_bank.reset(soc_init=0.5)
         self.load_profile.reset_for_run(rng=rng, n_years=self.config.n_years)
+        # Phase 17-bis — schedule the path's appliance events. The
+        # decorator is additive; the simulator queries it inside the
+        # hourly loop and sums its kW into the inverter dispatch.
+        if self.appliance_profile is not None:
+            self.appliance_profile.reset_for_run(
+                rng=rng, n_years=self.config.n_years
+            )
 
         pv_daily_kwh = self.solar_model.simulate_daily_energy(
             n_years=self.config.n_years,
@@ -241,6 +282,12 @@ class EnergySystemSimulator:
                 )
             )
         self.last_thermal_kpis = thermal_kpis_path
+        # Phase 18 — surface the dynamic indoor-temperature series (if any).
+        self.last_indoor_temp_c = (
+            self.hvac_controller.last_indoor_temp_c
+            if self.hvac_controller is not None
+            else None
+        )
 
         monthly_pv_prod_kwh = np.zeros(n_months)
         monthly_pv_direct_kwh = np.zeros(n_months)
@@ -269,6 +316,19 @@ class EnergySystemSimulator:
                     hour_in_day=h,
                     weekday=weekday,
                 )
+                # Phase 17-bis — add the additive appliance contribution
+                # AFTER the stochastic-decorated baseline but BEFORE
+                # the HVAC. Discrete events do not get multiplied by
+                # the LogN noise (a 1.5 kW washer doesn't modulate);
+                # they stack on top of the (already noisy) baseline.
+                if self.appliance_profile is not None:
+                    p_load_kw = p_load_kw + self.appliance_profile.get_hourly_load_kw(
+                        year_index=year_idx,
+                        month_in_year=month_in_year,
+                        day_in_month=day_in_month,
+                        hour_in_day=h,
+                        weekday=weekday,
+                    )
                 # Phase 17 — add the HVAC additive load (heating/cooling)
                 # on top of the appliance baseline before the inverter
                 # dispatch. When HVAC is disabled the array is None and
@@ -322,6 +382,26 @@ class EnergySystemSimulator:
             thermal_kpis_path.hvac_share_of_total_load_pct = (
                 100.0 * hvac_total_kwh / total_load_kwh
             )
+
+        # Phase 17-bis — finalise the appliance KPIs for the path. We
+        # pass the *adjusted* PV array (post-electrical model) so the
+        # smart_pv self-consumption KPI reflects what actually reached
+        # the inverter, not the raw solar number.
+        appliances_kpis_path: AppliancesKPIs | None = None
+        if self.appliance_profile is not None:
+            appliances_kpis_path = self.appliance_profile.kpis_for_path(
+                n_years=self.config.n_years,
+                pv_hourly_kw=pv_hourly_kw_path,
+            )
+            if monthly_load_kwh.sum() > 0:
+                n_years = max(1, int(self.config.n_years))
+                appliances_total_kwh = (
+                    appliances_kpis_path.total_appliance_kwh_annual * n_years
+                )
+                appliances_kpis_path.share_of_total_load_pct = (
+                    100.0 * appliances_total_kwh / float(monthly_load_kwh.sum())
+                )
+        self.last_appliances_kpis = appliances_kpis_path
 
         return (
             monthly_pv_prod_kwh,

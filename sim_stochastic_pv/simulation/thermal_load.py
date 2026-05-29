@@ -12,18 +12,25 @@ Output is **additive** on top of the baseline load profile: the user's
 HVAC kW is summed with the appliance kW returned by
 :meth:`LoadProfile.get_hourly_load_kw`.
 
-Modes:
+Modes (selected by ``ThermalLoadConfig.dynamic``):
     - Steady-state (default): `P_thermal_req(h) = UA * (T_set - T_out(h))`
       → `P_elec(h) = |P_thermal_req(h)| / COP`. Capped at
       ``p_elec_max_kw``; over-cap hours are counted in the
-      ``comfort_breach_hours`` KPI.
-    - Dynamic RC (Phase 17.x, scheduled but not implemented yet): solve
-      the ODE with implicit Euler over hourly steps. The wiring is
-      documented in the docstrings but the implementation is a stub —
-      users get the steady-state result in the meantime.
+      ``comfort_breach_hours`` KPI. The indoor temperature is the setpoint
+      by assumption (no trajectory).
+    - Dynamic RC (Phase 18, ``dynamic=True``): integrates
+      ``C·dT_in/dt = Q_HVAC + Q_int - UA·(T_in - T_out)`` with implicit
+      Euler at a 1-hour step and a deadbeat controller. Produces the real
+      indoor-temperature trajectory (cached on
+      ``HvacController.last_indoor_temp_c`` and summarised by the
+      ``t_in_min_c`` / ``t_in_max_c`` KPIs) — the house drops below the
+      heating setpoint when the heat pump saturates. With
+      ``internal_gains_kw = 0`` and no capping it reduces exactly to the
+      steady-state energy.
 
 Out of scope (intentional for v1): multi-zone, domestic hot water,
-demand response, hour-of-day tariff optimisation, set-point ramping.
+demand response, hour-of-day tariff optimisation (the per-hour setpoint
+arrays are schedule-ready for Phase 19), COP(T_out) curve.
 """
 
 from __future__ import annotations
@@ -83,8 +90,16 @@ class HouseThermalConfig:
             (W/°C/m²) when the user has a specific number from an
             energy certificate. ``None`` means use the preset.
         capacitance_kwh_per_c_per_m2: Thermal capacitance per m². Used
-            by the future dynamic RC mode; unused by the steady-state
-            path. Defaults to :data:`DEFAULT_CAPACITANCE_KWH_PER_C_PER_M2`.
+            by the **dynamic RC mode** (Phase 18) to set the building's
+            thermal inertia; unused by the steady-state path. Defaults to
+            :data:`DEFAULT_CAPACITANCE_KWH_PER_C_PER_M2`.
+        internal_gains_kw: Constant free heat gains (occupants +
+            appliances + solar through windows), in kW. Used **only** by
+            the dynamic RC mode as an additive thermal source; the
+            steady-state path ignores it. Defaults to ``0.0`` so the
+            dynamic mode reduces *exactly* to the steady-state energy when
+            the heat pump is not capped (no hidden offset). Typical
+            inhabited-home value: 0.2–0.5 kW.
 
     Notes:
         - The total UA used by the model is
@@ -99,6 +114,7 @@ class HouseThermalConfig:
     insulation_preset: str = "standard"
     ua_w_per_c_per_m2: Optional[float] = None
     capacitance_kwh_per_c_per_m2: float = DEFAULT_CAPACITANCE_KWH_PER_C_PER_M2
+    internal_gains_kw: float = 0.0
 
     def __post_init__(self) -> None:
         if self.floor_area_m2 <= 0:
@@ -109,6 +125,10 @@ class HouseThermalConfig:
             raise ValueError(
                 "capacitance_kwh_per_c_per_m2 must be >= 0, "
                 f"got {self.capacitance_kwh_per_c_per_m2}"
+            )
+        if self.internal_gains_kw < 0:
+            raise ValueError(
+                f"internal_gains_kw must be >= 0, got {self.internal_gains_kw}"
             )
         preset_key = self.insulation_preset.lower()
         if self.ua_w_per_c_per_m2 is None and preset_key not in INSULATION_PRESETS:
@@ -129,6 +149,19 @@ class HouseThermalConfig:
         if ua is None:
             ua = INSULATION_PRESETS[self.insulation_preset.lower()]
         return ua * self.floor_area_m2 / 1000.0
+
+    @property
+    def capacitance_kwh_per_c(self) -> float:
+        """
+        Total building thermal capacitance in kWh/°C.
+
+        Equals ``capacitance_kwh_per_c_per_m2 * floor_area_m2``. Drives the
+        thermal inertia of the dynamic RC mode (Phase 18): the building's
+        time constant is ``tau = C / UA`` (hours), so a poorly insulated
+        100 m² home (UA ≈ 0.25 kW/°C, C ≈ 5 kWh/°C) has ``tau ≈ 20 h``.
+        Unused by the steady-state path.
+        """
+        return self.capacitance_kwh_per_c_per_m2 * self.floor_area_m2
 
 
 @dataclass(frozen=True)
@@ -247,27 +280,66 @@ class ThermalLoadKPIs:
         p_elec_hvac_peak_kw: Largest instantaneous HVAC electric draw
             seen in this path (kW). Useful for contract sizing (kW
             tariff slabs).
+        t_in_min_c: Minimum indoor temperature reached in this path (°C).
+            In **steady-state** mode the indoor temperature is pinned at
+            the setpoint by assumption, so this is set to
+            ``t_setpoint_heating_c``. In **dynamic RC** mode it is the
+            true minimum of the integrated indoor-temperature series — it
+            drops below the heating setpoint when the heat pump saturates.
+        t_in_max_c: Maximum indoor temperature reached in this path (°C).
+            In steady-state mode set to ``t_setpoint_cooling_c``; in
+            dynamic mode the true maximum (rises above the cooling setpoint
+            when cooling capacity is insufficient).
     """
 
     hvac_kwh_annual: float = 0.0
     hvac_share_of_total_load_pct: float = 0.0
     comfort_breach_hours_per_year: float = 0.0
     p_elec_hvac_peak_kw: float = 0.0
+    t_in_min_c: float = 0.0
+    t_in_max_c: float = 0.0
 
 
 # ---------------------------------------------------------------------------
-# Steady-state controller
+# HVAC controller (steady-state + dynamic RC)
 # ---------------------------------------------------------------------------
+
+#: Integration step of the dynamic RC mode, in hours. The simulator works
+#: on hourly series, so the implicit-Euler step is fixed at 1 hour. Kept as
+#: a named constant (not an inline ``1.0``) so the unit is explicit in the
+#: ``C/dt`` term of :meth:`HvacController._compute_dynamic`.
+_HOUR_STEP_H: float = 1.0
 
 
 class HvacController:
     """
-    Steady-state HVAC controller — one instance per Monte Carlo path.
+    HVAC controller (steady-state or dynamic RC) — one per Monte Carlo path.
 
     Reads the hourly ambient temperature array, the path's per-hour
     occupancy mask (the user is at home YES/NO), and the configured
     house/heat-pump/setpoint specs, then computes the **additive
     electric load** ``P_elec_HVAC(h)`` for every hour.
+
+    Two modes, selected by :attr:`ThermalLoadConfig.dynamic`:
+
+    - **Steady-state** (``dynamic=False``, default): the inverse of the RC
+      balance assuming the house is held *at* the setpoint —
+      ``P_th = UA * (T_set - T_out)`` → ``P_elec = |P_th| / COP``, capped at
+      ``p_elec_max_kw``. The indoor temperature is the setpoint by
+      assumption (no trajectory).
+    - **Dynamic RC** (``dynamic=True``, Phase 18): integrates the 1st-order
+      RC balance ``C·dT_in/dt = Q_HVAC + Q_int - UA·(T_in - T_out)`` with
+      **implicit Euler** at a 1-hour step, using a *deadbeat* controller
+      (drive to setpoint in one step when possible, otherwise saturate at
+      ``p_elec_max·COP``). This produces the real indoor-temperature
+      trajectory — it drops below the heating setpoint when the heat pump
+      can't keep up with the losses of a poorly insulated house.
+
+    The two modes are reconciled by design: with ``internal_gains_kw=0`` and
+    the heat pump never capped, the dynamic mode's electric energy is
+    **identical** to the steady-state result (the deadbeat controller holds
+    the setpoint exactly). They diverge only when the pump saturates or the
+    thermal mass buffers a transient.
 
     The controller does not own the calendar — it expects pre-aligned
     hourly arrays. The :class:`EnergySystemSimulator` is responsible for
@@ -275,8 +347,12 @@ class HvacController:
     and the :class:`LoadProfile`'s home/away day picks.
 
     Attributes:
-        config: :class:`ThermalLoadConfig` — the full v1 spec set.
+        config: :class:`ThermalLoadConfig` — the full spec set.
         ua_kw_per_c: Derived envelope U·A in kW/°C (= W/°C/1000).
+        last_indoor_temp_c: The indoor-temperature series (°C) from the
+            most recent :meth:`compute_hourly_p_elec_kw` call. Populated
+            only in **dynamic** mode (``None`` after a steady-state call).
+            Cached for the future timeseries-preview endpoint.
     """
 
     def __init__(self, config: ThermalLoadConfig) -> None:
@@ -288,9 +364,10 @@ class HvacController:
             )
         self.config = config
         self.ua_kw_per_c = config.house.ua_kw_per_c
+        self.last_indoor_temp_c: np.ndarray | None = None
 
     # ------------------------------------------------------------------
-    # Hourly arrays
+    # Public entry point — dispatches on config.dynamic
     # ------------------------------------------------------------------
 
     def compute_hourly_p_elec_kw(
@@ -300,6 +377,11 @@ class HvacController:
     ) -> tuple[np.ndarray, ThermalLoadKPIs]:
         """
         Compute the hourly electric HVAC draw for the entire path.
+
+        Dispatches to the steady-state or the dynamic RC integrator based
+        on :attr:`ThermalLoadConfig.dynamic`. Both return the same
+        ``(p_elec_kw_hourly, kpis)`` shape so the simulator call-site is
+        mode-agnostic.
 
         Args:
             t_ambient_hourly_c: Ambient temperature (°C) per hour for
@@ -313,26 +395,14 @@ class HvacController:
             ``(p_elec_kw_hourly, kpis)``. ``p_elec_kw_hourly`` has the
             same shape as the input; ``kpis`` is a fresh
             :class:`ThermalLoadKPIs` instance with the path-level
-            counters. The simulator is responsible for normalising
-            ``hvac_share_of_total_load_pct`` against the baseline load
-            (which the controller doesn't see). The KPI returned here
-            therefore leaves that field at 0.0 — the
-            :class:`EnergySystemSimulator` finalises it.
+            counters. The simulator finalises ``hvac_share_of_total_load_pct``
+            (left at 0.0 here) against the baseline load it owns.
 
         Notes:
-            - Steady-state formula:
-              ``P_th = UA * (T_set - T_out)`` (heating, positive),
-              ``P_th = UA * (T_out - T_set)`` (cooling, positive).
-            - ``P_elec = P_th / COP``, then capped at ``p_elec_max_kw``
-              with a comfort-breach count.
             - When the user is away and ``t_setpoint_away_c is None`` the
-              HVAC is off (P_elec = 0) regardless of the outdoor
-              temperature — the heat pump simply doesn't run.
-            - When the user is away and ``t_setpoint_away_c`` is set,
-              the controller uses that (single) setpoint for both
-              heating and cooling — the simplification is intentional
-              for v1 (a real setback would have a separate cooling
-              setpoint, usually higher).
+              HVAC is off (P_elec = 0) for that hour in both modes.
+            - When the user is away and ``t_setpoint_away_c`` is set, that
+              single setback setpoint is used for both heating and cooling.
         """
         n_hours = t_ambient_hourly_c.shape[0]
         if at_home_hourly is None:
@@ -344,39 +414,90 @@ class HvacController:
                 f"{t_ambient_hourly_c.shape}"
             )
 
-        cfg = self.config
-        sp = cfg.setpoint
-        hp = cfg.heat_pump
-        ua = self.ua_kw_per_c
+        t_set_heating, t_set_cooling = self._build_setpoint_arrays(
+            t_ambient_hourly_c, at_home_hourly
+        )
 
-        # 1) When the user is HOME → standard heating / cooling setpoints.
-        # 2) When AWAY:
-        #    - if t_setpoint_away_c is None → HVAC off (target = T_out so
-        #      the steady-state demand is zero);
-        #    - else → use the away setpoint for both modes.
-        t_set_heating = np.where(
-            at_home_hourly,
-            sp.t_setpoint_heating_c,
-            (
-                t_ambient_hourly_c
-                if sp.t_setpoint_away_c is None
-                else sp.t_setpoint_away_c
-            ),
+        if self.config.dynamic:
+            return self._compute_dynamic(
+                t_ambient_hourly_c, t_set_heating, t_set_cooling
+            )
+        return self._compute_steady_state(
+            t_ambient_hourly_c, t_set_heating, t_set_cooling
         )
-        t_set_cooling = np.where(
-            at_home_hourly,
-            sp.t_setpoint_cooling_c,
-            (
-                t_ambient_hourly_c
-                if sp.t_setpoint_away_c is None
-                else sp.t_setpoint_away_c
-            ),
-        )
+
+    # ------------------------------------------------------------------
+    # Shared helpers
+    # ------------------------------------------------------------------
+
+    def _build_setpoint_arrays(
+        self,
+        t_ambient_hourly_c: np.ndarray,
+        at_home_hourly: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Build the per-hour heating/cooling setpoint arrays.
+
+        Encodes occupancy and the away policy as plain float arrays so both
+        modes can consume them identically (the dynamic loop reads them
+        scalar-by-scalar, the steady-state path vectorises over them):
+
+        - HOME → ``(t_setpoint_heating_c, t_setpoint_cooling_c)``.
+        - AWAY with ``t_setpoint_away_c`` set → ``(away, away)`` (single
+          setback target for both modes).
+        - AWAY with ``t_setpoint_away_c is None`` → ``(-inf, +inf)``, i.e.
+          the whole temperature range is dead-band ⇒ HVAC off for that hour.
+
+        Returns:
+            ``(t_set_heating, t_set_cooling)`` each shape ``(n_hours,)``.
+
+        Notes:
+            This is the single seam a future *time-of-day setpoint schedule*
+            (Phase 19) needs to override — the physics downstream is
+            schedule-agnostic.
+        """
+        sp = self.config.setpoint
+        if sp.t_setpoint_away_c is None:
+            away_heating: float | np.ndarray = -np.inf
+            away_cooling: float | np.ndarray = np.inf
+        else:
+            away_heating = away_cooling = float(sp.t_setpoint_away_c)
+        t_set_heating = np.where(at_home_hourly, sp.t_setpoint_heating_c, away_heating)
+        t_set_cooling = np.where(at_home_hourly, sp.t_setpoint_cooling_c, away_cooling)
+        return t_set_heating.astype(float), t_set_cooling.astype(float)
+
+    @staticmethod
+    def _n_years_from_hours(n_hours: int) -> int:
+        """Number of whole years represented by ``n_hours`` (>= 1)."""
+        return max(1, int(round(n_hours / (365.0 * 24.0))))
+
+    # ------------------------------------------------------------------
+    # Steady-state path
+    # ------------------------------------------------------------------
+
+    def _compute_steady_state(
+        self,
+        t_ambient_hourly_c: np.ndarray,
+        t_set_heating: np.ndarray,
+        t_set_cooling: np.ndarray,
+    ) -> tuple[np.ndarray, ThermalLoadKPIs]:
+        """
+        Steady-state HVAC draw: instantaneous inverse of the RC balance.
+
+        ``P_th = UA·(T_set - T_out)`` (heating, positive) /
+        ``UA·(T_out - T_set)`` (cooling, positive), ``P_elec = P_th / COP``,
+        capped at ``p_elec_max_kw`` with a comfort-breach count. The indoor
+        temperature is the setpoint by assumption, so the KPI exposes the
+        configured heating/cooling setpoints as ``t_in_min_c`` / ``t_in_max_c``.
+        """
+        hp = self.config.heat_pump
+        sp = self.config.setpoint
+        ua = self.ua_kw_per_c
+        n_hours = t_ambient_hourly_c.shape[0]
 
         heating_mask = t_ambient_hourly_c < t_set_heating
         cooling_mask = t_ambient_hourly_c > t_set_cooling
 
-        # Steady-state thermal power demand (positive in both modes).
         p_thermal_heating = ua * np.maximum(0.0, t_set_heating - t_ambient_hourly_c)
         p_thermal_cooling = ua * np.maximum(0.0, t_ambient_hourly_c - t_set_cooling)
 
@@ -384,19 +505,126 @@ class HvacController:
         p_elec_cooling = np.where(cooling_mask, p_thermal_cooling / hp.cop_cooling, 0.0)
         p_elec_uncapped = p_elec_heating + p_elec_cooling
 
-        # Cap at p_elec_max_kw; count comfort breaches.
         breach_mask = p_elec_uncapped > hp.p_elec_max_kw
         p_elec_kw_hourly = np.minimum(p_elec_uncapped, hp.p_elec_max_kw)
 
-        # Per-year KPIs.
-        n_years = max(1, int(round(n_hours / (365.0 * 24.0))))
+        self.last_indoor_temp_c = None  # no trajectory in steady-state
+        n_years = self._n_years_from_hours(n_hours)
         kpis = ThermalLoadKPIs(
             hvac_kwh_annual=float(p_elec_kw_hourly.sum()) / n_years,
             hvac_share_of_total_load_pct=0.0,  # finalised by the simulator
             comfort_breach_hours_per_year=float(breach_mask.sum()) / n_years,
             p_elec_hvac_peak_kw=float(p_elec_kw_hourly.max()) if n_hours else 0.0,
+            t_in_min_c=sp.t_setpoint_heating_c,
+            t_in_max_c=sp.t_setpoint_cooling_c,
         )
         return p_elec_kw_hourly, kpis
+
+    # ------------------------------------------------------------------
+    # Dynamic RC path (Phase 18)
+    # ------------------------------------------------------------------
+
+    def _compute_dynamic(
+        self,
+        t_ambient_hourly_c: np.ndarray,
+        t_set_heating: np.ndarray,
+        t_set_cooling: np.ndarray,
+    ) -> tuple[np.ndarray, ThermalLoadKPIs]:
+        """
+        Dynamic single-zone RC integration with implicit Euler.
+
+        Per hour the implicit-Euler update of ``C·dT/dt = Q + Q_int - UA·(T - T_out)``
+        with step ``dt = 1 h`` reads (``a = C/dt + UA``)::
+
+            T_free = (C/dt·T_prev + Q_int + UA·T_out) / a     # HVAC off
+            heating if T_free < T_set_heat ; cooling if T_free > T_set_cool
+            Q_need(heat) = a·T_set_heat - (C/dt·T_prev + Q_int + UA·T_out)
+            Q = clip(Q_need, 0, p_elec_max·COP)               # thermal kW
+            T_new = (C/dt·T_prev + Q_int + UA·T_out ± Q) / a
+
+        The controller is *deadbeat* (drives to setpoint in one step when
+        the pump can deliver). When ``Q_need`` exceeds the cap the hour is
+        a comfort breach and ``T_new`` falls short of (heating) / overshoots
+        (cooling) the setpoint — the visible "the house gets cold" effect.
+
+        The indoor series is cached on :attr:`last_indoor_temp_c`. The
+        integration starts from the home heating setpoint (a comfortable,
+        neutral initial condition); the choice washes out within a few
+        time constants.
+
+        Notes:
+            - Implicit Euler is unconditionally stable, so the short time
+              constant of a poorly insulated home (``tau = C/UA`` can be a
+              handful of hours) never causes numerical oscillation.
+            - This path is a sequential per-hour loop (the state couples
+              consecutive hours) — comparable in cost to the AR(1) loop of
+              :meth:`ThermalModel.simulate_daily_means` but at hourly
+              resolution. It is opt-in (``dynamic=True``).
+        """
+        house = self.config.house
+        hp = self.config.heat_pump
+        sp = self.config.setpoint
+        ua = self.ua_kw_per_c
+        n_hours = t_ambient_hourly_c.shape[0]
+
+        c_over_dt = house.capacitance_kwh_per_c / _HOUR_STEP_H  # kW/°C
+        if c_over_dt <= 0.0:
+            # Zero thermal mass degenerates to the steady-state response;
+            # delegate to keep a single, well-tested code path.
+            return self._compute_steady_state(
+                t_ambient_hourly_c, t_set_heating, t_set_cooling
+            )
+        q_int = house.internal_gains_kw
+        a = c_over_dt + ua
+        q_max_heat = hp.p_elec_max_kw * hp.cop_heating
+        q_max_cool = hp.p_elec_max_kw * hp.cop_cooling
+        cop_h = hp.cop_heating
+        cop_c = hp.cop_cooling
+
+        t_in = np.empty(n_hours, dtype=float)
+        p_elec = np.empty(n_hours, dtype=float)
+        breach = 0
+        t_prev = float(sp.t_setpoint_heating_c)
+
+        for h in range(n_hours):
+            t_out = t_ambient_hourly_c[h]
+            base = c_over_dt * t_prev + q_int + ua * t_out  # kW (no HVAC)
+            t_free = base / a
+            if t_free < t_set_heating[h]:  # heating
+                q_need = a * t_set_heating[h] - base
+                if q_need > q_max_heat:
+                    q = q_max_heat
+                    breach += 1
+                else:
+                    q = q_need
+                p_elec[h] = q / cop_h
+                t_new = (base + q) / a
+            elif t_free > t_set_cooling[h]:  # cooling
+                q_need = base - a * t_set_cooling[h]
+                if q_need > q_max_cool:
+                    q = q_max_cool
+                    breach += 1
+                else:
+                    q = q_need
+                p_elec[h] = q / cop_c
+                t_new = (base - q) / a
+            else:  # dead-band → HVAC off, free run
+                p_elec[h] = 0.0
+                t_new = t_free
+            t_in[h] = t_new
+            t_prev = t_new
+
+        self.last_indoor_temp_c = t_in
+        n_years = self._n_years_from_hours(n_hours)
+        kpis = ThermalLoadKPIs(
+            hvac_kwh_annual=float(p_elec.sum()) / n_years,
+            hvac_share_of_total_load_pct=0.0,  # finalised by the simulator
+            comfort_breach_hours_per_year=float(breach) / n_years,
+            p_elec_hvac_peak_kw=float(p_elec.max()) if n_hours else 0.0,
+            t_in_min_c=float(t_in.min()) if n_hours else sp.t_setpoint_heating_c,
+            t_in_max_c=float(t_in.max()) if n_hours else sp.t_setpoint_cooling_c,
+        )
+        return p_elec, kpis
 
 
 # ---------------------------------------------------------------------------
@@ -410,8 +638,15 @@ def aggregate_thermal_kpis(per_path: list) -> dict:
 
     Uses **mean** for the kWh + share + peak (these are well-behaved
     averages) and **mean** for the comfort-breach counter (already
-    per-year). Empty input → all-zero dict so the API can serialise
-    a stable schema even when the user disables the feature.
+    per-year). For the indoor-temperature KPIs it takes the **worst case**
+    across paths — the coldest ``t_in_min_c`` and the hottest ``t_in_max_c``
+    — mirroring the peak-voltage convention of
+    :func:`electrical.aggregate_kpis`: the risk is the worst path, not the
+    average one. These are only meaningful when the dynamic RC mode is
+    active; in steady-state every path reports its setpoints, so the
+    aggregate collapses to the setpoints. Empty input → all-zero dict so
+    the API can serialise a stable schema even when the user disables the
+    feature.
     """
     if not per_path:
         return {
@@ -419,6 +654,8 @@ def aggregate_thermal_kpis(per_path: list) -> dict:
             "hvac_share_of_total_load_pct_mean": 0.0,
             "comfort_breach_hours_per_year_mean": 0.0,
             "p_elec_hvac_peak_kw_mean": 0.0,
+            "t_in_min_c": 0.0,
+            "t_in_max_c": 0.0,
         }
     return {
         "hvac_kwh_annual_mean": float(
@@ -433,4 +670,6 @@ def aggregate_thermal_kpis(per_path: list) -> dict:
         "p_elec_hvac_peak_kw_mean": float(
             np.mean([k.p_elec_hvac_peak_kw for k in per_path])
         ),
+        "t_in_min_c": float(np.min([k.t_in_min_c for k in per_path])),
+        "t_in_max_c": float(np.max([k.t_in_max_c for k in per_path])),
     }

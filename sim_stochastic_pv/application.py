@@ -449,6 +449,11 @@ class SimulationApplication:
             # Dashboard renders hvac_kwh_annual, share-of-load,
             # comfort_breach_hours_per_year, p_elec_hvac_peak_kw.
             "thermal": results.thermal_kpis_summary,
+            # Phase 17-bis — aggregated appliance KPIs (None when off).
+            # Surfaces total_appliance_kwh_annual, peak_simultaneous_kw,
+            # per-appliance kWh breakdown, and (smart_pv mode)
+            # self-consumption percentage.
+            "appliances": results.appliances_kpis_summary,
             "plots_data": {
                 "profit": {
                     "months": results.df_profit["month_index"].tolist(),

@@ -34,9 +34,14 @@ from .electrical import (
 from .energy_simulator import EnergySystemConfig, EnergySystemSimulator
 from .inverter import InverterAC
 from .load_profiles import (
+    APPLIANCE_PRESETS,
+    ApplianceEvent,
+    ApplianceProfileConfig,
+    AppliancesKPIs,
     AreraLoadProfile,
     DEFAULT_PHI_INTRA_DAY,
     DEFAULT_SIGMA_LOG,
+    EventBasedApplianceProfile,
     HomeAwayLoadProfile,
     LoadProfile,
     LoadScenarioBlueprint,
@@ -46,6 +51,8 @@ from .load_profiles import (
     VariableLoadProfile,
     WeeklyPatternLoadProfile,
     WEEKLY_PRESETS,
+    aggregate_appliances_kpis,
+    get_preset as get_appliance_preset,
     make_flat_monthly_load_profiles,
 )
 from .thermal_load import (
@@ -122,6 +129,14 @@ __all__ = [
     "DEFAULT_SIGMA_LOG",
     "StochasticLoadConfig",
     "StochasticLoadProfile",
+    # Phase 17-bis — appliance event-based decorator
+    "APPLIANCE_PRESETS",
+    "ApplianceEvent",
+    "ApplianceProfileConfig",
+    "AppliancesKPIs",
+    "EventBasedApplianceProfile",
+    "aggregate_appliances_kpis",
+    "get_appliance_preset",
     # Phase 17 — thermal load (HVAC)
     "DEFAULT_CAPACITANCE_KWH_PER_C_PER_M2",
     "HeatPumpConfig",

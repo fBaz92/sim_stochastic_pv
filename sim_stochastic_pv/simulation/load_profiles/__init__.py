@@ -19,6 +19,15 @@ from .stochastic import (
     StochasticLoadConfig,
     StochasticLoadProfile,
 )
+from .appliances import (
+    APPLIANCE_PRESETS,
+    ApplianceEvent,
+    ApplianceProfileConfig,
+    AppliancesKPIs,
+    EventBasedApplianceProfile,
+    aggregate_appliances_kpis,
+    get_preset,
+)
 
 __all__ = [
     # Base
@@ -42,4 +51,12 @@ __all__ = [
     "DEFAULT_SIGMA_LOG",
     "StochasticLoadConfig",
     "StochasticLoadProfile",
+    # Phase 17-bis — appliance event-based decorator
+    "APPLIANCE_PRESETS",
+    "ApplianceEvent",
+    "ApplianceProfileConfig",
+    "AppliancesKPIs",
+    "EventBasedApplianceProfile",
+    "aggregate_appliances_kpis",
+    "get_preset",
 ]

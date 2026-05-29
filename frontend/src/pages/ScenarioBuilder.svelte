@@ -407,6 +407,44 @@
     let thermalTSetpointHeatingC = 20;
     let thermalTSetpointCoolingC = 26;
 
+    // ── Phase 17-bis — discrete event-based appliance load ────────────────
+    let appliancesEnabled = false;
+    let appliancesSmartPv = false;
+    /**
+     * Catalog mirrors APPLIANCE_PRESETS in the backend. Each entry is a
+     * tuple [key, label, default_p_kw, default_duration_hours,
+     * default_monthly_frequency] used to compute the predictive
+     * "kWh/anno previsti" readout in real-time.
+     */
+    const APPLIANCE_CATALOG = [
+        { key: "washing_machine",     label: "Lavatrice",                 p_kw: 1.5, duration_hours: 1.5, monthly_frequency: 12 },
+        { key: "dishwasher",          label: "Lavastoviglie",             p_kw: 1.2, duration_hours: 1.0, monthly_frequency: 15 },
+        { key: "oven",                label: "Forno",                     p_kw: 2.5, duration_hours: 0.75, monthly_frequency: 8 },
+        { key: "dryer",               label: "Asciugatrice",              p_kw: 2.2, duration_hours: 1.0, monthly_frequency: 6 },
+        { key: "ev_charger_slow",     label: "Colonnina EV lenta (2.3 kW)", p_kw: 2.3, duration_hours: 8.0, monthly_frequency: 20 },
+        { key: "ev_charger_fast",     label: "Colonnina EV veloce (7.4 kW)", p_kw: 7.4, duration_hours: 2.5, monthly_frequency: 15 },
+        { key: "induction_cooktop",   label: "Piano induzione",           p_kw: 1.8, duration_hours: 0.5, monthly_frequency: 30 },
+        { key: "dhw_heat_pump_cycle", label: "Pompa di calore ACS (ciclo)", p_kw: 1.8, duration_hours: 0.5, monthly_frequency: 30 },
+    ];
+    /** Map preset key → { enabled, schedule_mode override or null }. */
+    let appliancesSelection = Object.fromEntries(
+        APPLIANCE_CATALOG.map((a) => [a.key, { enabled: false, smart_pv_override: null }])
+    );
+
+    /** Predictive yearly kWh — purely client-side from the catalog. */
+    $: appliancesPredictedKwh = APPLIANCE_CATALOG
+        .filter((a) => appliancesSelection[a.key]?.enabled)
+        .map((a) => ({
+            key: a.key,
+            label: a.label,
+            kwh_per_year: a.p_kw * a.duration_hours * a.monthly_frequency * 12,
+        }));
+
+    $: appliancesPredictedTotal = appliancesPredictedKwh.reduce(
+        (acc, item) => acc + item.kwh_per_year,
+        0
+    );
+
     // Status banner for the Excel template / import actions.
     let loadProfileStatus = "";
     let loadProfileError = "";
@@ -784,6 +822,29 @@
                 sigma_log: Number(stochasticSigmaLog),
                 phi_intra_day: Number(stochasticPhiIntraDay),
             };
+        }
+
+        // Phase 17-bis — append the optional discrete appliances block.
+        // The block lives under load_profile.appliances; per-item
+        // schedule_mode overrides the global smart_pv default.
+        if (appliancesEnabled && scenarioClone.load_profile) {
+            const selectedItems = APPLIANCE_CATALOG
+                .filter((a) => appliancesSelection[a.key]?.enabled)
+                .map((a) => {
+                    const override = appliancesSelection[a.key]?.smart_pv_override;
+                    const item = { type: a.key };
+                    if (override !== null) {
+                        item.schedule_mode = override ? "smart_pv" : "naive_timer";
+                    }
+                    return item;
+                });
+            if (selectedItems.length > 0) {
+                scenarioClone.load_profile.appliances = {
+                    enabled: true,
+                    smart_pv: appliancesSmartPv,
+                    items: selectedItems,
+                };
+            }
         }
 
         // Phase 17 — append the optional thermal_load (HVAC) block. The
@@ -1798,6 +1859,74 @@
                     </p>
                 </div>
             {/if}
+
+            <!-- Phase 17-bis — opt-in discrete event-based appliances. -->
+            <hr class="section-divider" />
+            <div class="form-group">
+                <label class="toggle-row">
+                    <input type="checkbox" bind:checked={appliancesEnabled} />
+                    <span class="toggle-label">Appliance discreti (Phase 17-bis — opzionale)</span>
+                </label>
+                <p class="hint">
+                    Aggiunge eventi rettangolari di consumo (lavatrice, lavastoviglie,
+                    forno, colonnina EV, …) ora-per-ora al profilo di carico. Frequenze
+                    sampleate da una Poisson per mese; la modalità "smart PV" bias
+                    l'avvio degli appliance verso le ore di sole per massimizzare
+                    l'autoconsumo.
+                </p>
+            </div>
+            {#if appliancesEnabled}
+                <div class="thermal-section">
+                    <div class="form-group">
+                        <label class="toggle-row">
+                            <input type="checkbox" bind:checked={appliancesSmartPv} />
+                            <span class="toggle-label">Modalità "smart PV" globale</span>
+                        </label>
+                        <p class="hint">
+                            Quando attiva, ogni appliance senza una scelta esplicita
+                            usa il profilo solare deterministico per pesare le ore di
+                            partenza — equivale a un timer collegato all'inverter
+                            che "vede" il sole.
+                        </p>
+                    </div>
+                    <div class="appliance-grid">
+                        {#each APPLIANCE_CATALOG as item (item.key)}
+                            <label class="appliance-row">
+                                <input type="checkbox"
+                                       bind:checked={appliancesSelection[item.key].enabled} />
+                                <span class="appliance-label">
+                                    <strong>{item.label}</strong>
+                                    <small>{item.p_kw} kW · {item.duration_hours} h · ~{item.monthly_frequency}/mese</small>
+                                </span>
+                            </label>
+                        {/each}
+                    </div>
+                    {#if appliancesPredictedKwh.length > 0}
+                        <table class="appliance-prediction">
+                            <thead>
+                                <tr>
+                                    <th>Appliance</th>
+                                    <th>kWh/anno previsti</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {#each appliancesPredictedKwh as row (row.key)}
+                                    <tr>
+                                        <td>{row.label}</td>
+                                        <td>{row.kwh_per_year.toFixed(0)}</td>
+                                    </tr>
+                                {/each}
+                                <tr class="total">
+                                    <td><strong>Totale appliance discreti</strong></td>
+                                    <td><strong>{appliancesPredictedTotal.toFixed(0)} kWh/anno</strong></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    {:else}
+                        <p class="hint">Seleziona almeno un appliance per iniziare.</p>
+                    {/if}
+                </div>
+            {/if}
         </div>
 
     <!-- ══════════════════════════════════════════════════════════════════ -->
@@ -2496,4 +2625,42 @@
         border-radius: 6px;
         margin-top: 0.5rem;
     }
+    /* Phase 17-bis — appliance multi-select grid + prediction table. */
+    .appliance-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 0.5rem 1rem;
+        margin: 0.75rem 0;
+    }
+    .appliance-row {
+        display: flex;
+        gap: 0.5rem;
+        align-items: flex-start;
+        padding: 0.4rem 0.6rem;
+        background: var(--color-bg-tertiary, #ffffff);
+        border: 1px solid var(--color-border, #e2e8f0);
+        border-radius: 4px;
+        cursor: pointer;
+    }
+    .appliance-row input[type="checkbox"] { margin-top: 0.2rem; }
+    .appliance-label { display: flex; flex-direction: column; gap: 0.1rem; }
+    .appliance-label small {
+        color: var(--color-text-muted, #6c757d);
+        font-size: 0.78rem;
+    }
+    .appliance-prediction {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 0.5rem;
+        font-size: 0.92rem;
+    }
+    .appliance-prediction th,
+    .appliance-prediction td {
+        padding: 0.35rem 0.5rem;
+        border-bottom: 1px solid var(--color-border, #e2e8f0);
+        text-align: left;
+    }
+    .appliance-prediction td:last-child,
+    .appliance-prediction th:last-child { text-align: right; }
+    .appliance-prediction tr.total td { border-top: 2px solid var(--color-border, #e2e8f0); }
 </style>

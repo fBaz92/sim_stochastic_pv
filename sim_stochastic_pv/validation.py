@@ -121,6 +121,10 @@ def validate_scenario(data: Dict[str, Any]) -> List[str]:
     if "thermal_load" in data:
         errors.extend(_validate_thermal_load(data["thermal_load"], data))
 
+    # Phase 17-bis — discrete event-based appliances block.
+    if isinstance(data.get("load_profile"), dict) and "appliances" in data["load_profile"]:
+        errors.extend(_validate_appliances(data["load_profile"]["appliances"]))
+
     return errors
 
 
@@ -502,6 +506,139 @@ def _validate_thermal_load(raw: Any, full_data: Dict[str, Any]) -> List[str]:
         away = sp.get("t_setpoint_away_c")
         if away is not None and not isinstance(away, (int, float)):
             errors.append("thermal_load.setpoint.t_setpoint_away_c must be a number")
+    return errors
+
+
+_VALID_SCHEDULE_MODES = {"naive_timer", "smart_pv"}
+
+
+def _validate_appliances(raw: Any) -> List[str]:
+    """
+    Validate the Phase-17-bis ``load_profile.appliances`` block.
+
+    When ``enabled=false`` (or absent ``items``) the block is silently
+    accepted. When ``enabled=true`` the function enforces:
+        - ``items`` is a non-empty list of dicts;
+        - each item has a string ``type`` (catalog name or ``"custom"``);
+        - for ``custom``: ``p_kw>0``, ``duration_hours>0``,
+          ``monthly_frequency`` length 12 with non-negative entries,
+          ``allowed_hours`` non-empty subset of 0..23;
+        - ``schedule_mode`` when present is ``naive_timer`` or
+          ``smart_pv``;
+        - ``monthly_frequency_override`` (when present) is length 12
+          with non-negative entries.
+
+    Imports are lazy to avoid a circular dependency with the simulation
+    package on the validation layer.
+
+    Returns:
+        Human-readable error messages. Empty list when valid.
+    """
+    errors: List[str] = []
+    if not isinstance(raw, dict):
+        return ["load_profile.appliances must be a dict/object"]
+    if "enabled" in raw and not isinstance(raw["enabled"], bool):
+        errors.append("load_profile.appliances.enabled must be a boolean")
+    if "smart_pv" in raw and not isinstance(raw["smart_pv"], bool):
+        errors.append("load_profile.appliances.smart_pv must be a boolean")
+    enabled = bool(raw.get("enabled", False))
+    if not enabled:
+        return errors
+    items = raw.get("items")
+    if not isinstance(items, list) or not items:
+        errors.append(
+            "load_profile.appliances.enabled=true requires a non-empty "
+            "items list."
+        )
+        return errors
+    # Lazy import to avoid sim → validation circular loop.
+    from sim_stochastic_pv.simulation.load_profiles.appliances import (
+        APPLIANCE_PRESETS,
+    )
+    valid_presets = set(APPLIANCE_PRESETS.keys()) | {"custom"}
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            errors.append(f"load_profile.appliances.items[{i}] must be a dict")
+            continue
+        t = item.get("type")
+        if not isinstance(t, str) or not t:
+            errors.append(
+                f"load_profile.appliances.items[{i}].type must be a non-empty string"
+            )
+            continue
+        t_key = t.strip().lower()
+        if t_key not in valid_presets:
+            errors.append(
+                f"load_profile.appliances.items[{i}].type={t!r} not recognised. "
+                f"Valid presets: {sorted(valid_presets)}"
+            )
+            continue
+        if "schedule_mode" in item and item["schedule_mode"] not in _VALID_SCHEDULE_MODES:
+            errors.append(
+                f"load_profile.appliances.items[{i}].schedule_mode must be one of "
+                f"{sorted(_VALID_SCHEDULE_MODES)}; got {item['schedule_mode']!r}"
+            )
+        # monthly_frequency_override: required shape + non-negativity.
+        if "monthly_frequency_override" in item:
+            mf = item["monthly_frequency_override"]
+            if not isinstance(mf, list) or len(mf) != 12:
+                errors.append(
+                    f"load_profile.appliances.items[{i}].monthly_frequency_override "
+                    "must be a length-12 list"
+                )
+            elif any(
+                not isinstance(x, (int, float)) or x < 0 for x in mf
+            ):
+                errors.append(
+                    f"load_profile.appliances.items[{i}].monthly_frequency_override "
+                    "entries must be non-negative numbers"
+                )
+        if t_key == "custom":
+            for required in ("p_kw", "duration_hours", "monthly_frequency", "allowed_hours"):
+                if required not in item:
+                    errors.append(
+                        f"load_profile.appliances.items[{i}] type='custom' "
+                        f"is missing required field '{required}'"
+                    )
+            if "p_kw" in item and (not isinstance(item["p_kw"], (int, float)) or item["p_kw"] <= 0):
+                errors.append(
+                    f"load_profile.appliances.items[{i}].p_kw must be > 0"
+                )
+            if "duration_hours" in item and (
+                not isinstance(item["duration_hours"], (int, float))
+                or item["duration_hours"] <= 0
+            ):
+                errors.append(
+                    f"load_profile.appliances.items[{i}].duration_hours must be > 0"
+                )
+            if "monthly_frequency" in item:
+                mf = item["monthly_frequency"]
+                if not isinstance(mf, list) or len(mf) != 12:
+                    errors.append(
+                        f"load_profile.appliances.items[{i}].monthly_frequency "
+                        "must be a length-12 list"
+                    )
+                elif any(
+                    not isinstance(x, (int, float)) or x < 0 for x in mf
+                ):
+                    errors.append(
+                        f"load_profile.appliances.items[{i}].monthly_frequency "
+                        "entries must be non-negative numbers"
+                    )
+            if "allowed_hours" in item:
+                ah = item["allowed_hours"]
+                if not isinstance(ah, list) or not ah:
+                    errors.append(
+                        f"load_profile.appliances.items[{i}].allowed_hours "
+                        "must be a non-empty list"
+                    )
+                elif any(
+                    not isinstance(h, int) or not (0 <= h < 24) for h in ah
+                ):
+                    errors.append(
+                        f"load_profile.appliances.items[{i}].allowed_hours "
+                        "entries must be integers in [0, 23]"
+                    )
     return errors
 
 
