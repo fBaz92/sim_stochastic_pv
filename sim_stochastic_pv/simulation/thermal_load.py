@@ -201,10 +201,27 @@ class SetpointConfig:
     """
     Comfort setpoints for the HVAC controller.
 
+    Two modes coexist:
+
+    - **Single setpoint** (the default): one ``t_setpoint_heating_c`` and one
+      ``t_setpoint_cooling_c`` held all day. This is what every pre-Phase-19
+      scenario uses and the JSON round-trip stays byte-identical when the
+      schedules are absent.
+    - **Time-of-day schedule** (Phase 19): two optional 24-entry arrays
+      ``heating_schedule_c`` / ``cooling_schedule_c`` giving the setpoint for
+      each hour of the day (index 0 = 00:00–01:00, … index 23 = 23:00–24:00).
+      When present they override the scalar for the *home* hours; the scalars
+      remain the representative single-number summary (and the fallback for
+      whichever side is left ``None``). This is the seam
+      :meth:`HvacController._build_setpoint_arrays` was prepared for in
+      Phase 18 — e.g. a night setback that drops the heating target to 17 °C
+      from 23:00 to 06:00 to save energy.
+
     Attributes:
         t_setpoint_heating_c: Indoor temperature target during heating
             mode (°C). Default 20. Whenever ``T_out < t_setpoint_heating_c``
-            the heat pump runs in heating mode.
+            the heat pump runs in heating mode. Acts as the home-hours
+            default when ``heating_schedule_c is None``.
         t_setpoint_cooling_c: Indoor temperature target during cooling
             mode (°C). Default 26. Whenever ``T_out > t_setpoint_cooling_c``
             the heat pump runs in cooling mode. Between heating and
@@ -212,12 +229,28 @@ class SetpointConfig:
         t_setpoint_away_c: Optional fallback setpoint when the user is
             not at home. ``None`` (default) → HVAC off during away
             hours. A finite value (e.g. 16 in winter) keeps the house
-            at a reduced setback so it does not freeze.
+            at a reduced setback so it does not freeze. The away policy
+            takes precedence over the time-of-day schedule.
+        heating_schedule_c: Optional 24-entry hour-of-day heating
+            setpoints (°C). ``None`` (default) → use ``t_setpoint_heating_c``
+            for every hour. Coerced to a ``tuple`` so the dataclass stays
+            hashable.
+        cooling_schedule_c: Optional 24-entry hour-of-day cooling
+            setpoints (°C). ``None`` (default) → use ``t_setpoint_cooling_c``
+            for every hour.
+
+    Raises:
+        ValueError: If a schedule does not have exactly 24 entries, or if
+            at any hour the effective heating setpoint is not strictly
+            below the cooling one (the dead-band invariant must hold
+            hour-by-hour, not just for the scalar summary).
     """
 
     t_setpoint_heating_c: float = 20.0
     t_setpoint_cooling_c: float = 26.0
     t_setpoint_away_c: Optional[float] = None
+    heating_schedule_c: Optional[tuple[float, ...]] = None
+    cooling_schedule_c: Optional[tuple[float, ...]] = None
 
     def __post_init__(self) -> None:
         if self.t_setpoint_heating_c >= self.t_setpoint_cooling_c:
@@ -227,6 +260,31 @@ class SetpointConfig:
                 f"got heating={self.t_setpoint_heating_c}, "
                 f"cooling={self.t_setpoint_cooling_c}"
             )
+        # Coerce any provided schedule to a 24-tuple of floats (keeps the
+        # frozen dataclass hashable and validates the length at the boundary).
+        for field_name in ("heating_schedule_c", "cooling_schedule_c"):
+            sched = getattr(self, field_name)
+            if sched is None:
+                continue
+            coerced = tuple(float(x) for x in sched)
+            if len(coerced) != 24:
+                raise ValueError(
+                    f"{field_name} must have exactly 24 hour-of-day entries, "
+                    f"got {len(coerced)}"
+                )
+            object.__setattr__(self, field_name, coerced)
+        # Per-hour dead-band invariant, mixing schedules with the scalar
+        # fallback for whichever side is None.
+        if self.heating_schedule_c is not None or self.cooling_schedule_c is not None:
+            heat = self.heating_schedule_c or ((self.t_setpoint_heating_c,) * 24)
+            cool = self.cooling_schedule_c or ((self.t_setpoint_cooling_c,) * 24)
+            for hour in range(24):
+                if heat[hour] >= cool[hour]:
+                    raise ValueError(
+                        "heating setpoint must be strictly < cooling setpoint "
+                        f"at hour {hour}, got heating={heat[hour]}, "
+                        f"cooling={cool[hour]}"
+                    )
 
 
 @dataclass(frozen=True)
@@ -414,9 +472,7 @@ class HvacController:
                 f"{t_ambient_hourly_c.shape}"
             )
 
-        t_set_heating, t_set_cooling = self._build_setpoint_arrays(
-            t_ambient_hourly_c, at_home_hourly
-        )
+        t_set_heating, t_set_cooling = self._build_setpoint_arrays(at_home_hourly)
 
         if self.config.dynamic:
             return self._compute_dynamic(
@@ -430,40 +486,73 @@ class HvacController:
     # Shared helpers
     # ------------------------------------------------------------------
 
+    def setpoint_arrays(
+        self,
+        at_home_hourly: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Public accessor for the per-hour heating/cooling setpoint arrays.
+
+        Same payload :meth:`compute_hourly_p_elec_kw` consumes internally,
+        exposed so previews and the thermal lab (Phase 19) can draw the
+        "setpoint vs indoor temperature" line without re-deriving the
+        occupancy/schedule logic.
+
+        Args:
+            at_home_hourly: Boolean occupancy mask, shape ``(n_hours,)``.
+
+        Returns:
+            ``(t_set_heating, t_set_cooling)`` each shape ``(n_hours,)`` in °C
+            (with ``±inf`` on away hours that have no setback setpoint).
+        """
+        return self._build_setpoint_arrays(at_home_hourly)
+
     def _build_setpoint_arrays(
         self,
-        t_ambient_hourly_c: np.ndarray,
         at_home_hourly: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray]:
         """
         Build the per-hour heating/cooling setpoint arrays.
 
-        Encodes occupancy and the away policy as plain float arrays so both
-        modes can consume them identically (the dynamic loop reads them
-        scalar-by-scalar, the steady-state path vectorises over them):
+        Encodes occupancy, the optional time-of-day schedule (Phase 19) and
+        the away policy as plain float arrays so both modes can consume them
+        identically (the dynamic loop reads them scalar-by-scalar, the
+        steady-state path vectorises over them):
 
-        - HOME → ``(t_setpoint_heating_c, t_setpoint_cooling_c)``.
+        - HOME → the hour-of-day schedule value if a schedule is set, else
+          the scalar ``(t_setpoint_heating_c, t_setpoint_cooling_c)``. The
+          hour-of-day is ``index % 24`` because the simulator's hourly arrays
+          start at hour 0 of day 0 (see :meth:`ThermalModel.to_hourly`).
         - AWAY with ``t_setpoint_away_c`` set → ``(away, away)`` (single
-          setback target for both modes).
+          setback target for both modes); the away policy overrides the
+          schedule.
         - AWAY with ``t_setpoint_away_c is None`` → ``(-inf, +inf)``, i.e.
           the whole temperature range is dead-band ⇒ HVAC off for that hour.
 
         Returns:
             ``(t_set_heating, t_set_cooling)`` each shape ``(n_hours,)``.
-
-        Notes:
-            This is the single seam a future *time-of-day setpoint schedule*
-            (Phase 19) needs to override — the physics downstream is
-            schedule-agnostic.
         """
         sp = self.config.setpoint
+        n_hours = at_home_hourly.shape[0]
+        hour_of_day = np.arange(n_hours) % 24
+
+        if sp.heating_schedule_c is not None:
+            home_heating = np.asarray(sp.heating_schedule_c, dtype=float)[hour_of_day]
+        else:
+            home_heating = np.full(n_hours, sp.t_setpoint_heating_c, dtype=float)
+        if sp.cooling_schedule_c is not None:
+            home_cooling = np.asarray(sp.cooling_schedule_c, dtype=float)[hour_of_day]
+        else:
+            home_cooling = np.full(n_hours, sp.t_setpoint_cooling_c, dtype=float)
+
         if sp.t_setpoint_away_c is None:
             away_heating: float | np.ndarray = -np.inf
             away_cooling: float | np.ndarray = np.inf
         else:
             away_heating = away_cooling = float(sp.t_setpoint_away_c)
-        t_set_heating = np.where(at_home_hourly, sp.t_setpoint_heating_c, away_heating)
-        t_set_cooling = np.where(at_home_hourly, sp.t_setpoint_cooling_c, away_cooling)
+
+        t_set_heating = np.where(at_home_hourly, home_heating, away_heating)
+        t_set_cooling = np.where(at_home_hourly, home_cooling, away_cooling)
         return t_set_heating.astype(float), t_set_cooling.astype(float)
 
     @staticmethod

@@ -29,6 +29,14 @@
             </li>
             <li>
                 <a
+                    href="#/thermal-lab"
+                    class:active={$currentRoute === "/thermal-lab"}
+                    title="Confronta livelli di isolamento e dimensiona la pompa di calore prima dell'analisi economica"
+                    >Lab termico</a
+                >
+            </li>
+            <li>
+                <a
                     href="#/database"
                     class:active={$currentRoute === "/database"}>Database</a
                 >

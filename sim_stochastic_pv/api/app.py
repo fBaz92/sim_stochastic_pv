@@ -10,6 +10,7 @@ from .routes import (
     jobs_router,
     profiles_router,
     simulation_router,
+    thermal_lab_router,
 )
 
 
@@ -62,6 +63,7 @@ def create_app() -> FastAPI:
     app.include_router(execution_router)
     app.include_router(external_router)
     app.include_router(jobs_router)
+    app.include_router(thermal_lab_router)
 
     return app
 

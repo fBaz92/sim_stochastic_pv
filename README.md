@@ -292,6 +292,13 @@ Swagger UI: `http://localhost:8000/docs` · ReDoc: `http://localhost:8000/redoc`
 | `GET`  | `/load-profiles/template/{kind}.xlsx` | Download a load-profile Excel template. |
 | `POST` | `/load-profiles/parse-xlsx/{kind}` | Parse a filled template back into a profile payload. |
 
+*Thermal lab (Phase 19)*
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/thermal-lab/compare` | Monte-Carlo HVAC comparison of several house variants (insulation presets / custom `UA`) against a saved climate profile: annual energy, cost, comfort breaches, worst days, typical-year daily series. |
+| `POST` | `/thermal-lab/timeseries` | Hourly preview (outdoor/indoor temperature, electric draw, setpoints) for one house configuration. |
+
 *Catalogs and configurations*
 
 | Method | Path | Description |
@@ -325,6 +332,14 @@ The dashboard surfaces a top-level **"Decisione"** card (probability of
 break-even within horizon, expected break-even month with p05–p95 band,
 mean IRR, median NPV) plus tabs for profit, energy, SoC/SoH, price fan
 chart, inflation, and the per-month cash-flow table.
+
+A separate **"Lab termico"** page (Phase 19) lets the user compare insulation
+levels and size the heat pump *before* the economic scenario: pick a climate
+profile and several house variants (insulation presets or a custom `UA`), then
+read a KPI comparison table and overlaid charts (daily HVAC energy per variant
+vs outdoor temperature with worst-day markers, cost per variant, and an hourly
+setpoint-vs-indoor-temperature preview). Exports the comparison as CSV and each
+chart as PNG.
 
 Run manually outside Docker:
 

@@ -114,6 +114,23 @@ export const api = {
         });
     },
 
+    // ── Thermal lab (Phase 19) ────────────────────────────────────────────
+    // Compare insulation levels (house variants) against a saved climate
+    // profile, and preview the hourly indoor-temperature trajectory of a
+    // single configuration. Both run the HVAC/RC engine server-side.
+    async compareThermalLab(payload) {
+        return request('/thermal-lab/compare', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+        });
+    },
+    async previewThermalTimeseries(payload) {
+        return request('/thermal-lab/timeseries', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+        });
+    },
+
     // ── Configurations ────────────────────────────────────────────────────
     async listConfigurations(type) {
         const url = type ? `/configurations?type=${type}` : '/configurations';

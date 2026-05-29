@@ -1104,6 +1104,64 @@ Nessuna fase attivamente in corso.
 
 ### ✅ Completate
 
+**Fase 19 — Laboratorio termico nella webapp** — chiusa 2026-05-29 (suite verde, 466 test backend; build frontend OK; verificata end-to-end nel browser).
+
+Consegnata in due slice nella stessa giornata (backend-first, come Fase 18).
+
+**Slice 1 — fondazione backend:**
+- **Setpoint a fasce orarie** (il seam già predisposto in Fase 18):
+  `SetpointConfig` esteso con `heating_schedule_c` / `cooling_schedule_c`
+  opzionali (24 valori hour-of-day, coerciti a tuple, invariante dead-band
+  validata ora-per-ora). `HvacController._build_setpoint_arrays` li applica
+  indicizzando per `index % 24`; assenza ⇒ scalare → **byte-identico**
+  (verificato in test). Nuovo metodo pubblico
+  `HvacController.setpoint_arrays(at_home_hourly)` per preview/lab.
+- **`simulation/thermal_lab.py`** (nuovo): `HouseVariant`, `ThermalLabConfig`,
+  `ThermalVariantResult`, `ThermalLabResult`,
+  `compare_house_variants(model, config, n_paths, n_years, seed)` — lancia N
+  path MC del solo sottosistema termico (ogni variante valutata sugli *stessi*
+  path) e confronta più configurazioni di casa (preset isolamento o `UA`
+  custom). Per variante: kWh/anno HVAC (mean+p05/p95), costo €/anno
+  (× prezzo scalare), comfort breach h/anno, picco kW, T interna worst-case,
+  serie giornaliera "anno tipico" calendar-aligned (kWh HVAC, T esterna
+  condivisa, T interna rappresentativa in dinamico), giorni più gravosi
+  heating/cooling. `simulate_thermal_timeseries(...)` + `ThermalTimeseriesResult`
+  per la preview oraria (T esterna, T interna, P_elec, setpoint) di una
+  singola config.
+- **API**: `POST /api/thermal-lab/compare` e `POST /api/thermal-lab/timeseries`
+  (`api/routes/thermal_lab.py` + `api/schemas/thermal_lab.py`), alimentati dal
+  `ClimateProfileModel` (Fase 15) via `persistence.climate.load_thermal_model`.
+  404 su profilo mancante, 400 su invarianti di dominio violate. Setpoint
+  `±inf` (ore away senza setback) serializzati come `null`.
+- **Test** `tests/test_phase19_thermal_lab.py` (24 test): schedule byte-identico
+  vs scalare, night-setback riduce energia, validazione lunghezza/dead-band,
+  monotonia energia vs isolamento, costo = kWh×prezzo, riproducibilità da seed,
+  drift sotto setpoint con pompa sottodimensionata in dinamico, giorni più
+  gravosi (clima freddo → solo heating; clima caldo → anche cooling), endpoint
+  compare/timeseries (schema, 404, 400, setpoint null su ore away).
+
+**Slice 2 — UI Svelte:**
+- Nuova pagina **`frontend/src/pages/ThermalLab.svelte`** + rotta `/thermal-lab`
+  + voce navbar "Lab termico". Form di configurazione (selettore profilo
+  climatico, scelta varianti casa con preset + UA custom, superficie, pompa di
+  calore COP/p_max, setpoint con setback notturno opzionale, presenza/assenza
+  con setback, prezzo energia, parametri MC, toggle modello dinamico RC).
+- Risultati: tabella KPI comparativa (UA, kWh/anno con p05–p95, costo €/anno,
+  comfort breach evidenziato, picco kW, T interna min/max in dinamico) +
+  **3 grafici sovrapposti** (consumi giornalieri/config con T esterna su asse
+  secondario e marker dei giorni più gravosi ●/▲; barre costo/config con banda
+  p05–p95 in tooltip; anteprima oraria setpoint vs T interna + P_elec).
+- **Export**: CSV del confronto (client-side) + PNG per grafico (nativo
+  `ResultsChart`). Nuovi metodi `api.compareThermalLab` / `api.previewThermalTimeseries`.
+- Verifica browser: layout 2-col (config sticky) ≥900px → 1-col sotto, nessun
+  errore console, monotonia energia/costo e drift T interna confermati live.
+
+**Out of scope (refinement futuri, eventuale Fase 19-bis):** export report
+Excel/PDF *bundled* con grafici embedded (per ora CSV+PNG), accoppiamento del
+modello prezzo GBM stocastico (per ora prezzo scalare), editor schedule 24h
+completo (per ora solo setback notturno), finestra estiva nell'anteprima oraria
+(per ora parte da gennaio), split energia heating/cooling per ora.
+
 **Fase 18 — Modalità dinamica RC della casa (temperatura interna)** — chiusa 2026-05-29.
 
 Scope consegnato in questa iterazione: **libreria + KPI in API** (la sezione

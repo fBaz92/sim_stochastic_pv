@@ -58,6 +58,13 @@ from .simulation import (
     OptimizationResponse,
     RunResult,
 )
+from .thermal_lab import (
+    ThermalLabCompareRequest,
+    ThermalLabCompareResponse,
+    ThermalTimeseriesRequest,
+    ThermalTimeseriesResponse,
+    ThermalVariantResultSchema,
+)
 
 __all__ = [
     # Utility functions
@@ -94,4 +101,10 @@ __all__ = [
     "ClimateProfileFromLocationRequest",
     "ClimateProfilePreviewResponse",
     "ClimateProfileResponse",
+    # Thermal-lab schemas (Phase 19)
+    "ThermalLabCompareRequest",
+    "ThermalLabCompareResponse",
+    "ThermalTimeseriesRequest",
+    "ThermalTimeseriesResponse",
+    "ThermalVariantResultSchema",
 ]
