@@ -1017,9 +1017,11 @@
                                 </div>
                             </div>
                             <p class="muted">
-                                Valori medi su tutti i path Monte Carlo. Il bonus fiscale è
-                                una colonna separata anche se è già incluso nei risparmi nominali.
-                                Profit cum. reale = nominal / fattore di inflazione cumulativo.
+                                Valori medi su tutti i path Monte Carlo. Il bonus fiscale e
+                                il ricavo da immissione sono colonne separate anche se sono
+                                già inclusi nei risparmi nominali. Profit cum. reale =
+                                nominale / fattore di inflazione cumulativo (quindi anche
+                                l'immissione è deflazionata nelle colonne reali).
                             </p>
                             <div class="cashflow-table-wrap">
                                 <table class="cashflow-table">
@@ -1031,6 +1033,7 @@
                                             <th>Risp. nom. (€)</th>
                                             <th>Risp. reale (€)</th>
                                             <th>Bonus (€)</th>
+                                            <th>Immissione (€)</th>
                                             <th>Profit cum. nom. (€)</th>
                                             <th>Profit cum. reale (€)</th>
                                             <th>Prezzo (€/kWh)</th>
@@ -1046,6 +1049,7 @@
                                                 <td>{cf.mean_savings_eur?.[i]?.toFixed(2) ?? "—"}</td>
                                                 <td>{cf.mean_savings_real_eur?.[i]?.toFixed(2) ?? "—"}</td>
                                                 <td>{cf.bonus_per_month_eur?.[i] > 0 ? cf.bonus_per_month_eur[i].toFixed(2) : ""}</td>
+                                                <td>{cf.export_eur?.[i] > 0 ? cf.export_eur[i].toFixed(2) : ""}</td>
                                                 <td>{cf.mean_profit_cum_eur?.[i]?.toFixed(2) ?? "—"}</td>
                                                 <td>{cf.mean_profit_cum_real_eur?.[i]?.toFixed(2) ?? "—"}</td>
                                                 <td>{cf.mean_price_eur_per_kwh?.[i]?.toFixed(4) ?? "—"}</td>

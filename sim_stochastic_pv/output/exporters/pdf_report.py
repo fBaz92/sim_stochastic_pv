@@ -160,6 +160,7 @@ def _cashflow_rows(cf: Mapping[str, Any] | None, max_rows: int = 240) -> list[di
                 "savings": cf.get("mean_savings_eur", [])[i] if i < len(cf.get("mean_savings_eur", [])) else None,
                 "savings_real": cf.get("mean_savings_real_eur", [])[i] if i < len(cf.get("mean_savings_real_eur", [])) else None,
                 "bonus": cf.get("bonus_per_month_eur", [])[i] if i < len(cf.get("bonus_per_month_eur", [])) else None,
+                "export": cf.get("export_eur", [])[i] if i < len(cf.get("export_eur", [])) else None,
                 "profit_cum": cf.get("mean_profit_cum_eur", [])[i] if i < len(cf.get("mean_profit_cum_eur", [])) else None,
                 "profit_cum_real": cf.get("mean_profit_cum_real_eur", [])[i] if i < len(cf.get("mean_profit_cum_real_eur", [])) else None,
             }
@@ -260,12 +261,13 @@ table.cashflow td:first-child { text-align: left; }
 {% if rows %}
 <div class="section full-page">
 <h2>Cash flow medio mensile</h2>
-<p class="muted">Tutti i valori sono medie cross-path (Monte Carlo). Il bonus fiscale è
-una colonna separata anche se è già incluso nei risparmi nominali.</p>
+<p class="muted">Tutti i valori sono medie cross-path (Monte Carlo). Il bonus fiscale e
+il ricavo da immissione sono colonne separate anche se sono già inclusi nei
+risparmi nominali.</p>
 <table class="cashflow">
 <thead><tr>
 <th>Mese</th><th>Risp. nom. (€)</th><th>Risp. reale (€)</th>
-<th>Bonus (€)</th><th>Prof. cum. nom. (€)</th><th>Prof. cum. reale (€)</th>
+<th>Bonus (€)</th><th>Immissione (€)</th><th>Prof. cum. nom. (€)</th><th>Prof. cum. reale (€)</th>
 </tr></thead>
 <tbody>
 {% for r in rows %}
@@ -274,6 +276,7 @@ una colonna separata anche se è già incluso nei risparmi nominali.</p>
 <td>{{ r.savings|round(2) if r.savings is not none else "—" }}</td>
 <td>{{ r.savings_real|round(2) if r.savings_real is not none else "—" }}</td>
 <td>{{ r.bonus|round(2) if r.bonus else "" }}</td>
+<td>{{ r.export|round(2) if r.export else "" }}</td>
 <td>{{ r.profit_cum|round(2) if r.profit_cum is not none else "—" }}</td>
 <td>{{ r.profit_cum_real|round(2) if r.profit_cum_real is not none else "—" }}</td>
 </tr>

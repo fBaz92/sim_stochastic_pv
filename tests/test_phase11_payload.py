@@ -60,6 +60,7 @@ class TestSummaryPayload:
             "mean_savings_eur",
             "mean_savings_real_eur",
             "bonus_per_month_eur",
+            "export_eur",
             "mean_profit_cum_eur",
             "mean_profit_cum_real_eur",
             "mean_price_eur_per_kwh",

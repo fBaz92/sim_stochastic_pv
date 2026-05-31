@@ -464,6 +464,32 @@ def test_mc_market_drives_purchase_requires_retail():
         sim.run(seed=1, show_progress=False)
 
 
+def test_cashflow_table_itemizes_export_revenue():
+    """The economic cash-flow table breaks out export revenue as its own
+    column, consistent with the total KPI, and zero when no market is wired."""
+    from sim_stochastic_pv.application import _build_cashflow_table_payload
+
+    esim = _make_simulator(n_years=2)
+    econ = EconomicConfig(investment_eur=9000.0, n_mc=4, inflation_rate=0.02)
+    price = EscalatingPriceModel(use_stochastic_escalation=False)
+    provider = MarketPriceProvider(
+        _flat_surface(0.05, n_trajectories=3, n_years=2), pmg_base_eur_per_kwh=0.08
+    )
+
+    res = MonteCarloSimulator(
+        esim, price, econ, market_price_provider=provider
+    ).run(seed=11, show_progress=False)
+    cf = _build_cashflow_table_payload(res)
+    assert "export_eur" in cf
+    assert sum(cf["export_eur"]) == pytest.approx(
+        res.export_revenue_total_mean_eur, rel=1e-9
+    )
+
+    res0 = MonteCarloSimulator(esim, price, econ).run(seed=11, show_progress=False)
+    cf0 = _build_cashflow_table_payload(res0)
+    assert all(x == 0.0 for x in cf0["export_eur"])
+
+
 def test_mc_with_real_built_surface_end_to_end():
     """Wiring works against an actual (small) market-built price surface."""
     esim = _make_simulator(n_years=2)

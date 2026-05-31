@@ -90,6 +90,7 @@ def build_cashflow_xlsx(summary: Mapping[str, Any], buffer: BinaryIO) -> None:
         ("Risparmio nominale (€)", "mean_savings_eur"),
         ("Risparmio reale (€)", "mean_savings_real_eur"),
         ("Bonus fiscale (€)", "bonus_per_month_eur"),
+        ("Immissione (€)", "export_eur"),
         ("Profitto cum. nominale (€)", "mean_profit_cum_eur"),
         ("Profitto cum. reale (€)", "mean_profit_cum_real_eur"),
         ("Prezzo medio (€/kWh)", "mean_price_eur_per_kwh"),
@@ -138,6 +139,10 @@ def build_cashflow_xlsx(summary: Mapping[str, Any], buffer: BinaryIO) -> None:
         ("Guadagno medio nominale (fine orizzonte)", _fmt_eur(summary.get("final_gain_mean_eur"))),
         ("Guadagno medio reale (fine orizzonte)", _fmt_eur(summary.get("final_gain_real_mean_eur"))),
         ("Bonus fiscale totale", _fmt_eur(summary.get("tax_bonus_total_eur"))),
+        (
+            "Ricavo da immissione totale (medio)",
+            _fmt_eur((summary.get("market") or {}).get("export_revenue_total_mean_eur")),
+        ),
     ]
     for offset, (label, value) in enumerate(kpi_rows, start=2):
         ws_kpi.cell(row=offset, column=1, value=label)

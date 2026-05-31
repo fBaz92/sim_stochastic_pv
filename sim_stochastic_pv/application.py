@@ -216,9 +216,12 @@ def _build_cashflow_table_payload(results: MonteCarloResults) -> Dict[str, Any]:
     Returns:
         Dict with keys:
             - ``months``: list[int], 0-based month indices.
-            - ``mean_savings_eur``: mean nominal monthly savings (incl. bonus).
+            - ``mean_savings_eur``: mean nominal monthly savings (incl. bonus
+              AND dedicated-withdrawal export revenue).
             - ``mean_savings_real_eur``: mean inflation-adjusted savings.
             - ``bonus_per_month_eur``: sparse bonus vector (0 where empty).
+            - ``export_eur``: mean nominal monthly export revenue (already
+              folded into ``mean_savings_eur``; 0 when no market is wired).
             - ``mean_profit_cum_eur``: mean cumulative profit, nominal.
             - ``mean_profit_cum_real_eur``: mean cumulative profit, real.
             - ``mean_price_eur_per_kwh``: mean electricity price per month.
@@ -240,6 +243,15 @@ def _build_cashflow_table_payload(results: MonteCarloResults) -> Dict[str, Any]:
     bonus_per_month_eur = (
         results.bonus_per_month_eur.tolist()
         if results.bonus_per_month_eur is not None
+        else [0.0] * n_months
+    )
+    # Dedicated-withdrawal export revenue per month (nominal mean across paths).
+    # Like the bonus, it is ALREADY folded into ``mean_savings_eur``; this
+    # separate column lets the reader itemise "of which from grid export" and
+    # compute savings-excluding-export cheaply. Zeros when no market is wired.
+    mean_export_eur = (
+        results.monthly_export_eur_paths.mean(axis=0).tolist()
+        if results.monthly_export_eur_paths is not None
         else [0.0] * n_months
     )
     mean_profit_cum_eur = results.df_profit["mean_gain_eur"].tolist()
@@ -287,6 +299,7 @@ def _build_cashflow_table_payload(results: MonteCarloResults) -> Dict[str, Any]:
         "mean_savings_eur": mean_savings_eur,
         "mean_savings_real_eur": mean_savings_real_eur,
         "bonus_per_month_eur": bonus_per_month_eur,
+        "export_eur": mean_export_eur,
         "mean_profit_cum_eur": mean_profit_cum_eur,
         "mean_profit_cum_real_eur": mean_profit_cum_real_eur,
         "mean_price_eur_per_kwh": mean_price,
