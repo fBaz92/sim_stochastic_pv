@@ -24,6 +24,7 @@ Modules:
     price_areas: Correlated foreign price-area stochastic processes.
     reliability: Outage/availability models for interconnection links.
     simulation: Monte Carlo runner and scenario sweep utilities.
+    horizon: Mix evolution over the horizon and the cached price surface.
 """
 
 from __future__ import annotations
@@ -35,4 +36,7 @@ from sim_stochastic_pv.market.dispatch import dispatch_year, DispatchResult
 from sim_stochastic_pv.market.simulation import (
     SimulationConfig, MonteCarloResult,
     run_monte_carlo, sweep_technology, build_sensitivity_heatmap,
+)
+from sim_stochastic_pv.market.horizon import (
+    TechCapacityTrend, MixTrend, PriceSurface, build_price_surface,
 )
