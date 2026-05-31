@@ -305,6 +305,15 @@ Alembic.
   semplicemente cambiare il codice e aggiornare i call site (questa è
   una codebase con un solo utente, non c'è da gestire utenti legacy).
 - **Non** rifare la UI con un altro framework. È Svelte. Punto.
+- **Non** riferirti alla fase di ROADMAP *dentro il codice* (commenti,
+  docstring, nomi di simboli/funzioni/classi, messaggi UI o di log). Il
+  codice descrive la **feature**, non il numero di fase. Scrivi
+  "ritiro dedicato: l'eccesso è valorizzato a max(prezzo di mercato,
+  prezzo minimo garantito)", non "preparazione modello per Fase 19-bis".
+  I numeri di fase vivono **solo** in `ROADMAP.md` e, se utile, nei commit
+  message. Stessa regola per i nomi dei file di test: nominare per
+  modulo/feature come da §2.6 (`test_market_dispatch.py`), non
+  `test_phaseNN_*.py`.
 
 ---
 

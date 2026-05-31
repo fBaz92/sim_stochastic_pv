@@ -1047,6 +1047,153 @@ ottimizzazione automatica del dimensionamento pompa, demand response.
 
 ---
 
+## Fase 19-bis — Laboratorio termico: accuratezza economica e diagnostica
+
+**Problema**: la Fase 19 ha consegnato il laboratorio termico ma con tre
+semplificazioni note (tracciate come "out of scope" alla chiusura):
+
+1. **Prezzo energia scalare.** Il costo annuo HVAC è `kWh × prezzo_fisso`. Non
+   cattura l'incertezza del prezzo su 20 anni (escalation + volatilità) che il
+   resto del simulatore modella già via `PriceModel` (Fase 2). Confrontare
+   isolamenti "a prezzo fisso" sottostima la banda di costo p05–p95 della casa
+   poco isolata, che è proprio quella più esposta al rischio prezzo.
+2. **Nessuno split riscaldamento/raffrescamento.** La tabella mostra solo il
+   totale HVAC; non si vede quanta energia/costo è inverno vs estate — info
+   chiave per dimensionare la pompa e scegliere i setpoint.
+3. **Anteprima oraria solo invernale.** `simulate_thermal_timeseries` parte
+   sempre dal 1° gennaio: non si può ispezionare un'ondata di calore estiva.
+
+**Deliverable**:
+
+- **Accoppiamento `PriceModel`**: `compare_house_variants` accetta un
+  `price_model: PriceModel | None`. Quando presente, il costo per path =
+  `Σ_giorno kWh_HVAC(g) × prezzo(anno_g, mese_g) / n_years` (media annua sul
+  l'orizzonte), con `reset_for_run` per path su uno stream RNG **indipendente**
+  da quello della temperatura. Quando `None` → fallback allo scalare
+  `electricity_price_eur_per_kwh`, **byte-identico** al comportamento Fase 19.
+  Schema/route: blocco `price` opzionale (model_type escalating/gbm/
+  mean_reverting + parametri), costruito via `build_default_price_model`.
+- **Split energia riscaldamento/raffrescamento**: per variante
+  `heating_kwh_annual_mean` / `cooling_kwh_annual_mean`, classificando le ore
+  per `T_out` vs i setpoint effettivi (`HvacController.setpoint_arrays`).
+  Esatto in steady-state, approssimato in dinamico (documentato). KPI in
+  tabella + barra impilata.
+- **Finestra anteprima oraria**: `simulate_thermal_timeseries(..., start_day=0)`
+  per ispezionare inverno/primavera/estate/autunno. UI: selettore stagione.
+- UI: selettore "Prezzo energia" (Fisso / Escalation / GBM / Mean-reverting)
+  con campi condizionati; colonne risc./raffr. in tabella; selettore stagione
+  per l'anteprima. Export Excel/PDF estesi con lo split.
+- Test (~8-10): GBM allarga la banda di costo vs scalare; escalating
+  deterministico fa crescere il costo medio annuo; reset prezzo indipendente
+  per path; `heating + cooling == totale` in steady-state; cooling = 0 in clima
+  freddo; preview estiva mostra cooling; byte-identità quando `price` assente;
+  endpoint con blocco `price`.
+
+**Out of scope ora**: editor schedule 24h completo (resta il solo setback
+notturno), tariffe orarie/PUN (il `PriceModel` è mensile), demand response.
+
+---
+
+## Fase 20 — Mercato elettrico sottostante (prezzo endogeno + ritiro dedicato)
+
+**Problema**: oggi l'energia prodotta in eccesso (PV che non è né autoconsumata
+né immagazzinata) viene **scartata silenziosamente** in `inverter.dispatch()`
+quando la batteria è piena: non è valorizzata in alcun modo. Inoltre il prezzo
+dell'energia è esogeno (`EscalatingPriceModel`/`GBM`/`MeanReverting`): non è
+"agganciato" né alle condizioni operative (settimana di maltempo → poco PV di
+sistema → prezzo diurno alto; estate → midday a poco prezzo) né a quelle di
+mercato (shock gas → elettricità cara). Manca un modello del mercato elettrico
+che, da un mix di generazione, determini un prezzo orario sensato, e manca la
+valorizzazione dell'immissione tramite **ritiro dedicato** (energia immessa
+pagata a `max(prezzo zonale orario, prezzo minimo garantito)`).
+
+**Decisioni utente (2026-05-31)**: motore **completo** (incl. interconnessioni
+con l'estero, price-areas, storage di rete); prezzo applicato all'impianto a
+risoluzione **oraria** (superficie mese×ora); il mercato può guidare **sia
+l'immissione sia l'acquisto**, via toggle indipendenti; PMG **indicizzato
+all'inflazione** (`PMG_base·(1+infl)^anno`, riusa l'infrastruttura inflazione
+della Fase 11). Motore portato dallo standalone `energy_mix_simulator`
+(adattato dentro il repo, non come dipendenza esterna).
+
+**Dipendenze**: Fase 11 (infrastruttura inflazione, riusata per il PMG),
+Fase 15 (precedente `ClimateProfileModel` per il profilo riutilizzabile salvato
+nel DB), Fase 19 (pattern di sezione/lab end-to-end).
+
+**Deliverable** (7 slice indipendenti, ognuna a suite verde):
+
+- **20a — Port del motore di mercato** → nuovo sottopacchetto
+  `sim_stochastic_pv/market/` (mirror del pattern `external/`): `config`,
+  `grid` (TimeGrid + load di sistema), `generators` (prezzi fuel/CO₂ OU,
+  availability solare/eolico, `Generator`, `build_generators`), `dispatch`
+  (merito economico + fix inerzia + export interconnessioni + storage),
+  `storage`, `interconnections`, `price_areas`, `reliability`, `simulation`
+  (`run_monte_carlo` + sweep). Niente layer di plotting (i grafici vivono in
+  frontend/exporters). Test per modulo (`tests/test_market_*.py`): merito
+  economico sceglie il più economico, prezzo sale con μ_gas, solare nullo di
+  notte, riproducibilità da seed, autocorrelazione lag-1 dei path fuel.
+
+- **20b — Trend di mix + superficie di prezzo** → `market/horizon.py`:
+  `MixTrend` (capacità base + crescita %/anno + step a un anno dato, es.
+  "nucleare 0 fino al 2035 poi +X GW"), `build_mix_for_year(year)`, e
+  `PriceSurface` che gira il MC di mercato su **anni rappresentativi** e
+  interpola. Aggiunge a `market/simulation.py` l'aggregato mancante: prezzo
+  medio per `(mese, ora)` shape `(n,12,24)` + bande p05/p95. Superficie
+  **cachabile** (calcolo costoso una volta sola).
+
+- **20c — Cattura del surplus** (risolve la lacuna originale):
+  `inverter.dispatch()` ritorna anche `e_pv_surplus`; `EnergySystemSimulator`
+  accumula `monthly_export_kwh` e l'energia per `(mese, ora)`
+  (`self_kwh_by_month_hour`, `export_kwh_by_month_hour`). Solo contabilità
+  energetica, ancora senza prezzi. Test: bilancio orario
+  `prod = diretto + a_batteria + surplus`; export>0 solo a batteria piena e
+  carico saturo.
+
+- **20d — Provider prezzo + integrazione economica**: `MarketPriceProvider`
+  (wholesale/retail/export), estensione opzionale di `PriceModel` con
+  `get_price_hourly` (default = prezzo mensile su tutte le ore → **byte-identico**
+  all'attuale a mercato spento); `export_orario = max(wholesale, PMG)`,
+  `PMG(anno)=PMG_base·(1+infl)^anno`; retail orario opzionale
+  `= wholesale·(1+markup)+componenti_fisse`. Il ricavo da immissione entra nel
+  cashflow come il bonus fiscale (Fase 11) → NPV/IRR/break-even lo includono.
+  Nuovi campi in `MonteCarloResults` (`monthly_export_kwh_paths`,
+  `monthly_export_eur_paths`, `df_export`, totali).
+
+- **20e — Persistenza**: `MarketProfileModel(name, data JSON)` (precedente:
+  `ClimateProfileModel`), `market_profile_id` opzionale sullo scenario,
+  hydration in `scenario_builder`, regole in `validation.py`, migrazione
+  nullable + `ALTER TABLE`, seed di un profilo "Italia" di default.
+
+- **20f — Sezione "Mercato Elettrico"** (pattern ThermalLab): lab orchestrator,
+  `api/routes/market.py` (`/api/market`), `api/schemas/market.py`, pagina
+  `frontend/src/pages/ElectricityMarket.svelte` (editor mix con pie/stacked-bar;
+  editor trend con stacked-area della capacità sull'orizzonte; scenari
+  gas/CO₂/coal; interconnessioni/storage; output: heatmap prezzo mese×ora, fan
+  chart annuale, curva di durata, heatmap "chi fissa il prezzo") + voce navbar
+  + rotta + `api.js` + exporters `{pdf,xlsx}_market.py`. Heatmap via componente
+  canvas/CSS-grid leggero (nessuna libreria nuova, §3.5).
+
+- **20g — Integrazione nello scenario + Dashboard**: nello step "Mercato
+  elettrico" del wizard, scelta "modello prezzo semplice" vs "mercato simulato"
+  (profilo salvato o inline) + toggle "ritiro dedicato (PMG)" e "il mercato
+  guida anche l'acquisto". Dashboard: KPI ricavo immissione, bilancio
+  energetico con export, contributo dell'export al profitto, superficie di
+  prezzo usata.
+
+**Nota di modellazione (limite noto)**: la superficie di prezzo è precalcolata
+dal MC di mercato (con i *suoi* path meteo) e poi consultata dal MC PV (con i
+*suoi* path meteo). Cattura la struttura media oraria/stagionale e l'effetto-
+livello degli shock gas/CO₂, ma **non** la correlazione intra-path tra il meteo
+della singola casa e il prezzo di sistema *nello stesso path*. La coppia piena
+(meteo-casa ↔ prezzo-sistema su fattore comune) è una possibile "modalità
+coupled" futura, fuori scope qui.
+
+**Out of scope ora**: mercato infragiornaliero/MSD/bilanciamento; aste reali
+GME; PUN vs prezzo zonale per zona (si usa un'unica zona); comunità energetiche
+(CER); accise e oneri di sistema dettagliati per fascia (il retail è wholesale +
+componenti aggregate); modalità "coupled" meteo↔prezzo.
+
+---
+
 ## Dipendenze fra fasi
 
 ```
@@ -1100,13 +1247,53 @@ strategie di scheduling intelligente (auto EV su PV, smart timer).
 
 ### 🚧 In corso
 
-Nessuna fase attivamente in corso.
+**Fase 20 — Mercato elettrico sottostante (prezzo endogeno + ritiro dedicato)**
+— avviata 2026-05-31. Slice in corso: **20a** (port del motore di mercato in
+`sim_stochastic_pv/market/`). Vedi blocco *Fase 20* sopra per il piano completo
+delle 7 slice e le decisioni di design.
 
 ### ✅ Completate
 
-**Fase 19 — Laboratorio termico nella webapp** — chiusa 2026-05-29 (suite verde, 466 test backend; build frontend OK; verificata end-to-end nel browser).
+**Fase 19-bis — Laboratorio termico: accuratezza economica e diagnostica** — chiusa 2026-05-30 (suite verde, 482 test backend; build frontend OK; verificata end-to-end nel browser).
 
-Consegnata in due slice nella stessa giornata (backend-first, come Fase 18).
+Consegnato:
+- **Accoppiamento `PriceModel`** (`simulation/thermal_lab.py`):
+  `compare_house_variants(..., price_model=None)`. Con un modello prezzo il
+  costo per path = `Σ_giorno kWh(g)·prezzo(anno_g, mese_g)/n_years` (prezzo
+  per-mese vettorizzato via `month_of_year`), `reset_for_run` per path su uno
+  stream RNG indipendente (`_PRICE_SEED_OFFSET`). Senza modello → scalare
+  **byte-identico** alla Fase 19 (verificato). Test: GBM allarga la banda di
+  costo >3× lo scalare, escalating deterministico alza il costo medio,
+  riproducibilità da seed.
+- **Split riscaldamento/raffrescamento**: `ThermalVariantResult` +
+  `heating_kwh_annual_mean` / `cooling_kwh_annual_mean`, classificati per
+  `T_out` vs i setpoint effettivi (`HvacController.setpoint_arrays`). Esatto in
+  steady-state (`heating + cooling == totale`, verificato), approssimato in
+  dinamico (documentato).
+- **Finestra anteprima oraria**: `simulate_thermal_timeseries(..., start_day)`
+  (0..364) con warmup AR(1) + ampiezza diurna corretta per la stagione.
+- **API**: `ThermalLabCompareRequest.price` (blocco opzionale escalating/gbm/
+  mean_reverting, costruito via `build_default_price_model`),
+  `ThermalTimeseriesRequest.start_day`, campi risc./raffr. in
+  `ThermalVariantResultSchema`. Route con helper `_build_price_model` /
+  `_price_label`.
+- **Export** Excel + PDF estesi con colonne risc./raffr. e l'etichetta del
+  modello prezzo nell'header.
+- **UI** (`ThermalLab.svelte`): selettore "Prezzo energia"
+  (Fisso/Escalation/GBM/Mean-reverting) con campi condizionati e banda costo
+  p05–p95 in tabella; colonna risc./raffr.; selettore stagione per l'anteprima
+  oraria. Verificato live: GBM allarga la banda di costo, split mostrato,
+  selettore stagione ricarica la serie, export PDF/Excel 200.
+- **Test** `tests/test_phase19_thermal_lab.py`: +11 (price coupling, split,
+  finestra stagionale, endpoint con blocco prezzo). Totale 40 nel file, 482
+  nell'intera suite.
+
+**Fase 19 — Laboratorio termico nella webapp** — chiusa 2026-05-29 (suite verde, 471 test backend; build frontend OK; verificata end-to-end nel browser).
+
+**Fase 19 — Laboratorio termico nella webapp** — chiusa 2026-05-29 (suite verde, 471 test backend; build frontend OK; verificata end-to-end nel browser).
+
+Consegnata in tre slice nella stessa giornata (backend-first, come Fase 18):
+fondazione backend, UI Svelte, export report Excel/PDF.
 
 **Slice 1 — fondazione backend:**
 - **Setpoint a fasce orarie** (il seam già predisposto in Fase 18):
@@ -1151,13 +1338,23 @@ Consegnata in due slice nella stessa giornata (backend-first, come Fase 18).
   **3 grafici sovrapposti** (consumi giornalieri/config con T esterna su asse
   secondario e marker dei giorni più gravosi ●/▲; barre costo/config con banda
   p05–p95 in tooltip; anteprima oraria setpoint vs T interna + P_elec).
-- **Export**: CSV del confronto (client-side) + PNG per grafico (nativo
-  `ResultsChart`). Nuovi metodi `api.compareThermalLab` / `api.previewThermalTimeseries`.
 - Verifica browser: layout 2-col (config sticky) ≥900px → 1-col sotto, nessun
   errore console, monotonia energia/costo e drift T interna confermati live.
 
-**Out of scope (refinement futuri, eventuale Fase 19-bis):** export report
-Excel/PDF *bundled* con grafici embedded (per ora CSV+PNG), accoppiamento del
+**Slice 3 — Export report termico (Excel + PDF):**
+- `output/exporters/xlsx_thermal_lab.py` (`build_thermal_lab_xlsx`): workbook
+  3 fogli (Confronto KPI, Serie giornaliera, Temperatura interna in dinamico).
+- `output/exporters/pdf_thermal_lab.py` (`build_thermal_lab_pdf`): report
+  WeasyPrint + matplotlib (tabella KPI + grafici consumi/costo/T interna).
+- Endpoint `POST /api/thermal-lab/compare/export.{xlsx,pdf}` (stessa request di
+  `/compare`); route rifattorizzata con helper condivisi `_run_comparison` /
+  `_result_to_response` / `_report_dict`.
+- UI: pulsanti CSV / Excel / PDF nell'header della tabella KPI
+  (`api.exportThermalLabXlsx` / `exportThermalLabPdf` via `downloadPost`) +
+  PNG per grafico (nativo `ResultsChart`). Verificato end-to-end nel browser
+  (Excel + PDF HTTP 200, content-type corretti) e via 5 test backend.
+
+**Out of scope (refinement futuri, eventuale Fase 19-bis):** accoppiamento del
 modello prezzo GBM stocastico (per ora prezzo scalare), editor schedule 24h
 completo (per ora solo setback notturno), finestra estiva nell'anteprima oraria
 (per ora parte da gennaio), split energia heating/cooling per ora.
