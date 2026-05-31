@@ -163,6 +163,35 @@ export const api = {
         return downloadPost('/thermal-lab/compare/export.pdf', payload, 'laboratorio_termico.pdf');
     },
 
+    // ── Electricity market lab ────────────────────────────────────────────
+    // Design a generation mix + capacity trends + fuel/CO2 scenarios and read
+    // back the wholesale price views; persist a designed market as a reusable
+    // market profile referenced by scenarios.
+    async runMarketLab(payload) {
+        return request('/market/run', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+        });
+    },
+    async exportMarketXlsx(payload) {
+        return downloadPost('/market/run/export.xlsx', payload, 'mercato_elettrico.xlsx');
+    },
+    async exportMarketPdf(payload) {
+        return downloadPost('/market/run/export.pdf', payload, 'mercato_elettrico.pdf');
+    },
+    async listMarketProfiles() {
+        return request('/market/profiles');
+    },
+    async saveMarketProfile(payload) {
+        return request('/market/profiles', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+        });
+    },
+    async deleteMarketProfile(id) {
+        return request(`/market/profiles/${id}`, { method: 'DELETE' });
+    },
+
     // ── Configurations ────────────────────────────────────────────────────
     async listConfigurations(type) {
         const url = type ? `/configurations?type=${type}` : '/configurations';

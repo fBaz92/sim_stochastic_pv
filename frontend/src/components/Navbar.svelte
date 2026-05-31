@@ -37,6 +37,14 @@
             </li>
             <li>
                 <a
+                    href="#/market"
+                    class:active={$currentRoute === "/market"}
+                    title="Progetta il mercato elettrico sottostante (mix, trend, scenari) e il ritiro dedicato"
+                    >Mercato elettrico</a
+                >
+            </li>
+            <li>
+                <a
                     href="#/database"
                     class:active={$currentRoute === "/database"}>Database</a
                 >

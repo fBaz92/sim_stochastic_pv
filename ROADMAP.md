@@ -1269,9 +1269,24 @@ strategie di scheduling intelligente (auto EV su PV, smart timer).
 **20b** (trend di mix + superficie di prezzo cachabile), **20c** (cattura del
 surplus PV come export/curtailment), **20d** (provider prezzo
 `MarketPriceProvider` + integrazione del ricavo da immissione nel cashflow),
-**20e** (persistenza `MarketProfileModel` + idratazione nello scenario).
-Prossima slice: **20f** (sezione "Mercato Elettrico" + API + UI). Vedi blocco
-*Fase 20* sopra per il piano completo delle 7 slice e le decisioni di design.
+**20e** (persistenza `MarketProfileModel` + idratazione nello scenario),
+**20f** (sezione "Mercato Elettrico": orchestrator lab, API, UI). Prossima e
+ultima slice: **20g** (integrazione scenario + Dashboard). Vedi blocco *Fase 20*
+sopra per il piano completo delle 7 slice e le decisioni di design.
+
+**20f completata (2026-05-31)**: orchestrator `simulation/market_lab.py`
+(`MarketLabConfig`/`TechTrendSpec`/`MarketLabResult`, `run_market_lab` →
+heatmap prezzo mese×ora, fan annuale p05–p95, curva di durata, capacità per
+tecnologia, "chi fissa il prezzo" via MC di un anno rappresentativo;
+`build_market_provider` per il salvataggio). API `api/routes/market.py`
+(`/api/market`): `POST /run`, `POST /run/export.{xlsx,pdf}`, `GET/POST/DELETE
+/profiles`; schemi `api/schemas/market.py`; router registrato in `app.py`.
+Exporters `output/exporters/{pdf,xlsx}_market.py`. Frontend: pagina
+`ElectricityMarket.svelte` + componente heatmap CSS-grid `Heatmap.svelte`
+(nessuna libreria nuova, §3.5), voce navbar "Mercato elettrico", rotta `/market`,
+metodi `api.js`. `tests/test_market_lab.py` (17 test). Suite 582 verde; build
+frontend OK; verificato end-to-end nel browser (5 visualizzazioni, salvataggio
+profilo).
 
 **20e completata (2026-05-31)**: nuovo `MarketProfileModel(name, description,
 data JSON)` in `db/models.py` (tabella `market_profiles`, materializzata da

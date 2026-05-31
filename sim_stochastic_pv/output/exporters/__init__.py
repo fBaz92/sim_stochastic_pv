@@ -12,14 +12,18 @@ Both readers consume the ``RunResultRecord.summary`` JSON only, so they
 work even when the original ``output_dir`` on disk has been deleted.
 """
 
+from .pdf_market import build_market_pdf
 from .pdf_report import build_pdf_report
 from .pdf_thermal_lab import build_thermal_lab_pdf
 from .xlsx_cashflow import build_cashflow_xlsx
 from .xlsx_load_profile import build_template_xlsx, parse_load_profile_xlsx
+from .xlsx_market import build_market_xlsx
 from .xlsx_thermal_lab import build_thermal_lab_xlsx
 
 __all__ = [
     "build_cashflow_xlsx",
+    "build_market_pdf",
+    "build_market_xlsx",
     "build_pdf_report",
     "build_template_xlsx",
     "build_thermal_lab_pdf",
