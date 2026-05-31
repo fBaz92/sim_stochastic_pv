@@ -53,6 +53,9 @@
     // ── Save-profile state ──────────────────────────────────────────────────
     let saveName = "";
     let savePmg = 0.04;
+    let saveRetailEnabled = false; // configure a retail tariff on the profile
+    let saveMarkupPct = 80; // % markup on wholesale
+    let saveFixed = 0.1; // €/kWh flat retail components (taxes/grid fees)
     let saving = false;
     let saveMsg = "";
     let saveError = null;
@@ -131,12 +134,17 @@
         }
         saving = true;
         try {
-            const r = await api.saveMarketProfile({
+            const payload = {
                 name: saveName.trim(),
                 description: null,
                 config: buildPayload(),
                 pmg_base_eur_per_kwh: Number(savePmg),
-            });
+            };
+            if (saveRetailEnabled) {
+                payload.retail_markup_fraction = Number(saveMarkupPct) / 100;
+                payload.retail_fixed_components_eur_per_kwh = Number(saveFixed);
+            }
+            const r = await api.saveMarketProfile(payload);
             saveMsg = `Profilo "${r.name}" salvato (id ${r.id}).`;
             await loadProfiles();
         } catch (e) {
@@ -372,6 +380,24 @@
                 <label class="label" for="savePmg">PMG (€/kWh)</label>
                 <input id="savePmg" class="input" type="number" min="0" step="0.005" bind:value={savePmg} />
             </div>
+            <div class="form-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" bind:checked={saveRetailEnabled} />
+                    Configura tariffa retail (per «il mercato guida l'acquisto»)
+                </label>
+            </div>
+            {#if saveRetailEnabled}
+                <div class="grid-mini">
+                    <div class="form-group">
+                        <label class="label" for="saveMarkup">Markup %</label>
+                        <input id="saveMarkup" class="input" type="number" min="0" step="5" bind:value={saveMarkupPct} />
+                    </div>
+                    <div class="form-group">
+                        <label class="label" for="saveFixed">Oneri fissi €/kWh</label>
+                        <input id="saveFixed" class="input" type="number" min="0" step="0.01" bind:value={saveFixed} />
+                    </div>
+                </div>
+            {/if}
             <button class="btn btn-outline btn-sm" on:click={saveProfile} disabled={saving}>
                 {saving ? "Salvataggio…" : "Salva profilo"}
             </button>

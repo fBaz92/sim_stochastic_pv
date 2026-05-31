@@ -294,6 +294,47 @@ def _build_cashflow_table_payload(results: MonteCarloResults) -> Dict[str, Any]:
     }
 
 
+def _build_market_payload(
+    results: MonteCarloResults, market_drives_purchase: bool
+) -> Optional[Dict[str, Any]]:
+    """
+    Build the electricity-market KPI block for the Dashboard.
+
+    Surfaces the dedicated-withdrawal export valuation (total revenue + energy
+    and the monthly export series) and a flag telling the UI whether the
+    simulated market also drove the purchase price. Returns ``None`` when the
+    scenario was run without any market coupling, so the Dashboard hides the
+    "Mercato elettrico" card entirely.
+
+    Args:
+        results: The completed :class:`MonteCarloResults`.
+        market_drives_purchase: Whether the market drove the purchase side.
+
+    Returns:
+        A JSON-friendly dict, or ``None`` when no market was coupled.
+
+    Notes:
+        - ``export_revenue_total_mean_eur`` is exactly the mean contribution of
+          dedicated withdrawal to the final cumulative profit (it is folded into
+          the cash flow), so the Dashboard can show "of which from export".
+    """
+    has_export = results.df_export is not None
+    if not has_export and not market_drives_purchase:
+        return None
+
+    payload: Dict[str, Any] = {
+        "market_drives_purchase": bool(market_drives_purchase),
+        "export_revenue_total_mean_eur": float(results.export_revenue_total_mean_eur),
+        "export_kwh_total_mean": float(results.export_kwh_total_mean),
+        "monthly_export_eur_mean": None,
+        "monthly_export_kwh_mean": None,
+    }
+    if has_export:
+        payload["monthly_export_eur_mean"] = results.df_export["export_eur_mean"].tolist()
+        payload["monthly_export_kwh_mean"] = results.df_export["export_kwh_mean"].tolist()
+    return payload
+
+
 class SimulationApplication:
     """
     High-level orchestrator used by the CLI and (future) FastAPI surface.
@@ -392,13 +433,29 @@ class SimulationApplication:
         energy_cfg = build_default_energy_config(scenario_payload, self.persistence)
         price_model = build_default_price_model(scenario_data=scenario_payload)
         econ_cfg = build_default_economic_config(n_mc=n_mc, scenario_data=scenario_payload)
-        # Optional dedicated-withdrawal export valuation: resolved from the
-        # scenario's ``market_profile_id`` via the persistence service. ``None``
-        # when the scenario references no market profile, so the Monte Carlo
-        # stays byte-identical to a market-off run.
+        # Optional electricity-market coupling, resolved from the scenario's
+        # ``market_profile_id`` via the persistence service. ``None`` when the
+        # scenario references no market profile, so the Monte Carlo stays
+        # byte-identical to a market-off run. Two independent toggles:
+        #   - ``dedicated_withdrawal`` (default True): value PV export at
+        #     max(wholesale, PMG).
+        #   - ``market_drives_purchase`` (default False): value the avoided grid
+        #     purchase at the market-derived hourly retail price.
         market_provider = build_default_market_provider(
             scenario_payload, self.persistence
         )
+        value_export = bool(scenario_payload.get("dedicated_withdrawal", True))
+        market_drives_purchase = bool(
+            scenario_payload.get("market_drives_purchase", False)
+        )
+        if market_drives_purchase and (
+            market_provider is None
+            or market_provider.retail_markup_fraction is None
+        ):
+            raise ValueError(
+                "market_drives_purchase requires a market_profile_id whose "
+                "profile carries a retail configuration (retail_markup_fraction)."
+            )
 
         energy_sim = EnergySystemSimulator(
             config=energy_cfg,
@@ -411,6 +468,8 @@ class SimulationApplication:
             price_model=price_model,
             economic_config=econ_cfg,
             market_price_provider=market_provider,
+            value_export=value_export,
+            market_drives_purchase=market_drives_purchase,
         )
 
         results = mc.run(
@@ -463,6 +522,10 @@ class SimulationApplication:
             # per-appliance kWh breakdown, and (smart_pv mode)
             # self-consumption percentage.
             "appliances": results.appliances_kpis_summary,
+            # Electricity-market coupling KPIs (None when no market is wired).
+            # Dashboard renders the dedicated-withdrawal export revenue/energy
+            # and whether the market drove the purchase price.
+            "market": _build_market_payload(results, market_drives_purchase),
             "plots_data": {
                 "profit": {
                     "months": results.df_profit["month_index"].tolist(),

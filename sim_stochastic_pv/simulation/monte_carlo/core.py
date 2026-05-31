@@ -563,6 +563,8 @@ class MonteCarloSimulator:
         price_model: PriceModel,
         economic_config: EconomicConfig,
         market_price_provider: Optional[MarketPriceProvider] = None,
+        value_export: bool = True,
+        market_drives_purchase: bool = False,
     ) -> None:
         """
         Initialize Monte Carlo simulator with system models and economic parameters.
@@ -591,6 +593,14 @@ class MonteCarloSimulator:
                 simulator) is priced at ``max(wholesale, PMG)`` and the resulting
                 nominal revenue is folded into the cash flow exactly like the tax
                 bonus, so it propagates into NPV, IRR and break-even.
+            value_export: Whether to value PV export under dedicated withdrawal
+                when a provider is attached (bool, default ``True``). Set
+                ``False`` to attach a market only for the purchase side.
+            market_drives_purchase: When ``True`` (and a provider is attached),
+                value the avoided grid purchase (self-consumption) at the
+                market-derived hourly retail price (``wholesale·(1+markup)+fixed``)
+                instead of the simple monthly :class:`PriceModel`. Requires the
+                provider to carry a retail configuration. Default ``False``.
 
         Example:
             ```python
@@ -635,6 +645,8 @@ class MonteCarloSimulator:
         self.price_model = price_model
         self.economic_config = economic_config
         self.market_price_provider = market_price_provider
+        self.value_export = value_export
+        self.market_drives_purchase = market_drives_purchase
 
     @staticmethod
     def _build_tax_bonus_per_month(
@@ -1016,21 +1028,68 @@ class MonteCarloSimulator:
             monthly_solar_used_kwh = monthly_pv_direct_kwh + monthly_batt_to_load_kwh
             monthly_savings_kwh = monthly_load_kwh - monthly_grid_import_kwh
 
+            # Per-year cumulative inflation factor (year 0 -> 1.0). The monthly
+            # factor vector repeats each year's factor 12 times, so the
+            # year-start stride [::12] recovers the per-year series used to
+            # index the PMG floor and the market-retail price. Shared by both
+            # the purchase (savings) and the export valuations below.
+            inflation_factor_by_year = inflation_factors_paths[i][::12]
+            trajectory_index = (
+                (i % market_provider.price_surface.n_trajectories)
+                if market_provider is not None
+                else 0
+            )
+
             monthly_savings_eur = np.zeros(n_months)
-            for m in range(n_months):
-                year = m // 12
-                month_in_year_idx = m % 12
-                price = self.price_model.get_price(year, month_in_year_idx)
-                price_paths[i, m] = price
-                monthly_savings_eur[m] = monthly_savings_kwh[m] * price
+            if market_provider is not None and self.market_drives_purchase:
+                # Value the avoided grid purchase (self-consumption, surfaced
+                # hourly by the energy simulator) at the market-derived hourly
+                # retail price, then sum to monthly totals. This replaces the
+                # simple monthly PriceModel valuation for the savings.
+                self_cons = getattr(
+                    self.energy_simulator,
+                    "last_self_consumption_kwh_by_year_month_hour",
+                    None,
+                )
+                if self_cons is None:
+                    raise ValueError(
+                        "market_drives_purchase is set but the energy simulator "
+                        "did not surface "
+                        "last_self_consumption_kwh_by_year_month_hour."
+                    )
+                retail_grid = market_provider.retail_price_grid(
+                    trajectory_index=trajectory_index,
+                    inflation_factor_by_year=inflation_factor_by_year,
+                )  # (n_years, 12, 24) EUR/kWh
+                monthly_savings_eur = (self_cons * retail_grid).sum(axis=2).reshape(-1)
+                # Fan-chart price: the self-consumption-weighted monthly retail
+                # (falls back to the unweighted hourly mean for months with no
+                # self-consumption, so the series never has gaps).
+                cons_month = self_cons.sum(axis=2)  # (n_years, 12)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    weighted = (self_cons * retail_grid).sum(axis=2)
+                    monthly_retail = np.where(
+                        cons_month > 0.0,
+                        weighted / np.where(cons_month > 0.0, cons_month, 1.0),
+                        retail_grid.mean(axis=2),
+                    )
+                price_paths[i, :] = monthly_retail.reshape(-1)
+            else:
+                for m in range(n_months):
+                    year = m // 12
+                    month_in_year_idx = m % 12
+                    price = self.price_model.get_price(year, month_in_year_idx)
+                    price_paths[i, m] = price
+                    monthly_savings_eur[m] = monthly_savings_kwh[m] * price
 
             # Dedicated-withdrawal export revenue. When a market provider is
-            # attached, value the per-path exported energy (surfaced hourly by
-            # the energy simulator) at max(wholesale, inflation-indexed PMG).
-            # The nominal revenue is folded into the savings stream below,
-            # alongside the tax bonus, so it propagates into profit/IRR/
-            # break-even and (after the inflation division) into the real curve.
-            if market_provider is not None:
+            # attached and export valuation is enabled, value the per-path
+            # exported energy (surfaced hourly by the energy simulator) at
+            # max(wholesale, inflation-indexed PMG). The nominal revenue is
+            # folded into the savings stream below, alongside the tax bonus, so
+            # it propagates into profit/IRR/break-even and (after the inflation
+            # division) into the real curve.
+            if market_provider is not None and self.value_export:
                 export_grid = getattr(
                     self.energy_simulator,
                     "last_export_kwh_by_year_month_hour",
@@ -1043,14 +1102,6 @@ class MonteCarloSimulator:
                         "last_export_kwh_by_year_month_hour; cannot value PV "
                         "export."
                     )
-                # Per-year cumulative inflation factor (year 0 -> 1.0). The
-                # monthly factor vector repeats each year's factor 12 times, so
-                # the year-start stride [::12] recovers exactly the per-year
-                # series used to index the PMG floor.
-                inflation_factor_by_year = inflation_factors_paths[i][::12]
-                trajectory_index = (
-                    i % market_provider.price_surface.n_trajectories
-                )
                 monthly_export_eur_path, monthly_export_kwh_path = (
                     market_provider.value_export_grid(
                         export_grid,
@@ -1306,7 +1357,7 @@ class MonteCarloSimulator:
         df_export: Optional[pd.DataFrame] = None
         export_revenue_total_mean_eur: float = 0.0
         export_kwh_total_mean: float = 0.0
-        if market_provider is not None:
+        if market_provider is not None and self.value_export:
             exp_kwh_mean, exp_kwh_p05, exp_kwh_p95 = stats(export_kwh_paths)
             exp_eur_mean, exp_eur_p05, exp_eur_p95 = stats(export_eur_paths)
             df_export = pd.DataFrame(
@@ -1387,10 +1438,14 @@ class MonteCarloSimulator:
             # through only when a market provider was attached; otherwise the
             # fields stay None / 0.0 (market-off byte-identical contract).
             monthly_export_kwh_paths=(
-                export_kwh_paths if market_provider is not None else None
+                export_kwh_paths
+                if (market_provider is not None and self.value_export)
+                else None
             ),
             monthly_export_eur_paths=(
-                export_eur_paths if market_provider is not None else None
+                export_eur_paths
+                if (market_provider is not None and self.value_export)
+                else None
             ),
             df_export=df_export,
             export_revenue_total_mean_eur=export_revenue_total_mean_eur,

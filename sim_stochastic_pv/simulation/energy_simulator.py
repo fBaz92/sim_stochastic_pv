@@ -182,6 +182,11 @@ class EnergySystemSimulator:
         self.last_monthly_curtailed_kwh: np.ndarray | None = None
         self.last_monthly_pv_to_batt_kwh: np.ndarray | None = None
         self.last_export_kwh_by_year_month_hour: np.ndarray | None = None
+        # Self-consumption (avoided grid purchase) resolved by (year, month,
+        # hour): the load served by PV-direct + battery discharge, i.e. the kWh
+        # NOT bought from the grid. The economic layer can value it against an
+        # hourly retail price when the market drives the purchase side too.
+        self.last_self_consumption_kwh_by_year_month_hour: np.ndarray | None = None
 
         self.battery_bank = BatteryBank(
             specs=config.battery_specs,
@@ -318,6 +323,8 @@ class EnergySystemSimulator:
         monthly_curtailed_kwh = np.zeros(n_months)
         monthly_pv_to_batt_kwh = np.zeros(n_months)
         export_kwh_by_year_month_hour = np.zeros((self.config.n_years, 12, 24))
+        # Self-consumption (PV-direct + battery-to-load) by (year, month, hour).
+        self_consumption_kwh_by_year_month_hour = np.zeros((self.config.n_years, 12, 24))
 
         soc_accum = np.zeros((12, 24))
         soc_count = np.zeros((12, 24), dtype=int)
@@ -385,6 +392,9 @@ class EnergySystemSimulator:
                 monthly_curtailed_kwh[month_idx] += e_pv_curtailed
                 monthly_pv_to_batt_kwh[month_idx] += e_pv_to_batt
                 export_kwh_by_year_month_hour[year_idx, month_in_year, h] += e_pv_to_grid
+                self_consumption_kwh_by_year_month_hour[year_idx, month_in_year, h] += (
+                    e_pv_direct + e_batt_discharge_to_load
+                )
 
                 if year_idx == 0:
                     soc = self.battery_bank.soc_fraction()
@@ -440,6 +450,9 @@ class EnergySystemSimulator:
         self.last_monthly_curtailed_kwh = monthly_curtailed_kwh
         self.last_monthly_pv_to_batt_kwh = monthly_pv_to_batt_kwh
         self.last_export_kwh_by_year_month_hour = export_kwh_by_year_month_hour
+        self.last_self_consumption_kwh_by_year_month_hour = (
+            self_consumption_kwh_by_year_month_hour
+        )
 
         return (
             monthly_pv_prod_kwh,

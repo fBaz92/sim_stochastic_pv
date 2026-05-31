@@ -137,6 +137,18 @@ def validate_scenario(data: Dict[str, Any]) -> List[str]:
         mpname = data["market_profile_name"]
         if not isinstance(mpname, str) or not mpname.strip():
             errors.append("market_profile_name must be a non-empty string")
+    # Independent market toggles. ``market_drives_purchase`` needs a market
+    # profile to derive the retail price from; flag the inconsistency early.
+    for flag in ("dedicated_withdrawal", "market_drives_purchase"):
+        if flag in data and not isinstance(data[flag], bool):
+            errors.append(f"{flag} must be a boolean")
+    if data.get("market_drives_purchase") and not (
+        "market_profile_id" in data or "market_profile_name" in data
+    ):
+        errors.append(
+            "market_drives_purchase=true requires a market_profile_id "
+            "(or market_profile_name) at the scenario root."
+        )
 
     return errors
 

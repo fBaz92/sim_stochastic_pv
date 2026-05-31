@@ -1264,15 +1264,35 @@ strategie di scheduling intelligente (auto EV su PV, smart timer).
 
 ### 🚧 In corso
 
+_Nessuna fase attualmente in corso._
+
+### ✅ Completate
+
 **Fase 20 — Mercato elettrico sottostante (prezzo endogeno + ritiro dedicato)**
-— avviata 2026-05-31. Slice completate: **20a** (port motore di mercato),
-**20b** (trend di mix + superficie di prezzo cachabile), **20c** (cattura del
-surplus PV come export/curtailment), **20d** (provider prezzo
-`MarketPriceProvider` + integrazione del ricavo da immissione nel cashflow),
-**20e** (persistenza `MarketProfileModel` + idratazione nello scenario),
-**20f** (sezione "Mercato Elettrico": orchestrator lab, API, UI). Prossima e
-ultima slice: **20g** (integrazione scenario + Dashboard). Vedi blocco *Fase 20*
-sopra per il piano completo delle 7 slice e le decisioni di design.
+— chiusa 2026-05-31 (tutte e 7 le slice 20a–20g; suite 585 test backend verde;
+build frontend OK; verificata end-to-end nel browser). Le 7 slice: **20a** port
+del motore di mercato, **20b** superficie di prezzo cachabile, **20c** cattura
+del surplus PV (export/curtailment), **20d** `MarketPriceProvider` + ricavo da
+immissione nel cashflow, **20e** persistenza `MarketProfileModel` + idratazione,
+**20f** sezione lab "Mercato Elettrico", **20g** integrazione scenario +
+Dashboard. Vedi blocco *Fase 20* sopra per il piano completo e le decisioni di
+design.
+
+**20g completata (2026-05-31)**: scelta di modellazione "C" (la più corretta).
+Il simulatore energetico ora espone l'**autoconsumo orario**
+(`last_self_consumption_kwh_by_year_month_hour`, stesso pattern della 20c per
+l'export). `MonteCarloSimulator` ha due flag indipendenti: `value_export`
+(valorizza l'immissione, ritiro dedicato) e `market_drives_purchase` (valorizza
+l'acquisto evitato al **retail orario di mercato** `wholesale·(1+markup)+fissi`,
+altrimenti resta il `PriceModel` semplice). `application.run_analysis` legge i
+toggle di scenario `dedicated_withdrawal` / `market_drives_purchase`, valida la
+coerenza (acquisto-da-mercato richiede un profilo con retail) ed espone il blocco
+`summary["market"]` (ricavo immissione, kWh, serie mensile). Frontend: step
+wizard "Mercato elettrico" (scelta semplice/simulato + picker profilo + i due
+toggle), input retail nel salvataggio del Lab, card "Ricavo da immissione" in
+Dashboard. Regole in `validation.py`; 3 test aggiunti in
+`tests/test_market_pricing.py`. Suite 585 verde; verificato end-to-end (UI +
+backend: scenario con mercato → ΔNPV positivo, `summary.market` popolato).
 
 **20f completata (2026-05-31)**: orchestrator `simulation/market_lab.py`
 (`MarketLabConfig`/`TechTrendSpec`/`MarketLabResult`, `run_market_lab` →
@@ -1315,8 +1335,6 @@ Nuovi campi `MonteCarloResults`: `monthly_export_kwh_paths`,
 `monthly_export_eur_paths`, `df_export`, `export_revenue_total_mean_eur`,
 `export_kwh_total_mean`. A mercato spento il run resta byte-identico.
 `tests/test_market_pricing.py` (22 test). Suite 550 verde.
-
-### ✅ Completate
 
 **Fase 19-bis — Laboratorio termico: accuratezza economica e diagnostica** — chiusa 2026-05-30 (suite verde, 482 test backend; build frontend OK; verificata end-to-end nel browser).
 

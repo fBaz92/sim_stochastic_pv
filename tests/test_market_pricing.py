@@ -393,6 +393,77 @@ def test_mc_export_revenue_folds_into_profit_and_savings():
     assert res_on.npv_median_eur >= res_off.npv_median_eur
 
 
+def test_energy_simulator_surfaces_hourly_self_consumption():
+    esim = _make_simulator(n_years=2)
+    rng = np.random.default_rng(0)
+    out = esim.run_one_path(rng)
+    self_cons = esim.last_self_consumption_kwh_by_year_month_hour
+    assert self_cons is not None
+    assert self_cons.shape == (2, 12, 24)
+    # Monthly self-consumption == load served by PV+battery == savings kWh
+    # (= monthly_load - monthly_grid_import). out tuple: [3]=grid_import,[4]=load.
+    monthly_grid_import = out[3]
+    monthly_load = out[4]
+    monthly_savings_kwh = monthly_load - monthly_grid_import
+    monthly_self_cons = self_cons.sum(axis=2).reshape(-1)
+    assert np.allclose(monthly_self_cons, monthly_savings_kwh, atol=1e-9)
+
+
+def test_mc_market_drives_purchase_matches_flat_retail():
+    """Flat market retail R must reproduce a flat PriceModel at R."""
+    esim = _make_simulator(n_years=2)
+    econ = EconomicConfig(investment_eur=9000.0, n_mc=4, inflation_rate=0.0)
+
+    # Flat wholesale 0.10, markup 0.5, fixed 0.05 → retail 0.20 EUR/kWh flat.
+    surface = _flat_surface(0.10, n_trajectories=3, n_years=2)
+    provider = MarketPriceProvider(
+        surface,
+        pmg_base_eur_per_kwh=0.0,
+        retail_markup_fraction=0.5,
+        retail_fixed_components_eur_per_kwh=0.05,
+    )
+    flat_price = EscalatingPriceModel(
+        base_price_eur_per_kwh=0.20,
+        annual_escalation=0.0,
+        use_stochastic_escalation=False,
+        seasonal_factors=[0.0] * 12,
+    )
+
+    baseline = MonteCarloSimulator(esim, flat_price, econ).run(seed=5, show_progress=False)
+    market = MonteCarloSimulator(
+        esim,
+        flat_price,
+        econ,
+        market_price_provider=provider,
+        value_export=False,  # isolate the purchase side
+        market_drives_purchase=True,
+    ).run(seed=5, show_progress=False)
+
+    # Same RNG, same kWh, flat retail == flat price → identical savings.
+    assert np.allclose(
+        baseline.monthly_savings_eur_paths, market.monthly_savings_eur_paths
+    )
+    # value_export=False → no export diagnostics surfaced.
+    assert market.df_export is None
+    assert market.monthly_export_eur_paths is None
+
+
+def test_mc_market_drives_purchase_requires_retail():
+    esim = _make_simulator(n_years=2)
+    econ = EconomicConfig(investment_eur=9000.0, n_mc=2, inflation_rate=0.0)
+    # Provider WITHOUT a retail configuration.
+    provider = MarketPriceProvider(_flat_surface(0.05, n_years=2))
+    sim = MonteCarloSimulator(
+        esim,
+        EscalatingPriceModel(use_stochastic_escalation=False),
+        econ,
+        market_price_provider=provider,
+        market_drives_purchase=True,
+    )
+    with pytest.raises(ValueError):
+        sim.run(seed=1, show_progress=False)
+
+
 def test_mc_with_real_built_surface_end_to_end():
     """Wiring works against an actual (small) market-built price surface."""
     esim = _make_simulator(n_years=2)

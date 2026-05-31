@@ -757,6 +757,25 @@
                                 <span class="decisione-hint">nominale, sull'orizzonte</span>
                             </div>
                         {/if}
+                        <!-- Card: dedicated-withdrawal export revenue. Shown
+                             only when a market profile valued the PV export. -->
+                        {#if s.market?.export_revenue_total_mean_eur != null && s.market.export_revenue_total_mean_eur > 0}
+                            <div class="card decisione-card">
+                                <span class="decisione-label">Ricavo da immissione</span>
+                                <span class="decisione-value text-success">
+                                    € {s.market.export_revenue_total_mean_eur.toFixed(0)}
+                                </span>
+                                <span class="decisione-hint">
+                                    ritiro dedicato
+                                    {#if s.market.export_kwh_total_mean}
+                                        · {Math.round(s.market.export_kwh_total_mean).toLocaleString("it-IT")} kWh
+                                    {/if}
+                                    {#if s.market.market_drives_purchase}
+                                        · mercato guida l'acquisto
+                                    {/if}
+                                </span>
+                            </div>
+                        {/if}
                     </div>
                 </section>
             {/if}

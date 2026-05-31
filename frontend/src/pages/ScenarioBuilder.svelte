@@ -551,6 +551,18 @@
     // ── Step 4 — Mercato ───────────────────────────────────────────────────
     let priceModelType = "escalating"; // "escalating" | "gbm" | "mean_reverting"
 
+    // Market coupling: "simple" price model vs a saved simulated-market
+    // profile (designed in the "Mercato elettrico" lab). The two toggles are
+    // independent: dedicated withdrawal values the PV export, and "market
+    // drives purchase" values the avoided grid purchase at the market retail.
+    let marketMode = "simple"; // "simple" | "market"
+    let marketProfiles = [];
+    let selectedMarketProfileId = null;
+    let dedicatedWithdrawal = true;
+    let marketDrivesPurchase = false;
+    $: selectedMarketProfile =
+        marketProfiles.find((p) => String(p.id) === String(selectedMarketProfileId)) ?? null;
+
     // Shared
     let basePriceEur = 0.25;
 
@@ -603,7 +615,7 @@
     // ── Initialise remote data ─────────────────────────────────────────────
     onMount(async () => {
         try {
-            const [sp, inv, bat, lp, configs, pan, climate] = await Promise.all([
+            const [sp, inv, bat, lp, configs, pan, climate, market] = await Promise.all([
                 api.listSolarProfiles(),
                 api.listInverters(),
                 api.listBatteries(),
@@ -611,6 +623,7 @@
                 api.listConfigurations("scenario"),
                 api.listPanels(),
                 api.listClimateProfiles().catch(() => []),
+                api.listMarketProfiles().catch(() => []),
             ]);
             solarProfiles = sp;
             inverters = inv;
@@ -619,6 +632,7 @@
             savedScenarios = configs;
             panels = pan;
             climateProfiles = climate;
+            marketProfiles = market;
         } catch (e) {
             console.error("Failed to load initial data:", e);
         }
@@ -872,6 +886,15 @@
             }
         }
 
+        // Electricity-market coupling: reference a saved market profile and
+        // set the two independent toggles. Omitted entirely when the user
+        // keeps the simple price model, so the run stays byte-identical.
+        if (marketMode === "market" && selectedMarketProfileId) {
+            scenarioClone.market_profile_id = Number(selectedMarketProfileId);
+            scenarioClone.dedicated_withdrawal = dedicatedWithdrawal;
+            scenarioClone.market_drives_purchase = marketDrivesPurchase;
+        }
+
         return {
             n_mc: nMc,
             scenario: scenarioClone,
@@ -1036,6 +1059,16 @@
                 }
             }
 
+            // Step 4 — simulated-market coupling (optional).
+            if (d.market_profile_id != null) {
+                marketMode = "market";
+                selectedMarketProfileId = d.market_profile_id;
+                dedicatedWithdrawal = d.dedicated_withdrawal ?? true;
+                marketDrivesPurchase = d.market_drives_purchase ?? false;
+            } else {
+                marketMode = "simple";
+            }
+
             // Step 5 — Investimento
             investmentEur = d.economic?.investment_eur ?? investmentEur;
             nMc = d.economic?.n_mc ?? nMc;
@@ -1106,6 +1139,12 @@
                     ? `Mean-rev kappa=${mrMeanRevSpeed} lt=${mrLongTermPrice.toFixed(3)} €/kWh`
                     : `Deterministico ${(annualEscalation * 100).toFixed(1)}%/anno`],
         ["Prezzo base", `€ ${basePriceEur.toFixed(3)}/kWh`],
+        ["Mercato simulato",
+            marketMode === "market" && selectedMarketProfile
+                ? `${selectedMarketProfile.name}` +
+                  (dedicatedWithdrawal ? " · ritiro dedicato" : "") +
+                  (marketDrivesPurchase ? " · guida l'acquisto" : "")
+                : "No (prezzo semplice)"],
         ["Investimento", `€ ${investmentEur.toLocaleString("it-IT")}`],
         ["Orizzonte", `${nYears} anni`],
         ["Campioni MC", nMc.toLocaleString("it-IT")],
@@ -2039,6 +2078,64 @@
                     <input id="mr-vol" class="input" type="number" step="0.005" min="0" bind:value={mrVolatility} />
                     <p class="hint">{(mrVolatility * 100).toFixed(2)} %/anno</p>
                 </div>
+            {/if}
+
+            <div class="divider"></div>
+            <h3 class="section-title">Mercato elettrico simulato (opzionale)</h3>
+            <p class="step-desc">
+                Aggancia uno scenario di mercato salvato nel
+                <a href="#/market">Lab Mercato elettrico</a>: valorizza
+                l'immissione con il ritiro dedicato e, opzionalmente, fa
+                guidare anche l'acquisto dal prezzo di mercato orario. Il
+                modello prezzo qui sopra resta il prezzo retail di riferimento
+                (usato per l'autoconsumo quando il mercato non guida l'acquisto).
+            </p>
+
+            <div class="form-group">
+                <label class="checkbox-label">
+                    <input type="radio" bind:group={marketMode} value="simple" />
+                    Solo modello prezzo semplice
+                </label>
+                <label class="checkbox-label">
+                    <input type="radio" bind:group={marketMode} value="market" />
+                    Usa un profilo di mercato simulato
+                </label>
+            </div>
+
+            {#if marketMode === "market"}
+                {#if marketProfiles.length === 0}
+                    <p class="hint">
+                        Nessun profilo di mercato salvato. Creane uno nel
+                        <a href="#/market">Lab Mercato elettrico</a> e torna qui.
+                    </p>
+                {:else}
+                    <div class="form-group">
+                        <label class="label" for="market-profile">Profilo di mercato</label>
+                        <select id="market-profile" class="select" bind:value={selectedMarketProfileId}>
+                            <option value={null} disabled>— seleziona —</option>
+                            {#each marketProfiles as p}
+                                <option value={p.id}>{p.name}</option>
+                            {/each}
+                        </select>
+                        {#if selectedMarketProfile?.description}
+                            <p class="hint">{selectedMarketProfile.description}</p>
+                        {/if}
+                    </div>
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" bind:checked={dedicatedWithdrawal} />
+                            Ritiro dedicato — valorizza l'immissione a max(prezzo di mercato, PMG)
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" bind:checked={marketDrivesPurchase} />
+                            Il mercato guida anche l'acquisto (prezzo retail orario di mercato)
+                        </label>
+                        <p class="hint">
+                            "Il mercato guida l'acquisto" richiede un profilo con
+                            tariffa retail configurata (markup + componenti fisse).
+                        </p>
+                    </div>
+                {/if}
             {/if}
         </div>
 
