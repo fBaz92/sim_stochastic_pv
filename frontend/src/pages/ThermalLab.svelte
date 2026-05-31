@@ -63,7 +63,23 @@
     let nightSetbackEnabled = false;
     let tNight = 17.0;
 
-    let price = 0.25;
+    // Energy price (Phase 19-bis): a flat scalar, or a PriceModel
+    // (escalation / GBM / mean-reverting) that spreads the cost band.
+    let priceMode = "fixed"; // fixed | escalating | gbm | mean_reverting
+    let priceBase = 0.25; // €/kWh, also the model's base price
+    let priceEscalationPct = 2.0; // %/yr (escalating)
+    let priceDriftPct = 2.5; // %/yr (gbm)
+    let priceVolPct = 10.0; // %/yr (gbm / mean_reverting)
+    let priceMrLongTerm = 0.30; // €/kWh (mean_reverting equilibrium)
+    let priceMrSpeed = 0.3; // /yr (mean_reverting)
+
+    const PRICE_MODES = [
+        { key: "fixed", label: "Fisso" },
+        { key: "escalating", label: "Escalation" },
+        { key: "gbm", label: "GBM (random walk)" },
+        { key: "mean_reverting", label: "Mean-reverting" },
+    ];
+
     let nPaths = 30;
     let nYears = 1;
     let seed = 42;
@@ -77,6 +93,13 @@
     // ── Timeseries preview state ──────────────────────────────────────────────
     let tsVariantIndex = 0;
     let tsDays = 14;
+    let tsStartDay = 0; // day-of-year window start (season selector)
+    const SEASON_OPTIONS = [
+        { day: 0, label: "Inverno (gen)" },
+        { day: 90, label: "Primavera (apr)" },
+        { day: 181, label: "Estate (lug)" },
+        { day: 273, label: "Autunno (ott)" },
+    ];
     let timeseries = null;
     let tsRunning = false;
     let tsError = null;
@@ -147,14 +170,52 @@
         return sp;
     }
 
+    /** Optional PriceModel block, or null when the price is a flat scalar. */
+    function buildPriceBlock() {
+        if (priceMode === "fixed") return null;
+        const block = { model_type: priceMode, base_price_eur_per_kwh: priceBase };
+        if (priceMode === "escalating") {
+            block.annual_escalation = priceEscalationPct / 100;
+            block.use_stochastic_escalation = true;
+        } else if (priceMode === "gbm") {
+            block.drift_annual = priceDriftPct / 100;
+            block.volatility_annual = priceVolPct / 100;
+        } else if (priceMode === "mean_reverting") {
+            block.long_term_price_eur_per_kwh = priceMrLongTerm;
+            block.mean_reversion_speed_annual = priceMrSpeed;
+            block.volatility_annual = priceVolPct / 100;
+        }
+        return block;
+    }
+
+    /** Full request body shared by the compare run and the file exports. */
+    function buildComparePayload() {
+        return {
+            climate_profile_id: selectedClimateId,
+            n_paths: nPaths,
+            n_years: nYears,
+            seed,
+            dynamic,
+            home_hours_of_day: buildHomeHours(),
+            electricity_price_eur_per_kwh: priceBase,
+            price: buildPriceBlock(),
+            heat_pump: {
+                cop_heating: copHeating,
+                cop_cooling: copCooling,
+                p_elec_max_kw: pElecMax,
+            },
+            setpoint: buildSetpoint(),
+            house_variants: buildVariants(),
+        };
+    }
+
     async function runCompare() {
         runError = null;
         if (!selectedClimateId) {
             runError = "Seleziona un profilo climatico.";
             return;
         }
-        const variants = buildVariants();
-        if (variants.length === 0) {
+        if (buildVariants().length === 0) {
             runError = "Seleziona almeno una configurazione di casa.";
             return;
         }
@@ -162,29 +223,31 @@
         result = null;
         timeseries = null;
         try {
-            const payload = {
-                climate_profile_id: selectedClimateId,
-                n_paths: nPaths,
-                n_years: nYears,
-                seed,
-                dynamic,
-                home_hours_of_day: buildHomeHours(),
-                electricity_price_eur_per_kwh: price,
-                heat_pump: {
-                    cop_heating: copHeating,
-                    cop_cooling: copCooling,
-                    p_elec_max_kw: pElecMax,
-                },
-                setpoint: buildSetpoint(),
-                house_variants: variants,
-            };
-            result = await api.compareThermalLab(payload);
+            result = await api.compareThermalLab(buildComparePayload());
             tsVariantIndex = 0;
             await runTimeseries();
         } catch (e) {
             runError = e.message;
         } finally {
             running = false;
+        }
+    }
+
+    let exporting = null; // 'xlsx' | 'pdf' | null
+    let exportError = null;
+
+    async function doExport(kind) {
+        if (!result) return;
+        exportError = null;
+        exporting = kind;
+        try {
+            const payload = buildComparePayload();
+            if (kind === "xlsx") await api.exportThermalLabXlsx(payload);
+            else await api.exportThermalLabPdf(payload);
+        } catch (e) {
+            exportError = e.message;
+        } finally {
+            exporting = null;
         }
     }
 
@@ -199,6 +262,7 @@
             timeseries = await api.previewThermalTimeseries({
                 climate_profile_id: selectedClimateId,
                 n_days: tsDays,
+                start_day: tsStartDay,
                 seed,
                 dynamic,
                 home_hours_of_day: buildHomeHours(),
@@ -222,13 +286,15 @@
         if (!result) return;
         const header = [
             "configurazione", "UA_kW_per_C", "kWh_anno_medio", "kWh_anno_p05",
-            "kWh_anno_p95", "costo_eur_anno_medio", "comfort_breach_h_anno",
+            "kWh_anno_p95", "risc_kWh_anno", "raffr_kWh_anno",
+            "costo_eur_anno_medio", "comfort_breach_h_anno",
             "picco_kW", "T_interna_min_C", "T_interna_max_C",
             "giorno_peggiore_riscaldamento", "giorno_peggiore_raffrescamento",
         ];
         const rows = result.variants.map((v) => [
             v.label, v.ua_kw_per_c.toFixed(3), v.hvac_kwh_annual_mean.toFixed(1),
             v.hvac_kwh_annual_p05.toFixed(1), v.hvac_kwh_annual_p95.toFixed(1),
+            v.heating_kwh_annual_mean.toFixed(1), v.cooling_kwh_annual_mean.toFixed(1),
             v.annual_cost_eur_mean.toFixed(1), v.comfort_breach_hours_per_year_mean.toFixed(1),
             v.p_elec_hvac_peak_kw_mean.toFixed(2),
             dynamic ? v.t_in_min_c.toFixed(1) : "—",
@@ -604,12 +670,59 @@
             {/if}
 
             <div class="divider"></div>
-            <h3 class="sub">Simulazione</h3>
+            <h3 class="sub">Prezzo energia</h3>
             <div class="grid-mini">
                 <div class="form-group">
-                    <label class="label" for="price">Prezzo energia (€/kWh)</label>
-                    <input id="price" class="input" type="number" step="0.01" min="0" bind:value={price} />
+                    <label class="label" for="pmode">Modello</label>
+                    <select id="pmode" class="select" bind:value={priceMode}>
+                        {#each PRICE_MODES as m}
+                            <option value={m.key}>{m.label}</option>
+                        {/each}
+                    </select>
                 </div>
+                <div class="form-group">
+                    <label class="label" for="pbase">{priceMode === "fixed" ? "Prezzo (€/kWh)" : "Prezzo base (€/kWh)"}</label>
+                    <input id="pbase" class="input" type="number" step="0.01" min="0" bind:value={priceBase} />
+                </div>
+                {#if priceMode === "escalating"}
+                    <div class="form-group">
+                        <label class="label" for="pesc">Escalation (%/anno)</label>
+                        <input id="pesc" class="input" type="number" step="0.5" bind:value={priceEscalationPct} />
+                    </div>
+                {:else if priceMode === "gbm"}
+                    <div class="form-group">
+                        <label class="label" for="pdrift">Drift (%/anno)</label>
+                        <input id="pdrift" class="input" type="number" step="0.5" bind:value={priceDriftPct} />
+                    </div>
+                    <div class="form-group">
+                        <label class="label" for="pvol">Volatilità (%/anno)</label>
+                        <input id="pvol" class="input" type="number" step="1" min="0" bind:value={priceVolPct} />
+                    </div>
+                {:else if priceMode === "mean_reverting"}
+                    <div class="form-group">
+                        <label class="label" for="pmrl">Prezzo equilibrio (€/kWh)</label>
+                        <input id="pmrl" class="input" type="number" step="0.01" min="0" bind:value={priceMrLongTerm} />
+                    </div>
+                    <div class="form-group">
+                        <label class="label" for="pmrs">Velocità rientro (/anno)</label>
+                        <input id="pmrs" class="input" type="number" step="0.05" min="0" bind:value={priceMrSpeed} />
+                    </div>
+                    <div class="form-group">
+                        <label class="label" for="pvol2">Volatilità (%/anno)</label>
+                        <input id="pvol2" class="input" type="number" step="1" min="0" bind:value={priceVolPct} />
+                    </div>
+                {/if}
+            </div>
+            {#if priceMode !== "fixed"}
+                <p class="text-meta">
+                    Con un modello stocastico la banda di costo p05–p95 riflette
+                    l'incertezza del prezzo su {nYears} anno/i, non solo l'energia.
+                </p>
+            {/if}
+
+            <div class="divider"></div>
+            <h3 class="sub">Simulazione</h3>
+            <div class="grid-mini">
                 <div class="form-group">
                     <label class="label" for="np">Path MC</label>
                     <input id="np" class="input" type="number" min="1" max="200" bind:value={nPaths} />
@@ -654,8 +767,19 @@
                 <div class="card">
                     <div class="header-actions">
                         <h2 class="section-title" style="border:none;margin:0;">Confronto KPI</h2>
-                        <button class="btn btn-outline btn-sm" on:click={exportCsv}>Scarica CSV</button>
+                        <div class="export-actions">
+                            <button class="btn btn-outline btn-sm" on:click={exportCsv}>CSV</button>
+                            <button class="btn btn-outline btn-sm" on:click={() => doExport("xlsx")} disabled={exporting}>
+                                {exporting === "xlsx" ? "…" : "Excel"}
+                            </button>
+                            <button class="btn btn-outline btn-sm" on:click={() => doExport("pdf")} disabled={exporting}>
+                                {exporting === "pdf" ? "…" : "PDF"}
+                            </button>
+                        </div>
                     </div>
+                    {#if exportError}
+                        <div class="info-box error">Export non riuscito: {exportError}</div>
+                    {/if}
                     <div class="table-wrap">
                         <table class="kpi-table">
                             <thead>
@@ -663,6 +787,7 @@
                                     <th>Configurazione</th>
                                     <th>UA (kW/°C)</th>
                                     <th>kWh/anno</th>
+                                    <th>Risc./Raffr. (kWh)</th>
                                     <th>Costo (€/anno)</th>
                                     <th>Breach (h/anno)</th>
                                     <th>Picco (kW)</th>
@@ -681,7 +806,11 @@
                                             {v.hvac_kwh_annual_mean.toFixed(0)}
                                             <span class="text-meta">({v.hvac_kwh_annual_p05.toFixed(0)}–{v.hvac_kwh_annual_p95.toFixed(0)})</span>
                                         </td>
-                                        <td>{v.annual_cost_eur_mean.toFixed(0)}</td>
+                                        <td>{v.heating_kwh_annual_mean.toFixed(0)} / {v.cooling_kwh_annual_mean.toFixed(0)}</td>
+                                        <td>
+                                            {v.annual_cost_eur_mean.toFixed(0)}
+                                            <span class="text-meta">({v.annual_cost_eur_p05.toFixed(0)}–{v.annual_cost_eur_p95.toFixed(0)})</span>
+                                        </td>
                                         <td class:warn={v.comfort_breach_hours_per_year_mean > 0}>
                                             {v.comfort_breach_hours_per_year_mean.toFixed(0)}
                                         </td>
@@ -736,12 +865,17 @@
                 <div class="card">
                     <div class="header-actions">
                         <h2 class="section-title" style="border:none;margin:0;">
-                            Anteprima oraria ({tsDays} giorni, inverno)
+                            Anteprima oraria ({tsDays} giorni)
                         </h2>
                         <div class="ts-controls">
                             <select class="select select-sm" bind:value={tsVariantIndex} on:change={runTimeseries}>
                                 {#each result.variants as v, idx}
                                     <option value={idx}>{v.label}</option>
+                                {/each}
+                            </select>
+                            <select class="select select-sm" bind:value={tsStartDay} on:change={runTimeseries}>
+                                {#each SEASON_OPTIONS as s}
+                                    <option value={s.day}>{s.label}</option>
                                 {/each}
                             </select>
                         </div>
@@ -853,6 +987,7 @@
         margin-right: 0.4rem;
         vertical-align: middle;
     }
+    .export-actions { display: flex; gap: 0.4rem; }
     .ts-controls { display: flex; gap: 0.5rem; }
     .select-sm { width: auto; padding: 0.3rem 0.5rem; font-size: 0.85rem; }
     .info-box {

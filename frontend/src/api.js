@@ -18,6 +18,32 @@ async function request(endpoint, options = {}) {
     return response.json();
 }
 
+/**
+ * POST a JSON payload and trigger a browser download of the binary response.
+ * Used by the thermal-lab Excel/PDF exports, which need a POST body (the
+ * full comparison config) rather than a simple GET URL.
+ */
+async function downloadPost(endpoint, payload, filename) {
+    const response = await fetch(`${API_BASE}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({ detail: response.statusText }));
+        throw new Error(err.detail || 'Export failed');
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
 export const api = {
     // ── Hardware ──────────────────────────────────────────────────────────
     listInverters: () => request('/inverters'),
@@ -129,6 +155,12 @@ export const api = {
             method: 'POST',
             body: JSON.stringify(payload),
         });
+    },
+    async exportThermalLabXlsx(payload) {
+        return downloadPost('/thermal-lab/compare/export.xlsx', payload, 'laboratorio_termico.xlsx');
+    },
+    async exportThermalLabPdf(payload) {
+        return downloadPost('/thermal-lab/compare/export.pdf', payload, 'laboratorio_termico.pdf');
     },
 
     // ── Configurations ────────────────────────────────────────────────────

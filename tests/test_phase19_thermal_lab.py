@@ -463,3 +463,277 @@ class TestThermalLabAPI:
         body = resp.json()
         # Overnight away hours have no setback ⇒ null setpoints in the payload.
         assert any(x is None for x in body["t_set_heating_c"])
+
+
+# ---------------------------------------------------------------------------
+# 4. Report exporters (Excel + PDF)
+# ---------------------------------------------------------------------------
+
+
+def _sample_report() -> dict:
+    """A minimal compare-response-shaped mapping for the exporters."""
+    return {
+        "days": list(range(365)),
+        "daily_outdoor_mean_c": [10.0] * 365,
+        "n_paths": 8,
+        "n_years": 1,
+        "climate_name": "Test Location",
+        "dynamic": True,
+        "electricity_price_eur_per_kwh": 0.25,
+        "variants": [
+            {
+                "label": "poor", "ua_kw_per_c": 0.25,
+                "hvac_kwh_annual_mean": 5000.0, "hvac_kwh_annual_p05": 4800.0,
+                "hvac_kwh_annual_p95": 5200.0, "annual_cost_eur_mean": 1250.0,
+                "annual_cost_eur_p05": 1200.0, "annual_cost_eur_p95": 1300.0,
+                "comfort_breach_hours_per_year_mean": 12.0,
+                "p_elec_hvac_peak_kw_mean": 2.5, "t_in_min_c": 18.0, "t_in_max_c": 26.0,
+                "daily_hvac_kwh": [13.7] * 365,
+                "daily_indoor_min_c": [19.0] * 365, "daily_indoor_max_c": [21.0] * 365,
+                "worst_heating_day_index": 10, "worst_cooling_day_index": None,
+            },
+            {
+                "label": "good", "ua_kw_per_c": 0.08,
+                "hvac_kwh_annual_mean": 1800.0, "hvac_kwh_annual_p05": 1700.0,
+                "hvac_kwh_annual_p95": 1900.0, "annual_cost_eur_mean": 450.0,
+                "annual_cost_eur_p05": 425.0, "annual_cost_eur_p95": 475.0,
+                "comfort_breach_hours_per_year_mean": 0.0,
+                "p_elec_hvac_peak_kw_mean": 0.8, "t_in_min_c": 20.0, "t_in_max_c": 26.0,
+                "daily_hvac_kwh": [4.9] * 365,
+                "daily_indoor_min_c": [20.0] * 365, "daily_indoor_max_c": [22.0] * 365,
+                "worst_heating_day_index": 10, "worst_cooling_day_index": None,
+            },
+        ],
+    }
+
+
+class TestThermalLabExporters:
+    def test_xlsx_exporter_produces_valid_workbook(self) -> None:
+        import io
+        from openpyxl import load_workbook
+        from sim_stochastic_pv.output.exporters import build_thermal_lab_xlsx
+
+        buf = io.BytesIO()
+        build_thermal_lab_xlsx(_sample_report(), buf)
+        buf.seek(0)
+        wb = load_workbook(buf)
+        assert "Confronto KPI" in wb.sheetnames
+        assert "Serie giornaliera" in wb.sheetnames
+        # Dynamic report ⇒ indoor-temperature sheet present.
+        assert "Temperatura interna" in wb.sheetnames
+        # 365 data rows + 1 header on the daily sheet.
+        assert wb["Serie giornaliera"].max_row == 366
+
+    def test_xlsx_exporter_rejects_empty_report(self) -> None:
+        import io
+        from sim_stochastic_pv.output.exporters import build_thermal_lab_xlsx
+
+        with pytest.raises(ValueError, match="no variants"):
+            build_thermal_lab_xlsx({"variants": []}, io.BytesIO())
+
+    def test_pdf_exporter_produces_pdf_bytes(self) -> None:
+        import io
+        from sim_stochastic_pv.output.exporters import build_thermal_lab_pdf
+
+        buf = io.BytesIO()
+        build_thermal_lab_pdf(_sample_report(), buf)
+        buf.seek(0)
+        head = buf.read(5)
+        assert head == b"%PDF-", "output is not a PDF"
+
+    def test_compare_export_xlsx_endpoint(self, persistence) -> None:
+        profile_id = _save_climate_profile(persistence, _build_model())
+        client = _create_test_client(persistence)
+        resp = client.post(
+            "/api/thermal-lab/compare/export.xlsx",
+            json={
+                "climate_profile_id": profile_id,
+                "n_paths": 6,
+                "seed": 0,
+                "house_variants": [{"label": "poor", "insulation_preset": "poor"}],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert "spreadsheetml" in resp.headers["content-type"]
+        # XLSX files are ZIP archives → magic bytes "PK".
+        assert resp.content[:2] == b"PK"
+
+    def test_compare_export_xlsx_404(self, persistence) -> None:
+        client = _create_test_client(persistence)
+        resp = client.post(
+            "/api/thermal-lab/compare/export.xlsx",
+            json={
+                "climate_profile_id": 9999,
+                "house_variants": [{"label": "x", "insulation_preset": "good"}],
+            },
+        )
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 5. Phase 19-bis — price coupling, heating/cooling split, preview window
+# ---------------------------------------------------------------------------
+
+
+def _one_variant_config(**kwargs) -> ThermalLabConfig:
+    return ThermalLabConfig(
+        house_variants=(HouseVariant("poor", HouseThermalConfig(insulation_preset="poor")),),
+        heat_pump=HeatPumpConfig(p_elec_max_kw=8.0),
+        setpoint=SetpointConfig(),
+        **kwargs,
+    )
+
+
+class TestPhase19BisPriceCoupling:
+    def test_scalar_cost_unchanged_without_price_model(self) -> None:
+        """No price model ⇒ cost is exactly annual kWh × scalar price."""
+        model = _build_model()
+        cfg = _one_variant_config(electricity_price_eur_per_kwh=0.30)
+        res = compare_house_variants(model, cfg, n_paths=12, seed=0)
+        v = res.variants[0]
+        assert v.annual_cost_eur_mean == pytest.approx(v.hvac_kwh_annual_mean * 0.30)
+
+    def test_gbm_widens_cost_band(self) -> None:
+        """A volatile GBM price spreads the cost p05–p95 band far beyond the
+        (energy-only) scalar band."""
+        from sim_stochastic_pv.simulation.prices import GBMPriceModel
+
+        model = _build_model()
+        cfg = _one_variant_config(electricity_price_eur_per_kwh=0.25)
+        scalar = compare_house_variants(model, cfg, n_paths=40, n_years=5, seed=0)
+        gbm_model = GBMPriceModel(
+            base_price_eur_per_kwh=0.25, drift_annual=0.03, volatility_annual=0.25
+        )
+        gbm = compare_house_variants(
+            model, cfg, n_paths=40, n_years=5, seed=0, price_model=gbm_model
+        )
+        sv = scalar.variants[0]
+        gv = gbm.variants[0]
+        scalar_width = sv.annual_cost_eur_p95 - sv.annual_cost_eur_p05
+        gbm_width = gv.annual_cost_eur_p95 - gv.annual_cost_eur_p05
+        assert gbm_width > 3.0 * scalar_width
+
+    def test_price_model_reproducible_with_seed(self) -> None:
+        from sim_stochastic_pv.simulation.prices import GBMPriceModel
+
+        model = _build_model()
+        cfg = _one_variant_config()
+        make = lambda: GBMPriceModel(  # noqa: E731
+            base_price_eur_per_kwh=0.25, drift_annual=0.03, volatility_annual=0.2
+        )
+        a = compare_house_variants(model, cfg, n_paths=10, n_years=3, seed=7, price_model=make())
+        b = compare_house_variants(model, cfg, n_paths=10, n_years=3, seed=7, price_model=make())
+        assert a.variants[0].annual_cost_eur_mean == b.variants[0].annual_cost_eur_mean
+        assert a.variants[0].annual_cost_eur_p95 == b.variants[0].annual_cost_eur_p95
+
+    def test_escalating_price_raises_mean_cost(self) -> None:
+        """A deterministic escalation over several years lifts the mean annual
+        cost above the flat-price case."""
+        from sim_stochastic_pv.simulation.prices import EscalatingPriceModel
+
+        model = _build_model()
+        cfg = _one_variant_config(electricity_price_eur_per_kwh=0.25)
+        flat = compare_house_variants(model, cfg, n_paths=20, n_years=10, seed=0)
+        esc_model = EscalatingPriceModel(
+            base_price_eur_per_kwh=0.25,
+            annual_escalation=0.05,
+            use_stochastic_escalation=False,
+        )
+        esc = compare_house_variants(
+            model, cfg, n_paths=20, n_years=10, seed=0, price_model=esc_model
+        )
+        assert esc.variants[0].annual_cost_eur_mean > flat.variants[0].annual_cost_eur_mean
+
+
+class TestPhase19BisHeatingCoolingSplit:
+    def test_split_sums_to_total_in_steady_state(self) -> None:
+        model = _build_model()
+        cfg = _one_variant_config()
+        res = compare_house_variants(model, cfg, n_paths=10, seed=0)
+        v = res.variants[0]
+        assert v.heating_kwh_annual_mean + v.cooling_kwh_annual_mean == pytest.approx(
+            v.hvac_kwh_annual_mean, rel=1e-6
+        )
+
+    def test_cold_climate_is_heating_dominated(self) -> None:
+        """A cold climate is overwhelmingly heating — cooling is negligible
+        (only rare warm summer afternoons ever exceed the cooling setpoint)."""
+        model = _build_model(a0=6.0, a1=-12.0)
+        cfg = _one_variant_config()
+        res = compare_house_variants(model, cfg, n_paths=10, seed=0)
+        v = res.variants[0]
+        assert v.heating_kwh_annual_mean > 0.0
+        assert v.cooling_kwh_annual_mean < 0.01 * v.heating_kwh_annual_mean
+
+    def test_hot_climate_has_cooling(self) -> None:
+        model = _build_model(a0=24.0, a1=-10.0)
+        cfg = _one_variant_config()
+        res = compare_house_variants(model, cfg, n_paths=10, seed=0)
+        v = res.variants[0]
+        assert v.cooling_kwh_annual_mean > 0.0
+
+
+class TestPhase19BisPreviewWindow:
+    def test_summer_window_warmer_than_winter(self) -> None:
+        model = _build_model(a0=22.0, a1=-12.0)
+        common = dict(
+            house=HouseThermalConfig(insulation_preset="poor"),
+            heat_pump=HeatPumpConfig(p_elec_max_kw=8.0),
+            setpoint=SetpointConfig(),
+            dynamic=False,
+            n_days=10,
+            seed=1,
+        )
+        winter = simulate_thermal_timeseries(model, start_day=0, **common)
+        summer = simulate_thermal_timeseries(model, start_day=181, **common)
+        assert summer.t_outdoor_c.mean() > winter.t_outdoor_c.mean() + 5.0
+
+    def test_invalid_start_day_raises(self) -> None:
+        model = _build_model()
+        with pytest.raises(ValueError, match="start_day"):
+            simulate_thermal_timeseries(
+                model,
+                house=HouseThermalConfig(),
+                heat_pump=HeatPumpConfig(),
+                setpoint=SetpointConfig(),
+                start_day=400,
+            )
+
+
+class TestPhase19BisAPI:
+    def test_compare_with_price_block(self, persistence) -> None:
+        profile_id = _save_climate_profile(persistence, _build_model())
+        client = _create_test_client(persistence)
+        resp = client.post(
+            "/api/thermal-lab/compare",
+            json={
+                "climate_profile_id": profile_id,
+                "n_paths": 12,
+                "n_years": 3,
+                "seed": 0,
+                "price": {"model_type": "gbm", "base_price_eur_per_kwh": 0.25,
+                          "drift_annual": 0.03, "volatility_annual": 0.25},
+                "house_variants": [{"label": "poor", "insulation_preset": "poor"}],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        v = resp.json()["variants"][0]
+        # New fields present and the cost band is non-degenerate (price spread).
+        assert "heating_kwh_annual_mean" in v and "cooling_kwh_annual_mean" in v
+        assert v["annual_cost_eur_p95"] > v["annual_cost_eur_p05"]
+
+    def test_timeseries_with_start_day(self, persistence) -> None:
+        profile_id = _save_climate_profile(persistence, _build_model())
+        client = _create_test_client(persistence)
+        resp = client.post(
+            "/api/thermal-lab/timeseries",
+            json={
+                "climate_profile_id": profile_id,
+                "n_days": 7,
+                "start_day": 181,
+                "dynamic": False,
+                "house": {"insulation_preset": "standard"},
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert len(resp.json()["hours"]) == 7 * 24

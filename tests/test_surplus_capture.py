@@ -22,9 +22,7 @@ from sim_stochastic_pv.simulation.solar import (
     SolarModel,
     make_default_solar_params_for_pavullo,
 )
-from sim_stochastic_pv.simulation.load_profiles import (
-    make_flat_monthly_load_profiles,
-)
+from sim_stochastic_pv.simulation.load_profiles import MonthlyAverageLoadProfile
 
 
 # ── Inverter-level balance (deterministic) ────────────────────────────────
@@ -103,8 +101,8 @@ def test_no_surplus_no_export() -> None:
 # ── Simulator-level accounting ────────────────────────────────────────────
 
 def _make_simulator(n_years=1, pv_kwp=3.0, inverter_p_ac_max_kw=3.0, **kwargs):
-    solar_model = SolarModel(make_default_solar_params_for_pavullo())
-    load_profile = make_flat_monthly_load_profiles(daily_kwh=5.0)
+    solar_model = SolarModel(month_params=make_default_solar_params_for_pavullo())
+    load_profile = MonthlyAverageLoadProfile(daily_kwh=1.5)
     config = EnergySystemConfig(
         n_years=n_years,
         pv_kwp=pv_kwp,

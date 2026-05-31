@@ -65,6 +65,38 @@ class HouseVariantSchema(BaseModel):
     internal_gains_kw: Annotated[float, Field(ge=0.0)] = 0.0
 
 
+class ThermalLabPriceSchema(BaseModel):
+    """
+    Optional electricity price model (Phase 19-bis).
+
+    Maps to the same ``price`` block consumed by
+    :func:`scenario_builder.build_default_price_model`. When present on a
+    compare request the annual HVAC cost is computed against this model
+    (per-path price trajectory); when absent the flat
+    ``electricity_price_eur_per_kwh`` scalar is used.
+
+    Attributes:
+        model_type: ``"escalating"`` (deterministic + jitter), ``"gbm"``
+            (geometric Brownian motion) or ``"mean_reverting"`` (OU).
+        base_price_eur_per_kwh: Starting price (€/kWh).
+        annual_escalation: Yearly escalation for the ``escalating`` model.
+        use_stochastic_escalation: Whether the escalating model adds jitter.
+        drift_annual: Log-drift for GBM (or OU).
+        volatility_annual: Annual volatility for GBM / OU.
+        long_term_price_eur_per_kwh: OU equilibrium (defaults to base).
+        mean_reversion_speed_annual: OU reversion speed.
+    """
+
+    model_type: Annotated[str, Field(max_length=40)] = "gbm"
+    base_price_eur_per_kwh: Annotated[float, Field(gt=0.0)] = 0.25
+    annual_escalation: float = 0.02
+    use_stochastic_escalation: bool = True
+    drift_annual: float = 0.025
+    volatility_annual: Annotated[float, Field(ge=0.0)] = 0.10
+    long_term_price_eur_per_kwh: Optional[Annotated[float, Field(gt=0.0)]] = None
+    mean_reversion_speed_annual: Annotated[float, Field(ge=0.0)] = 0.30
+
+
 # ---------------------------------------------------------------------------
 # Compare endpoint
 # ---------------------------------------------------------------------------
@@ -80,6 +112,7 @@ class ThermalLabCompareRequest(BaseModel):
     dynamic: bool = False
     home_hours_of_day: Optional[list[Annotated[int, Field(ge=0, le=23)]]] = None
     electricity_price_eur_per_kwh: Annotated[float, Field(ge=0.0)] = 0.25
+    price: Optional[ThermalLabPriceSchema] = None
     heat_pump: HeatPumpSchema = Field(default_factory=HeatPumpSchema)
     setpoint: SetpointSchema = Field(default_factory=SetpointSchema)
     house_variants: Annotated[list[HouseVariantSchema], Field(min_length=1)]
@@ -93,6 +126,8 @@ class ThermalVariantResultSchema(BaseModel):
     hvac_kwh_annual_mean: float
     hvac_kwh_annual_p05: float
     hvac_kwh_annual_p95: float
+    heating_kwh_annual_mean: float
+    cooling_kwh_annual_mean: float
     annual_cost_eur_mean: float
     annual_cost_eur_p05: float
     annual_cost_eur_p95: float
@@ -130,6 +165,7 @@ class ThermalTimeseriesRequest(BaseModel):
     seed: int = 42
     dynamic: bool = True
     home_hours_of_day: Optional[list[Annotated[int, Field(ge=0, le=23)]]] = None
+    start_day: Annotated[int, Field(ge=0, le=364, description="Day-of-year offset")] = 0
     heat_pump: HeatPumpSchema = Field(default_factory=HeatPumpSchema)
     setpoint: SetpointSchema = Field(default_factory=SetpointSchema)
     house: HouseVariantSchema = Field(default_factory=HouseVariantSchema)

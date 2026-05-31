@@ -34,7 +34,8 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-from .thermal import ThermalModel
+from .prices import PriceModel
+from .thermal import ThermalModel, month_of_year
 from .thermal_load import (
     HeatPumpConfig,
     HouseThermalConfig,
@@ -52,6 +53,11 @@ DAYS_PER_YEAR: int = 365
 #: Default residential electricity price (€/kWh) used for the cost KPI when
 #: the caller does not supply one. Rough Italian residential average 2024.
 DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH: float = 0.25
+
+#: Offset added to the per-path seed for the *price* RNG stream so the price
+#: trajectory is statistically independent from the temperature path (which
+#: uses ``seed + path_index``). Large constant ⇒ no overlap in practice.
+_PRICE_SEED_OFFSET: int = 2_000_003
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +162,16 @@ class ThermalVariantResult:
         hvac_kwh_annual_mean: Mean annual HVAC electric energy (kWh/yr).
         hvac_kwh_annual_p05: 5th percentile across paths (kWh/yr).
         hvac_kwh_annual_p95: 95th percentile across paths (kWh/yr).
+        heating_kwh_annual_mean: Mean annual electric energy spent in
+            *heating* mode (kWh/yr). The hour is classed as heating when the
+            outdoor temperature is below the effective heating setpoint —
+            exact in steady-state mode, an approximation in the dynamic RC
+            mode (where the controller decides the mode on the free-running
+            temperature, not directly on ``T_out``).
+        cooling_kwh_annual_mean: Mean annual electric energy spent in
+            *cooling* mode (kWh/yr). Same caveat as
+            ``heating_kwh_annual_mean``. In steady-state,
+            ``heating + cooling == hvac_kwh_annual``.
         annual_cost_eur_mean: Mean annual HVAC cost
             (= ``hvac_kwh_annual × price``), €/yr.
         annual_cost_eur_p05: 5th percentile annual cost (€/yr).
@@ -187,6 +203,8 @@ class ThermalVariantResult:
     hvac_kwh_annual_mean: float
     hvac_kwh_annual_p05: float
     hvac_kwh_annual_p95: float
+    heating_kwh_annual_mean: float
+    cooling_kwh_annual_mean: float
     annual_cost_eur_mean: float
     annual_cost_eur_p05: float
     annual_cost_eur_p95: float
@@ -275,6 +293,7 @@ def compare_house_variants(
     n_paths: int = 30,
     n_years: int = 1,
     seed: int = 42,
+    price_model: Optional[PriceModel] = None,
 ) -> ThermalLabResult:
     """
     Run a Monte Carlo thermal comparison across the configured house variants.
@@ -293,6 +312,14 @@ def compare_house_variants(
             sub-seed ``seed + path_index`` for bit-stable reproducibility.
         n_years: Horizon per path (years). Default 1.
         seed: Master RNG seed.
+        price_model: Optional electricity :class:`PriceModel` (Fase 19-bis).
+            When provided, the annual HVAC cost of each path is
+            ``Σ_day kWh(day)·price(year, month) / n_years`` with the price
+            model reset per path on an RNG stream independent of the
+            temperature path (so a stochastic price spreads the cost band
+            without correlating to the weather). When ``None`` (default) the
+            scalar ``config.electricity_price_eur_per_kwh`` is used, which is
+            **byte-identical** to the Fase-19 behaviour.
 
     Returns:
         A :class:`ThermalLabResult` with one entry per variant plus the
@@ -329,6 +356,14 @@ def compare_house_variants(
     at_home_hourly = _build_at_home_hourly(n_hours, config.home_hours_of_day)
     price = config.electricity_price_eur_per_kwh
 
+    # Per-day (year, month) indices, used both for the price model lookup and
+    # nowhere else; computed once.
+    day_idx = np.arange(n_days)
+    year_of_day = day_idx // DAYS_PER_YEAR
+    month_of_day = np.asarray(month_of_year(day_idx % DAYS_PER_YEAR), dtype=int)
+    # Constant scalar price-by-day (used when no price model is supplied).
+    scalar_price_by_day = np.full(n_days, price, dtype=float)
+
     # Build one controller per variant (reused across paths — the controller
     # is stateless between calls except for the cached indoor series).
     controllers: list[HvacController] = []
@@ -342,9 +377,17 @@ def compare_house_variants(
         )
         controllers.append(HvacController(load_config))
 
+    # Effective per-hour setpoints are identical across paths and variants
+    # (same occupancy + setpoint config), so derive the heating/cooling
+    # classification arrays once.
+    t_set_heating, t_set_cooling = controllers[0].setpoint_arrays(at_home_hourly)
+
     n_variants = len(config.house_variants)
     # Per-variant accumulators.
     annual_kwh = [np.empty(n_paths) for _ in range(n_variants)]
+    annual_cost = [np.empty(n_paths) for _ in range(n_variants)]
+    heating_kwh = [np.empty(n_paths) for _ in range(n_variants)]
+    cooling_kwh = [np.empty(n_paths) for _ in range(n_variants)]
     breach_hpy = [np.empty(n_paths) for _ in range(n_variants)]
     peak_kw = [np.empty(n_paths) for _ in range(n_variants)]
     t_in_min = [np.full(n_paths, np.inf) for _ in range(n_variants)]
@@ -363,6 +406,23 @@ def compare_house_variants(
         outdoor_daily_sum += daily_means
         t_ambient_hourly = model.to_hourly(daily_means)  # (n_hours,)
 
+        # Per-path electricity price by day. With a stochastic price model the
+        # trajectory varies per path (independent RNG stream); the scalar case
+        # is the constant array (so cost == annual_kwh × price exactly).
+        if price_model is not None:
+            price_rng = np.random.default_rng(seed + _PRICE_SEED_OFFSET + p)
+            price_model.reset_for_run(rng=price_rng, n_years=n_years)
+            monthly_price = np.array(
+                [[price_model.get_price(y, m) for m in range(12)] for y in range(n_years)]
+            )
+            price_by_day = monthly_price[year_of_day, month_of_day]
+        else:
+            price_by_day = scalar_price_by_day
+
+        # Heating vs cooling classification for this path's weather.
+        heat_mask = t_ambient_hourly < t_set_heating
+        cool_mask = t_ambient_hourly > t_set_cooling
+
         for v, controller in enumerate(controllers):
             p_elec, kpis = controller.compute_hourly_p_elec_kw(
                 t_ambient_hourly, at_home_hourly
@@ -372,7 +432,11 @@ def compare_house_variants(
             peak_kw[v][p] = kpis.p_elec_hvac_peak_kw
             t_in_min[v][p] = kpis.t_in_min_c
             t_in_max[v][p] = kpis.t_in_max_c
-            daily_kwh_sum[v] += p_elec.reshape(n_days, 24).sum(axis=1)
+            daily_kwh = p_elec.reshape(n_days, 24).sum(axis=1)
+            daily_kwh_sum[v] += daily_kwh
+            annual_cost[v][p] = float((daily_kwh * price_by_day).sum() / n_years)
+            heating_kwh[v][p] = float(p_elec[heat_mask].sum() / n_years)
+            cooling_kwh[v][p] = float(p_elec[cool_mask].sum() / n_years)
 
             if p == 0 and controller.last_indoor_temp_c is not None:
                 indoor_2d = controller.last_indoor_temp_c.reshape(n_days, 24)
@@ -403,9 +467,11 @@ def compare_house_variants(
                 hvac_kwh_annual_mean=float(np.mean(annual_kwh[v])),
                 hvac_kwh_annual_p05=float(np.percentile(annual_kwh[v], 5)),
                 hvac_kwh_annual_p95=float(np.percentile(annual_kwh[v], 95)),
-                annual_cost_eur_mean=float(np.mean(annual_kwh[v]) * price),
-                annual_cost_eur_p05=float(np.percentile(annual_kwh[v], 5) * price),
-                annual_cost_eur_p95=float(np.percentile(annual_kwh[v], 95) * price),
+                heating_kwh_annual_mean=float(np.mean(heating_kwh[v])),
+                cooling_kwh_annual_mean=float(np.mean(cooling_kwh[v])),
+                annual_cost_eur_mean=float(np.mean(annual_cost[v])),
+                annual_cost_eur_p05=float(np.percentile(annual_cost[v], 5)),
+                annual_cost_eur_p95=float(np.percentile(annual_cost[v], 95)),
                 comfort_breach_hours_per_year_mean=float(np.mean(breach_hpy[v])),
                 p_elec_hvac_peak_kw_mean=float(np.mean(peak_kw[v])),
                 t_in_min_c=float(np.min(t_in_min[v])),
@@ -491,6 +557,7 @@ def simulate_thermal_timeseries(
     home_hours_of_day: Optional[Sequence[int]] = None,
     n_days: int = 14,
     seed: int = 42,
+    start_day: int = 0,
 ) -> ThermalTimeseriesResult:
     """
     Simulate one ambient-temperature path and the resulting HVAC response.
@@ -512,20 +579,32 @@ def simulate_thermal_timeseries(
         n_days: Horizon length in days. Default 14 (two weeks — enough to see
             the diurnal pattern without a heavy payload).
         seed: RNG seed for the single path.
+        start_day: Day-of-year offset (0..364) of the first previewed day
+            (Fase 19-bis). Default 0 (January 1). Use e.g. 181 to inspect a
+            summer window. The model is simulated from January 1 up to
+            ``start_day + n_days`` and the tail ``n_days`` are returned, so the
+            AR(1) residual + seasonal mean are warmed up to the right
+            day-of-year and the diurnal amplitude matches the season.
 
     Returns:
         A :class:`ThermalTimeseriesResult`.
 
     Raises:
-        ValueError: If ``n_days`` ≤ 0.
+        ValueError: If ``n_days`` ≤ 0 or ``start_day`` is outside ``[0, 364]``.
     """
     if n_days <= 0:
         raise ValueError(f"n_days must be > 0, got {n_days}")
+    if not 0 <= start_day <= 364:
+        raise ValueError(f"start_day must be in [0, 364], got {start_day}")
 
     n_hours = n_days * 24
     rng = np.random.default_rng(seed)
-    daily_means = model.simulate_daily_means(n_days, rng)
-    t_ambient_hourly = model.to_hourly(daily_means)
+    total_days = start_day + n_days
+    daily_means_full = model.simulate_daily_means(total_days, rng)
+    daily_means = daily_means_full[start_day:]
+    # Lift to hourly with the correct day-of-year offset so the per-month
+    # diurnal amplitude matches the previewed season.
+    t_ambient_hourly = model.to_hourly(daily_means, start_day_of_year=start_day)
 
     controller = HvacController(
         ThermalLoadConfig(

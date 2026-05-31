@@ -298,6 +298,8 @@ Swagger UI: `http://localhost:8000/docs` · ReDoc: `http://localhost:8000/redoc`
 |--------|------|-------------|
 | `POST` | `/thermal-lab/compare` | Monte-Carlo HVAC comparison of several house variants (insulation presets / custom `UA`) against a saved climate profile: annual energy, cost, comfort breaches, worst days, typical-year daily series. |
 | `POST` | `/thermal-lab/timeseries` | Hourly preview (outdoor/indoor temperature, electric draw, setpoints) for one house configuration. |
+| `POST` | `/thermal-lab/compare/export.xlsx` | Same body as `/compare`; streams a multi-sheet Excel workbook. |
+| `POST` | `/thermal-lab/compare/export.pdf` | Same body as `/compare`; streams a charted PDF report. |
 
 *Catalogs and configurations*
 
@@ -336,10 +338,13 @@ chart, inflation, and the per-month cash-flow table.
 A separate **"Lab termico"** page (Phase 19) lets the user compare insulation
 levels and size the heat pump *before* the economic scenario: pick a climate
 profile and several house variants (insulation presets or a custom `UA`), then
-read a KPI comparison table and overlaid charts (daily HVAC energy per variant
-vs outdoor temperature with worst-day markers, cost per variant, and an hourly
-setpoint-vs-indoor-temperature preview). Exports the comparison as CSV and each
-chart as PNG.
+read a KPI comparison table (with a heating/cooling energy split) and overlaid
+charts (daily HVAC energy per variant vs outdoor temperature with worst-day
+markers, cost per variant, and an hourly setpoint-vs-indoor-temperature preview
+with a season selector). The annual cost can use a flat price or a stochastic
+electricity-price model (escalation / GBM / mean-reverting), so the cost band
+reflects price uncertainty. Exports the comparison as CSV, as a multi-sheet
+Excel workbook, or as a charted PDF report (and each chart as PNG).
 
 Run manually outside Docker:
 
