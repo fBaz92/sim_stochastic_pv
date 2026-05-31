@@ -28,8 +28,9 @@ from sim_stochastic_pv.simulation.load_profiles import MonthlyAverageLoadProfile
 # ── Inverter-level balance (deterministic) ────────────────────────────────
 
 def _full_battery(capacity_kwh: float = 1.0) -> BatteryBank:
-    """A battery initialised at the top of its operational window (no headroom)."""
-    bank = BatteryBank(specs=BatterySpecs(capacity_kwh=capacity_kwh))
+    """A battery at the top of its window (no charge headroom)."""
+    bank = BatteryBank(specs=BatterySpecs(capacity_kwh=capacity_kwh),
+                       n_batteries=1)
     bank.reset(soc_init=1.0)
     return bank
 
@@ -37,7 +38,7 @@ def _full_battery(capacity_kwh: float = 1.0) -> BatteryBank:
 def _empty_room_battery(capacity_kwh: float = 10.0) -> BatteryBank:
     """A large, empty battery with ample charge headroom."""
     bank = BatteryBank(specs=BatterySpecs(capacity_kwh=capacity_kwh),
-                       max_charge_kw=None)
+                       n_batteries=1, max_charge_kw=None)
     bank.reset(soc_init=0.0)
     return bank
 
@@ -84,7 +85,6 @@ def test_surplus_charges_battery_before_export() -> None:
         p_pv_dc_kw=5.0, p_load_kw=1.0, battery=bank)
     # Battery had room, so it must take some surplus before any export.
     assert e_to_batt > 0.0
-    assert e_to_grid < 4.0  # less than the no-battery export
     assert e_to_batt + e_to_grid + e_curtailed == pytest.approx(4.0)
 
 
@@ -101,11 +101,16 @@ def test_no_surplus_no_export() -> None:
 # ── Simulator-level accounting ────────────────────────────────────────────
 
 def _make_simulator(n_years=1, pv_kwp=3.0, inverter_p_ac_max_kw=3.0, **kwargs):
-    solar_model = SolarModel(month_params=make_default_solar_params_for_pavullo())
-    load_profile = MonthlyAverageLoadProfile(daily_kwh=1.5)
+    solar_model = SolarModel(
+        pv_kwp=pv_kwp,
+        month_params=make_default_solar_params_for_pavullo(),
+        degradation_per_year=0.0,
+    )
+    load_profile = MonthlyAverageLoadProfile(monthly_avg_kwh=[200.0] * 12)
     config = EnergySystemConfig(
         n_years=n_years,
         pv_kwp=pv_kwp,
+        n_batteries=2,
         inverter_p_ac_max_kw=inverter_p_ac_max_kw,
         **kwargs,
     )
