@@ -55,15 +55,57 @@ class InverterAC:
         p_pv_dc_kw: float,
         p_load_kw: float,
         battery: BatteryBank,
-    ) -> Tuple[float, float, float, float, float]:
-        """
-        One-hour time step.
-        Returns (all in kWh over the hour):
-          - e_pv_prod
-          - e_pv_direct
-          - e_batt_discharge_to_load
-          - e_grid_to_load
-          - e_pv_to_batt
+    ) -> Tuple[float, float, float, float, float, float, float]:
+        """Dispatch one hour of PV, load and battery, splitting the surplus.
+
+        Runs the fixed self-consumption priority order for a single hourly
+        step and resolves the fate of every kWh the array produces, so that
+        no PV energy is silently lost: whatever is neither self-consumed nor
+        stored is split into an *exportable* part (fed to the grid, to be
+        valued under dedicated withdrawal / ritiro dedicato) and a *curtailed*
+        part (physically clipped and worth nothing).
+
+        Priority order:
+
+        1. **PV → load** directly, up to ``min(load, p_ac_max)``.
+        2. **PV → battery** with the DC remainder (DC-coupled charging, so it
+           is not limited by the AC ceiling, only by the battery's own
+           charge-power and capacity headroom).
+        3. **Battery → load** for any residual load, within the remaining AC
+           headroom.
+        4. **Grid → load** for whatever load is still unmet.
+        5. **PV → grid** for the surplus left after steps 1-2, bounded by the
+           inverter's remaining AC headroom; the rest is **curtailed**.
+
+        The exportable surplus must leave through the same inverter as the
+        self-consumed and battery-discharge flows, so it competes with them
+        for the AC rating: ``p_pv_direct + p_batt_discharge + p_export
+        <= p_ac_max``. With a deliberately undersized inverter (a common
+        residential choice) the export term is therefore capped and the
+        balance of the surplus is curtailed.
+
+        The model is lossless DC<->AC (1:1), consistent with the rest of this
+        simple inverter, so the per-hour energy balance closes exactly:
+        ``e_pv_prod == e_pv_direct + e_pv_to_batt + e_pv_to_grid
+        + e_pv_curtailed``.
+
+        Args:
+            p_pv_dc_kw: PV array DC power for this hour in kW (>= 0). Capped
+                to ``p_dc_max_kw`` first when that limit is set.
+            p_load_kw: Household load for this hour in kW (>= 0).
+            battery: The shared :class:`BatteryBank`; mutated in place by the
+                charge/discharge calls (SOC and SOH evolve).
+
+        Returns:
+            Tuple of seven floats, all energies in kWh over the one-hour step:
+            ``(e_pv_prod, e_pv_direct, e_batt_discharge_to_load,
+            e_grid_to_load, e_pv_to_batt, e_pv_to_grid, e_pv_curtailed)``.
+
+        Notes:
+            ``e_pv_to_grid`` and ``e_pv_curtailed`` are both >= 0 and sum to
+            the surplus ``e_pv_prod - e_pv_direct - e_pv_to_batt``. When the
+            inverter has ample AC headroom the curtailed term is zero; when
+            the ceiling is fully occupied it absorbs the whole surplus.
         """
         dt = 1.0
         p_ac_max = self.p_ac_max_kw
@@ -89,10 +131,21 @@ class InverterAC:
 
         e_grid_to_load = (p_load_residual * dt) - e_batt_discharge_to_load
 
+        # Surplus = PV neither self-consumed nor stored. It leaves through the
+        # inverter, so the exportable part is bounded by the AC headroom left
+        # after PV-direct and any battery discharge; the rest is curtailed.
+        e_pv_surplus = max(0.0, e_pv_remaining_dc - e_pv_to_batt)
+        p_ac_used = p_pv_ac + e_batt_discharge_to_load / dt
+        e_ac_headroom = max(0.0, p_ac_max - p_ac_used) * dt
+        e_pv_to_grid = min(e_pv_surplus, e_ac_headroom)
+        e_pv_curtailed = e_pv_surplus - e_pv_to_grid
+
         return (
             e_pv_prod,
             e_pv_direct,
             e_batt_discharge_to_load,
             e_grid_to_load,
             e_pv_to_batt,
+            e_pv_to_grid,
+            e_pv_curtailed,
         )

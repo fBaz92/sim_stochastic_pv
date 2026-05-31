@@ -1140,13 +1140,24 @@ nel DB), Fase 19 (pattern di sezione/lab end-to-end).
   medio per `(mese, ora)` shape `(n,12,24)` + bande p05/p95. Superficie
   **cachabile** (calcolo costoso una volta sola).
 
-- **20c — Cattura del surplus** (risolve la lacuna originale):
-  `inverter.dispatch()` ritorna anche `e_pv_surplus`; `EnergySystemSimulator`
-  accumula `monthly_export_kwh` e l'energia per `(mese, ora)`
-  (`self_kwh_by_month_hour`, `export_kwh_by_month_hour`). Solo contabilità
-  energetica, ancora senza prezzi. Test: bilancio orario
-  `prod = diretto + a_batteria + surplus`; export>0 solo a batteria piena e
-  carico saturo.
+- **20c — Cattura del surplus** (risolve la lacuna originale): oggi l'eccesso
+  PV è scartato silenziosamente. `inverter.dispatch()` ora ritorna due termini
+  invece di buttarlo: `e_pv_to_grid` (immettibile) e `e_pv_curtailed` (perso).
+  Lo split è necessario perché l'eccesso esce dallo **stesso inverter** e quindi
+  è limitato dal tetto AC residuo (`p_ac_max` meno la potenza AC già usata da
+  PV-diretto e scarica batteria); ciò che eccede il tetto è fisicamente
+  tagliato. Invariante di bilancio orario:
+  `prod = diretto + a_batteria + to_grid + curtailed` (modello DC↔AC 1:1, senza
+  perdite). `EnergySystemSimulator` accumula `monthly_export_kwh`,
+  `monthly_curtailed_kwh`, `monthly_pv_to_batt_kwh` e
+  `export_kwh_by_year_month_hour` (shape `(n_years,12,24)`, l'input orario per
+  la valorizzazione in 20d). Tutto esposto via attributi `self.last_*` (stesso
+  pattern di `last_electrical_kpis`/`last_thermal_kpis`): la firma di
+  `run_one_path` **non cambia**, quindi il MC fotovoltaico resta byte-identico
+  finché 20d non legge i nuovi attributi. Solo contabilità energetica, ancora
+  senza prezzi. Test: bilancio del dispatch inverter, export limitato dal tetto
+  AC, surplus→batteria prima di →rete, export nullo di notte, bilancio
+  d'orizzonte nel simulatore.
 
 - **20d — Provider prezzo + integrazione economica**: `MarketPriceProvider`
   (wholesale/retail/export), estensione opzionale di `PriceModel` con

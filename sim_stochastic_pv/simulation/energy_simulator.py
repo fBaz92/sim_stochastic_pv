@@ -169,6 +169,20 @@ class EnergySystemSimulator:
             )
         self.last_appliances_kpis: AppliancesKPIs | None = None
 
+        # Surplus accounting (dedicated withdrawal / ritiro dedicato). PV that
+        # is neither self-consumed nor stored is captured here instead of
+        # being discarded: ``last_monthly_export_kwh`` is the exportable part
+        # (bounded by the inverter AC ceiling), ``last_monthly_curtailed_kwh``
+        # the clipped part, and ``last_export_kwh_by_year_month_hour`` resolves
+        # the exportable energy by (year, calendar-month, hour-of-day) so the
+        # economic layer can value it against an hourly wholesale price.
+        # ``last_monthly_pv_to_batt_kwh`` completes the PV energy balance.
+        # All are populated by ``run_one_path`` and read by the MC orchestrator.
+        self.last_monthly_export_kwh: np.ndarray | None = None
+        self.last_monthly_curtailed_kwh: np.ndarray | None = None
+        self.last_monthly_pv_to_batt_kwh: np.ndarray | None = None
+        self.last_export_kwh_by_year_month_hour: np.ndarray | None = None
+
         self.battery_bank = BatteryBank(
             specs=config.battery_specs,
             n_batteries=config.n_batteries,
@@ -296,6 +310,15 @@ class EnergySystemSimulator:
         monthly_load_kwh = np.zeros(n_months)
         soh_end_of_month = np.zeros(n_months)
 
+        # Surplus accounting: exported (grid-fed) vs curtailed (clipped by the
+        # inverter AC ceiling), plus PV-to-battery to close the energy balance.
+        # The exportable energy is also resolved by (year, month, hour) so the
+        # economic layer can price it hourly under dedicated withdrawal.
+        monthly_export_kwh = np.zeros(n_months)
+        monthly_curtailed_kwh = np.zeros(n_months)
+        monthly_pv_to_batt_kwh = np.zeros(n_months)
+        export_kwh_by_year_month_hour = np.zeros((self.config.n_years, 12, 24))
+
         soc_accum = np.zeros((12, 24))
         soc_count = np.zeros((12, 24), dtype=int)
 
@@ -342,7 +365,9 @@ class EnergySystemSimulator:
                     e_pv_direct,
                     e_batt_discharge_to_load,
                     e_grid_to_load,
-                    _e_pv_to_batt,
+                    e_pv_to_batt,
+                    e_pv_to_grid,
+                    e_pv_curtailed,
                 ) = self.inverter.dispatch(
                     p_pv_dc_kw=p_pv_kw,
                     p_load_kw=p_load_kw,
@@ -356,6 +381,10 @@ class EnergySystemSimulator:
                 monthly_batt_to_load_kwh[month_idx] += e_batt_discharge_to_load
                 monthly_grid_import_kwh[month_idx] += e_grid_to_load
                 monthly_load_kwh[month_idx] += e_load
+                monthly_export_kwh[month_idx] += e_pv_to_grid
+                monthly_curtailed_kwh[month_idx] += e_pv_curtailed
+                monthly_pv_to_batt_kwh[month_idx] += e_pv_to_batt
+                export_kwh_by_year_month_hour[year_idx, month_in_year, h] += e_pv_to_grid
 
                 if year_idx == 0:
                     soc = self.battery_bank.soc_fraction()
@@ -402,6 +431,15 @@ class EnergySystemSimulator:
                     100.0 * appliances_total_kwh / float(monthly_load_kwh.sum())
                 )
         self.last_appliances_kpis = appliances_kpis_path
+
+        # Surface the surplus accounting for the MC orchestrator to pick up.
+        # The run_one_path return tuple is intentionally left unchanged so the
+        # legacy energy path stays byte-identical; the economic layer reads
+        # these attributes only when a market/export price is configured.
+        self.last_monthly_export_kwh = monthly_export_kwh
+        self.last_monthly_curtailed_kwh = monthly_curtailed_kwh
+        self.last_monthly_pv_to_batt_kwh = monthly_pv_to_batt_kwh
+        self.last_export_kwh_by_year_month_hour = export_kwh_by_year_month_hour
 
         return (
             monthly_pv_prod_kwh,
