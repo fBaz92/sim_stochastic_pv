@@ -28,6 +28,7 @@ from sim_stochastic_pv.simulation import (
     InverterOption,
     LoadProfile,
     LoadScenarioBlueprint,
+    MarketPriceProvider,
     MeanRevertingPriceModel,
     MonthlyAverageLoadProfile,
     OptimizationRequest,
@@ -717,6 +718,63 @@ def build_default_thermal_model(
             f"climate_profile_name={profile_name!r} not found in the database"
         )
     return persistence.load_thermal_model(record.id)
+
+
+def build_default_market_provider(
+    scenario_data: Mapping[str, Any] | str | Path | None = None,
+    persistence=None,
+) -> MarketPriceProvider | None:
+    """
+    Resolve the :class:`MarketPriceProvider` referenced by the scenario.
+
+    Looks for a top-level ``market_profile_id`` (preferred) or
+    ``market_profile_name`` key in the scenario JSON and asks the persistence
+    service to hydrate the cached wholesale price surface + dedicated-withdrawal
+    valuation parameters into a runtime provider. The reference lives in the
+    scenario JSON exactly like ``climate_profile_id`` — there is no foreign-key
+    column.
+
+    Returns ``None`` (so the Monte Carlo runs the legacy byte-identical path
+    with no export revenue) when:
+
+    * neither key is present in the scenario, or
+    * no persistence service is wired (CLI / standalone use).
+
+    Args:
+        scenario_data: JSON path, dict, or ``None`` for the packaged example.
+        persistence: Optional :class:`PersistenceService` used to fetch the
+            market profile. Required whenever the scenario references one.
+
+    Returns:
+        :class:`MarketPriceProvider` ready to value PV export, or ``None`` when
+        the scenario does not reference a market profile (or no persistence is
+        available).
+
+    Raises:
+        ValueError: When the referenced id/name does not resolve to a stored
+            profile (only when ``persistence`` is wired — a missing persistence
+            service yields a quiet ``None``).
+    """
+    data = load_scenario_data(scenario_data)
+    profile_id = data.get("market_profile_id")
+    profile_name = data.get("market_profile_name")
+    if profile_id is None and profile_name is None:
+        return None
+    if persistence is None:
+        return None
+    if profile_id is not None:
+        provider = persistence.load_market_provider(int(profile_id))
+        if provider is None:
+            raise ValueError(
+                f"market_profile_id={profile_id} not found in the database"
+            )
+        return provider
+    record = persistence.market.get_market_profile_by_name(str(profile_name))
+    if record is None:
+        raise ValueError(
+            f"market_profile_name={profile_name!r} not found in the database"
+        )
+    return persistence.load_market_provider(record.id)
 
 
 def _coerce_pv_string(raw: Mapping[str, Any]) -> PvString:

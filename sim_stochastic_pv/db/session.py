@@ -99,6 +99,20 @@ def init_db() -> None:
             except Exception as e:
                 print(f"⚠️  Warning: backfill of new columns failed: {e}")
 
+    # Ensure the default electricity-market profile exists even on databases
+    # created before this feature: the solar-profile seed gate above only fires
+    # on a brand-new DB, so an existing install would otherwise never get it.
+    # ``seed_market_profiles`` is idempotent (a quick name lookup) and only
+    # pays the surface-build cost the first time it actually inserts.
+    with SessionLocal() as session:
+        try:
+            from .seeding import seed_market_profiles
+
+            if seed_market_profiles(session):
+                print("✅ Seeded default market profile 'Italia (mercato base)'")
+        except Exception as e:  # pragma: no cover - defensive: don't break startup
+            print(f"⚠️  Warning: market profile seeding failed: {e}")
+
 
 def _apply_lightweight_migrations() -> None:
     """

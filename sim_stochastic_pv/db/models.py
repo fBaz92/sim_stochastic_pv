@@ -626,6 +626,58 @@ class PriceProfileModel(Base, TimestampMixin):
     data = Column(JSON, nullable=False)  # base price, escalation, etc.
 
 
+class MarketProfileModel(Base, TimestampMixin):
+    """
+    Database model for reusable electricity-market profiles.
+
+    Stores a pre-computed wholesale price surface together with the
+    dedicated-withdrawal (*ritiro dedicato*) valuation parameters, so that a
+    scenario can value its PV export against a simulated market without
+    re-running the (expensive) market Monte Carlo on every path. A scenario
+    references a profile through a top-level ``market_profile_id`` (or
+    ``market_profile_name``) key in its JSON config — mirroring how
+    ``climate_profile_id`` wires a :class:`ClimateProfileModel`.
+
+    The whole provider configuration lives in the ``data`` JSON blob in the
+    exact shape produced by
+    :meth:`sim_stochastic_pv.simulation.market_pricing.MarketPriceProvider.to_config_dict`,
+    namely ``{version, pmg_base_eur_per_kwh, retail_markup_fraction,
+    retail_fixed_components_eur_per_kwh, surface, build_config}``. Keeping the
+    cached surface inside the row (rather than rebuilding it on demand) is a
+    deliberate trade-off: the surface costs seconds to compute but only
+    kilobytes-to-megabytes to store, and the PV Monte Carlo then performs O(1)
+    look-ups against it.
+
+    Attributes:
+        id: Primary key (auto-increment).
+        name: Unique, human-readable profile identifier (indexed).
+        description: Optional free-text description for the editing UI.
+        data: Full provider configuration (JSON) — surface + PMG/retail params.
+
+    Example:
+        ```python
+        profile = MarketProfileModel(
+            name="Italia (mercato base)",
+            description="Superficie di prezzo all'ingrosso + PMG 0.04 EUR/kWh.",
+            data=provider.to_config_dict(build_config={"mix": "italian"}),
+        )
+        ```
+
+    Notes:
+        - ``name`` carries a unique constraint.
+        - Hydrated back into a runtime ``MarketPriceProvider`` by
+          :class:`sim_stochastic_pv.persistence.market_repo.MarketProfileRepository`.
+        - Linked to scenarios via the JSON ``market_profile_id`` key (there is
+          no foreign-key column, exactly like ``climate_profile_id``).
+    """
+    __tablename__ = "market_profiles"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), unique=True, nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    data = Column(JSON, nullable=False)  # serialized surface + pmg/retail config
+
+
 class SavedConfigurationModel(Base, TimestampMixin):
     """
     Database model for saved simulation configurations.

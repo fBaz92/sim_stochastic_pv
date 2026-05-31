@@ -84,6 +84,7 @@ from .optimizer import (
     ScenarioEvaluation,
     ScenarioOptimizer,
 )
+from .market_pricing import MarketPriceProvider
 from .prices import (
     EscalatingPriceModel,
     GBMPriceModel,
@@ -163,6 +164,7 @@ __all__ = [
     "EscalatingPriceModel",
     "GBMPriceModel",
     "MeanRevertingPriceModel",
+    "MarketPriceProvider",
     # Optimization helpers
     "ScenarioOptimizer",
     "ScenarioEvaluation",

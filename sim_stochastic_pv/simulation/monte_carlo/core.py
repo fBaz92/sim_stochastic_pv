@@ -18,6 +18,7 @@ from tqdm import tqdm
 from ..electrical import aggregate_kpis as _aggregate_electrical_kpis
 from ..energy_simulator import EnergySystemSimulator
 from ..load_profiles import aggregate_appliances_kpis as _aggregate_appliances_kpis
+from ..market_pricing import MarketPriceProvider
 from ..prices import PriceModel
 from ..thermal_load import aggregate_thermal_kpis as _aggregate_thermal_kpis
 
@@ -460,6 +461,22 @@ class MonteCarloResults:
     # the scenario activates ``load_profile.appliances.enabled=true``.
     appliances_kpis_per_path: Optional[list] = None
     appliances_kpis_summary: Optional[dict] = None
+    # Dedicated-withdrawal (ritiro dedicato) export valuation. Populated only
+    # when a MarketPriceProvider is attached to the simulator; ``None`` (or
+    # ``0.0`` for the scalar totals) otherwise, so legacy clients that build
+    # MonteCarloResults by hand and runs without a market are unaffected.
+    #   - monthly_export_kwh_paths: (n_mc, n_months) exported energy per month.
+    #   - monthly_export_eur_paths: (n_mc, n_months) nominal export revenue per
+    #     month (already folded into ``monthly_savings_eur_paths`` and the
+    #     profit/IRR/break-even curves).
+    #   - df_export: per-month mean/p05/p95 of exported kWh and EUR revenue.
+    #   - export_revenue_total_mean_eur / export_kwh_total_mean: per-path totals
+    #     averaged across paths (handy headline KPIs for the dashboard/exporters).
+    monthly_export_kwh_paths: Optional[np.ndarray] = None
+    monthly_export_eur_paths: Optional[np.ndarray] = None
+    df_export: Optional[pd.DataFrame] = None
+    export_revenue_total_mean_eur: float = 0.0
+    export_kwh_total_mean: float = 0.0
 
 
 class MonteCarloSimulator:
@@ -545,6 +562,7 @@ class MonteCarloSimulator:
         energy_simulator: EnergySystemSimulator,
         price_model: PriceModel,
         economic_config: EconomicConfig,
+        market_price_provider: Optional[MarketPriceProvider] = None,
     ) -> None:
         """
         Initialize Monte Carlo simulator with system models and economic parameters.
@@ -565,6 +583,14 @@ class MonteCarloSimulator:
             economic_config: Economic parameters for analysis.
                 Specifies initial investment, number of Monte Carlo paths,
                 and inflation rate for real return calculations.
+            market_price_provider: Optional :class:`MarketPriceProvider` used to
+                value PV grid export under the *ritiro dedicato* scheme. When
+                ``None`` (the default) no export revenue is computed and the run
+                is byte-identical to one that predates this feature. When set,
+                the per-path exported energy (surfaced hourly by the energy
+                simulator) is priced at ``max(wholesale, PMG)`` and the resulting
+                nominal revenue is folded into the cash flow exactly like the tax
+                bonus, so it propagates into NPV, IRR and break-even.
 
         Example:
             ```python
@@ -608,6 +634,7 @@ class MonteCarloSimulator:
         self.energy_simulator = energy_simulator
         self.price_model = price_model
         self.economic_config = economic_config
+        self.market_price_provider = market_price_provider
 
     @staticmethod
     def _build_tax_bonus_per_month(
@@ -910,6 +937,14 @@ class MonteCarloSimulator:
         soc_profiles_paths = np.zeros((n_mc, 12, 24))
         irr_annual_paths = np.full(n_mc, np.nan)
 
+        # Dedicated-withdrawal (ritiro dedicato) export valuation. These arrays
+        # stay all-zeros and the corresponding result fields stay ``None`` unless
+        # a MarketPriceProvider is attached, so a run without a market is
+        # byte-identical to one that predates this feature.
+        market_provider = self.market_price_provider
+        export_kwh_paths = np.zeros((n_mc, n_months))
+        export_eur_paths = np.zeros((n_mc, n_months))
+
         months = np.arange(n_months)
         years = months // 12
         month_in_year = months % 12
@@ -989,12 +1024,53 @@ class MonteCarloSimulator:
                 price_paths[i, m] = price
                 monthly_savings_eur[m] = monthly_savings_kwh[m] * price
 
-            # Phase 11 — fold the tax bonus into the savings stream BEFORE
-            # computing cumulative profit and IRR. The bonus is a nominal
-            # cash inflow and naturally propagates into both the nominal
-            # and the inflation-adjusted curves (the latter via division
-            # by inflation_factors_paths[i] below).
-            monthly_savings_eur = monthly_savings_eur + bonus_per_month
+            # Dedicated-withdrawal export revenue. When a market provider is
+            # attached, value the per-path exported energy (surfaced hourly by
+            # the energy simulator) at max(wholesale, inflation-indexed PMG).
+            # The nominal revenue is folded into the savings stream below,
+            # alongside the tax bonus, so it propagates into profit/IRR/
+            # break-even and (after the inflation division) into the real curve.
+            if market_provider is not None:
+                export_grid = getattr(
+                    self.energy_simulator,
+                    "last_export_kwh_by_year_month_hour",
+                    None,
+                )
+                if export_grid is None:
+                    raise ValueError(
+                        "A MarketPriceProvider is attached but the energy "
+                        "simulator did not surface "
+                        "last_export_kwh_by_year_month_hour; cannot value PV "
+                        "export."
+                    )
+                # Per-year cumulative inflation factor (year 0 -> 1.0). The
+                # monthly factor vector repeats each year's factor 12 times, so
+                # the year-start stride [::12] recovers exactly the per-year
+                # series used to index the PMG floor.
+                inflation_factor_by_year = inflation_factors_paths[i][::12]
+                trajectory_index = (
+                    i % market_provider.price_surface.n_trajectories
+                )
+                monthly_export_eur_path, monthly_export_kwh_path = (
+                    market_provider.value_export_grid(
+                        export_grid,
+                        trajectory_index=trajectory_index,
+                        inflation_factor_by_year=inflation_factor_by_year,
+                    )
+                )
+                export_eur_paths[i, :] = monthly_export_eur_path
+                export_kwh_paths[i, :] = monthly_export_kwh_path
+            else:
+                monthly_export_eur_path = 0.0
+
+            # Phase 11 — fold the tax bonus (and any dedicated-withdrawal export
+            # revenue) into the savings stream BEFORE computing cumulative profit
+            # and IRR. Both are nominal cash inflows and naturally propagate into
+            # the nominal and the inflation-adjusted curves (the latter via
+            # division by inflation_factors_paths[i] below).
+            monthly_savings_eur = (
+                monthly_savings_eur + bonus_per_month + monthly_export_eur_path
+            )
 
             profit_cum = -cfg.investment_eur + np.cumsum(monthly_savings_eur)
             monthly_savings_real = monthly_savings_eur / inflation_factors_paths[i]
@@ -1223,6 +1299,34 @@ class MonteCarloSimulator:
                 }
             )
 
+        # Dedicated-withdrawal (ritiro dedicato) export diagnostics. Built only
+        # when a market provider was attached; otherwise the per-path arrays are
+        # all-zeros and the result fields stay None / 0.0 so legacy consumers
+        # and market-off runs are unaffected.
+        df_export: Optional[pd.DataFrame] = None
+        export_revenue_total_mean_eur: float = 0.0
+        export_kwh_total_mean: float = 0.0
+        if market_provider is not None:
+            exp_kwh_mean, exp_kwh_p05, exp_kwh_p95 = stats(export_kwh_paths)
+            exp_eur_mean, exp_eur_p05, exp_eur_p95 = stats(export_eur_paths)
+            df_export = pd.DataFrame(
+                {
+                    "month_index": months,
+                    "year": years,
+                    "month_in_year": month_in_year,
+                    "export_kwh_mean": exp_kwh_mean,
+                    "export_kwh_p05": exp_kwh_p05,
+                    "export_kwh_p95": exp_kwh_p95,
+                    "export_eur_mean": exp_eur_mean,
+                    "export_eur_p05": exp_eur_p05,
+                    "export_eur_p95": exp_eur_p95,
+                }
+            )
+            export_revenue_total_mean_eur = float(
+                export_eur_paths.sum(axis=1).mean()
+            )
+            export_kwh_total_mean = float(export_kwh_paths.sum(axis=1).mean())
+
         return MonteCarloResults(
             df_profit=df_profit,
             df_energy=df_energy,
@@ -1279,6 +1383,18 @@ class MonteCarloSimulator:
                 if appliances_kpis_per_path
                 else None
             ),
+            # Dedicated-withdrawal export valuation. Per-path arrays are passed
+            # through only when a market provider was attached; otherwise the
+            # fields stay None / 0.0 (market-off byte-identical contract).
+            monthly_export_kwh_paths=(
+                export_kwh_paths if market_provider is not None else None
+            ),
+            monthly_export_eur_paths=(
+                export_eur_paths if market_provider is not None else None
+            ),
+            df_export=df_export,
+            export_revenue_total_mean_eur=export_revenue_total_mean_eur,
+            export_kwh_total_mean=export_kwh_total_mean,
         )
 
     # ---------- plotting utilities ----------

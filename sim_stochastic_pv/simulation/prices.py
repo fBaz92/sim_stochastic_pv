@@ -164,6 +164,61 @@ class PriceModel(ABC):
         """
         raise NotImplementedError
 
+    def get_price_hourly(
+        self, year_index: int, month_in_year: int, hour_of_day: int
+    ) -> float:
+        """
+        Get electricity price for a specific year, month, and hour of day.
+
+        Extends the monthly :meth:`get_price` with an hour-of-day axis so that
+        callers which value energy flows at hourly resolution (e.g. self-
+        consumption against an intraday retail tariff) have a single entry
+        point. The base-class default ignores ``hour_of_day`` and returns the
+        monthly price unchanged for all 24 hours: a model with no intraday
+        structure is, by construction, flat across the day. This keeps any
+        existing monthly-only consumer **byte-identical** — every hour of a
+        month carries exactly ``get_price(year, month)``.
+
+        Subclasses that genuinely carry an intraday price shape (for instance
+        a retail tariff derived from an hourly wholesale surface) may override
+        this method; they must keep :meth:`get_price` as the monthly aggregate
+        so the two views stay mutually consistent.
+
+        Args:
+            year_index: Simulation year (0-based integer). Same semantics as
+                :meth:`get_price`.
+            month_in_year: Month within the year (0-based, 0 = January,
+                11 = December). Same semantics as :meth:`get_price`.
+            hour_of_day: Hour of day (0-based integer, 0 = 00:00–01:00,
+                23 = 23:00–24:00). Ignored by the default implementation.
+
+        Returns:
+            float: Electricity price in EUR per kWh for that (year, month,
+                hour). For the default implementation this equals
+                ``get_price(year_index, month_in_year)`` for every hour.
+
+        Example:
+            ```python
+            import numpy as np
+            from sim_stochastic_pv.simulation.prices import EscalatingPriceModel
+
+            model = EscalatingPriceModel(use_stochastic_escalation=False)
+            model.reset_for_run(rng=np.random.default_rng(0), n_years=5)
+
+            monthly = model.get_price(2, 0)            # year 2, January
+            hourly = [model.get_price_hourly(2, 0, h) for h in range(24)]
+            assert all(abs(h - monthly) < 1e-12 for h in hourly)  # flat day
+            ```
+
+        Notes:
+            - Default is intentionally flat across the day (no intraday shape).
+            - Overriding subclasses must preserve the monthly-aggregate
+              invariant described above.
+            - Like :meth:`get_price`, this is deterministic within a single
+              Monte Carlo path once ``reset_for_run`` has completed.
+        """
+        return self.get_price(year_index, month_in_year)
+
 
 class EscalatingPriceModel(PriceModel):
     """

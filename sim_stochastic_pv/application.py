@@ -24,6 +24,7 @@ from .scenario_builder import (
     build_default_economic_config,
     build_default_energy_config,
     build_default_load_profile,
+    build_default_market_provider,
     build_default_optimization_request,
     build_default_price_model,
     build_default_solar_model,
@@ -391,6 +392,13 @@ class SimulationApplication:
         energy_cfg = build_default_energy_config(scenario_payload, self.persistence)
         price_model = build_default_price_model(scenario_data=scenario_payload)
         econ_cfg = build_default_economic_config(n_mc=n_mc, scenario_data=scenario_payload)
+        # Optional dedicated-withdrawal export valuation: resolved from the
+        # scenario's ``market_profile_id`` via the persistence service. ``None``
+        # when the scenario references no market profile, so the Monte Carlo
+        # stays byte-identical to a market-off run.
+        market_provider = build_default_market_provider(
+            scenario_payload, self.persistence
+        )
 
         energy_sim = EnergySystemSimulator(
             config=energy_cfg,
@@ -402,6 +410,7 @@ class SimulationApplication:
             energy_simulator=energy_sim,
             price_model=price_model,
             economic_config=econ_cfg,
+            market_price_provider=market_provider,
         )
 
         results = mc.run(

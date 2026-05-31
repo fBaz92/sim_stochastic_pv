@@ -18,6 +18,7 @@ from ..db.models import (
     ClimateProfileModel,
     InverterModel,
     LoadProfileModel,
+    MarketProfileModel,
     OptimizationRecord,
     PanelModel,
     PriceProfileModel,
@@ -31,6 +32,7 @@ from .climate_repo import ClimateProfileRepository
 from .configuration_repo import ConfigurationRepository
 from .execution_repo import ExecutionRepository
 from .hardware_repo import HardwareRepository
+from .market_repo import MarketProfileRepository
 from .solar_repo import SolarProfileRepository
 from .hydration import hydrate_scenario, hydrate_optimization, hydrate_scenario_from_ids
 
@@ -127,6 +129,9 @@ class PersistenceService:
         self.solar = SolarProfileRepository(self._session_factory)
         # Phase 15 — calibrated stochastic thermal profiles.
         self.climate = ClimateProfileRepository(self._session_factory)
+        # Reusable electricity-market profiles (cached wholesale price surface
+        # + dedicated-withdrawal valuation parameters).
+        self.market = MarketProfileRepository(self._session_factory)
 
     @contextmanager
     def session(self) -> Iterable[Session]:
@@ -536,6 +541,40 @@ class PersistenceService:
     def load_thermal_model(self, profile_id: int):
         """Convenience: hydrate a runtime ThermalModel (Phase 15) by climate profile id."""
         return self.climate.load_thermal_model(profile_id)
+
+    # ========================================================================
+    # Market Profile Operations (Delegate to MarketProfileRepository)
+    # ========================================================================
+
+    def upsert_market_profile(self, data: dict[str, Any]) -> MarketProfileModel:
+        """Insert or update a market profile by name."""
+        return self.market.upsert_market_profile(data)
+
+    def list_market_profiles(self) -> list[MarketProfileModel]:
+        """List all market profiles ordered by name."""
+        return self.market.list_market_profiles()
+
+    def get_market_profile_by_id(self, profile_id: int) -> MarketProfileModel | None:
+        """Fetch a market profile by primary key."""
+        return self.market.get_market_profile_by_id(profile_id)
+
+    def get_market_profile_by_name(self, name: str) -> MarketProfileModel | None:
+        """Fetch a market profile by unique name."""
+        return self.market.get_market_profile_by_name(name)
+
+    def update_market_profile(
+        self, profile_id: int, data: dict[str, Any]
+    ) -> MarketProfileModel | None:
+        """Update a market profile by ID (partial). Returns None if not found."""
+        return self.market.update_market_profile(profile_id, data)
+
+    def delete_market_profile(self, profile_id: int) -> bool:
+        """Delete a market profile by ID. Returns True if deleted, False if not found."""
+        return self.market.delete_market_profile(profile_id)
+
+    def load_market_provider(self, profile_id: int):
+        """Convenience: hydrate a runtime MarketPriceProvider by market profile id."""
+        return self.market.load_market_provider(profile_id)
 
 
 __all__ = ["PersistenceService"]

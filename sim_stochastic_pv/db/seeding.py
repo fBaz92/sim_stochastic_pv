@@ -254,6 +254,96 @@ def seed_inverters(session: Session, seed_dir: Path) -> int:
     return count
 
 
+# Default electricity-market profile seeded on first run. Modest dimensions
+# keep the one-off surface build fast (~2 s) and the JSON blob small while still
+# giving the PV Monte Carlo a realistic hourly wholesale surface to value PV
+# export against.
+_DEFAULT_MARKET_PROFILE_NAME = "Italia (mercato base)"
+_DEFAULT_MARKET_N_YEARS = 20
+_DEFAULT_MARKET_N_TRAJECTORIES = 8
+_DEFAULT_MARKET_PMG_EUR_PER_KWH = 0.04
+_DEFAULT_MARKET_SEED = 42
+
+
+def seed_market_profiles(session: Session) -> int:
+    """
+    Seed the default Italian electricity-market profile (idempotent).
+
+    Builds a wholesale price surface once from the packaged Italian generation
+    mix + base gas scenario, wraps it in a
+    :class:`~sim_stochastic_pv.simulation.market_pricing.MarketPriceProvider`
+    with a guaranteed minimum export price (PMG) of 0.04 EUR/kWh, and stores the
+    whole provider configuration in a ``MarketProfileModel`` named
+    "Italia (mercato base)".
+
+    The surface is built on a few representative years and interpolated, so the
+    one-off cost is a couple of seconds rather than a full per-year market Monte
+    Carlo over the whole horizon.
+
+    Args:
+        session: Active SQLAlchemy session for database operations.
+
+    Returns:
+        int: 1 if the profile was created, 0 if it already existed.
+
+    Notes:
+        - Idempotent: returns 0 without rebuilding when the named profile is
+          already present, so it is safe to call on every startup.
+        - Imports the market engine lazily so the db layer carries no hard
+          dependency on it at import time.
+    """
+    from .models import MarketProfileModel
+
+    existing = (
+        session.query(MarketProfileModel)
+        .filter_by(name=_DEFAULT_MARKET_PROFILE_NAME)
+        .first()
+    )
+    if existing is not None:
+        return 0
+
+    from ..market.config import GAS_SCENARIOS, ITALIAN_MIX
+    from ..market.horizon import MixTrend, build_price_surface
+    from ..simulation.market_pricing import MarketPriceProvider
+
+    n_years = _DEFAULT_MARKET_N_YEARS
+    representative_years = [0, n_years // 2, n_years - 1]
+    trend = MixTrend(base_mix=ITALIAN_MIX)
+    surface = build_price_surface(
+        trend,
+        GAS_SCENARIOS["base"],
+        n_years=n_years,
+        n_trajectories=_DEFAULT_MARKET_N_TRAJECTORIES,
+        representative_years=representative_years,
+        seed=_DEFAULT_MARKET_SEED,
+    )
+    provider = MarketPriceProvider(
+        surface, pmg_base_eur_per_kwh=_DEFAULT_MARKET_PMG_EUR_PER_KWH
+    )
+    data = provider.to_config_dict(
+        build_config={
+            "mix": "italian",
+            "gas_scenario": "base",
+            "representative_years": representative_years,
+            "n_trajectories": _DEFAULT_MARKET_N_TRAJECTORIES,
+            "n_years": n_years,
+            "seed": _DEFAULT_MARKET_SEED,
+        }
+    )
+    record = MarketProfileModel(
+        name=_DEFAULT_MARKET_PROFILE_NAME,
+        description=(
+            "Profilo di mercato elettrico italiano di default: superficie di "
+            "prezzo all'ingrosso (mix base, scenario gas base) con ritiro "
+            "dedicato a prezzo minimo garantito di 0.04 €/kWh."
+        ),
+        data=data,
+    )
+    session.add(record)
+    session.commit()
+    return 1
+
+
 def seed_database(session: Session, seed_dir: Path | None = None) -> Dict[str, int]:
     """
     Seed all database tables from JSON seed files.
@@ -298,6 +388,9 @@ def seed_database(session: Session, seed_dir: Path | None = None) -> Dict[str, i
         # MPPT-window model works out of the box.
         "panels": seed_panels(session, seed_dir),
         "inverters": seed_inverters(session, seed_dir),
+        # Ship a default electricity-market profile so the dedicated-withdrawal
+        # export valuation is available out of the box.
+        "market_profiles": seed_market_profiles(session),
         # Future expansion:
         # "batteries": seed_hardware_batteries(session, seed_dir),
     }

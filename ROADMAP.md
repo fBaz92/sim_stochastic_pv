@@ -1169,10 +1169,16 @@ nel DB), Fase 19 (pattern di sezione/lab end-to-end).
   Nuovi campi in `MonteCarloResults` (`monthly_export_kwh_paths`,
   `monthly_export_eur_paths`, `df_export`, totali).
 
-- **20e — Persistenza**: `MarketProfileModel(name, data JSON)` (precedente:
-  `ClimateProfileModel`), `market_profile_id` opzionale sullo scenario,
-  hydration in `scenario_builder`, regole in `validation.py`, migrazione
-  nullable + `ALTER TABLE`, seed di un profilo "Italia" di default.
+- **20e — Persistenza**: `MarketProfileModel(name, description, data JSON)`
+  (segue il pattern `ClimateProfileModel`), `market_profile_id` opzionale sullo
+  scenario **come chiave nel JSON di config** (esattamente come
+  `climate_profile_id`: nessuna colonna FK, quindi la nuova tabella
+  `market_profiles` è materializzata da `create_all` e non serve `ALTER TABLE`
+  sulle tabelle esistenti), hydration in `scenario_builder`
+  (`build_default_market_provider`), regole in `validation.py`, seed di un
+  profilo "Italia" di default. Il `data` JSON contiene la superficie di prezzo
+  precalcolata serializzata (`MarketPriceProvider.to_config_dict`) così il MC
+  PV fa solo lookup.
 
 - **20f — Sezione "Mercato Elettrico"** (pattern ThermalLab): lab orchestrator,
   `api/routes/market.py` (`/api/market`), `api/schemas/market.py`, pagina
@@ -1259,9 +1265,41 @@ strategie di scheduling intelligente (auto EV su PV, smart timer).
 ### 🚧 In corso
 
 **Fase 20 — Mercato elettrico sottostante (prezzo endogeno + ritiro dedicato)**
-— avviata 2026-05-31. Slice in corso: **20a** (port del motore di mercato in
-`sim_stochastic_pv/market/`). Vedi blocco *Fase 20* sopra per il piano completo
-delle 7 slice e le decisioni di design.
+— avviata 2026-05-31. Slice completate: **20a** (port motore di mercato),
+**20b** (trend di mix + superficie di prezzo cachabile), **20c** (cattura del
+surplus PV come export/curtailment), **20d** (provider prezzo
+`MarketPriceProvider` + integrazione del ricavo da immissione nel cashflow),
+**20e** (persistenza `MarketProfileModel` + idratazione nello scenario).
+Prossima slice: **20f** (sezione "Mercato Elettrico" + API + UI). Vedi blocco
+*Fase 20* sopra per il piano completo delle 7 slice e le decisioni di design.
+
+**20e completata (2026-05-31)**: nuovo `MarketProfileModel(name, description,
+data JSON)` in `db/models.py` (tabella `market_profiles`, materializzata da
+`create_all`); `MarketPriceProvider.to_config_dict`/`from_config_dict`
+serializzano superficie + PMG/retail; `persistence/market_repo.py`
+(`MarketProfileRepository` con CRUD + `load_market_provider`), esposto via il
+facade `PersistenceService` (`self.market` + metodi delega);
+`scenario_builder.build_default_market_provider` idrata il provider dal
+`market_profile_id`/`market_profile_name` nel JSON di scenario (pattern
+`climate_profile_id`, nessuna colonna FK); `application.run_analysis` passa il
+provider al MC (byte-identico quando assente); check di tipo in
+`validation.py`; `db/seeding.seed_market_profiles` semina il profilo "Italia
+(mercato base)" (superficie 8 traiettorie × 20 anni, PMG 0.04 €/kWh) sia su DB
+nuovo sia su DB esistente via `init_db` (idempotente).
+`tests/test_market_profile_persistence.py` (15 test). Verificato end-to-end:
+scenario con `market_profile_id` → ΔNPV positivo. Suite 565 verde.
+
+**20d completata (2026-05-31)**: nuovo modulo `simulation/market_pricing.py`
+con `MarketPriceProvider` (export = `max(wholesale, PMG)`,
+`PMG(anno)=PMG_base·(1+infl)^anno` indicizzato riusando i fattori d'inflazione
+della Fase 11, più tariffa retail opzionale `wholesale·(1+markup)+fissi`);
+hook `PriceModel.get_price_hourly` (default piatto su 24h → byte-identico);
+`MonteCarloSimulator` accetta un `market_price_provider` opzionale e ripiega il
+ricavo da immissione nel cashflow come il bonus fiscale (→ NPV/IRR/break-even).
+Nuovi campi `MonteCarloResults`: `monthly_export_kwh_paths`,
+`monthly_export_eur_paths`, `df_export`, `export_revenue_total_mean_eur`,
+`export_kwh_total_mean`. A mercato spento il run resta byte-identico.
+`tests/test_market_pricing.py` (22 test). Suite 550 verde.
 
 ### ✅ Completate
 

@@ -125,6 +125,19 @@ def validate_scenario(data: Dict[str, Any]) -> List[str]:
     if isinstance(data.get("load_profile"), dict) and "appliances" in data["load_profile"]:
         errors.extend(_validate_appliances(data["load_profile"]["appliances"]))
 
+    # Underlying electricity-market reference (dedicated-withdrawal export
+    # valuation). Only a light type check here; the existence of the referenced
+    # profile is enforced when the scenario_builder hydrates the provider
+    # against the database (a missing id/name raises there).
+    if "market_profile_id" in data:
+        mpid = data["market_profile_id"]
+        if not isinstance(mpid, int) or isinstance(mpid, bool) or mpid <= 0:
+            errors.append("market_profile_id must be a positive integer")
+    if "market_profile_name" in data:
+        mpname = data["market_profile_name"]
+        if not isinstance(mpname, str) or not mpname.strip():
+            errors.append("market_profile_name must be a non-empty string")
+
     return errors
 
 
