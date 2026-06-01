@@ -186,6 +186,11 @@ class MarketLabResult:
     price_setter_dominant: np.ndarray
     price_setter_share_year: dict[str, float]
     mean_price_eur_per_kwh: float
+    # Fuel/CO2 mean-price trajectories over the horizon (the mean-reversion
+    # level of each O-U process, drifted per year). Gas in EUR/MWh thermal,
+    # CO2 in EUR/ton. Shape ``(n_years,)``.
+    gas_price_by_year_eur_per_mwh: np.ndarray
+    co2_price_by_year_eur_per_ton: np.ndarray
     n_trajectories: int
     n_runs: int
 
@@ -451,6 +456,26 @@ def run_market_lab(config: MarketLabConfig) -> MarketLabResult:
 
     setter_techs, dominant, share_year = _price_setter_views(config, trend, techs)
 
+    # Fuel/CO2 mean-price trajectories (O-U mean-reversion level, drifted per
+    # year). Gas always has a scenario; CO2 falls back to the base preset when
+    # the engine default is left selected, just for display.
+    gas_base = GAS_SCENARIOS[config.gas_scenario]
+    co2_base = _co2_scenario(config) or CO2_SCENARIOS["base"]
+    gas_price_by_year = np.array(
+        [
+            float(trend.gas_scenario_for_year(gas_base, y)["mu"])
+            for y in range(config.n_years)
+        ],
+        dtype=float,
+    )
+    co2_price_by_year = np.array(
+        [
+            float(trend.co2_scenario_for_year(co2_base, y)["mu"])
+            for y in range(config.n_years)
+        ],
+        dtype=float,
+    )
+
     return MarketLabResult(
         techs=techs,
         years=list(range(config.n_years)),
@@ -466,6 +491,8 @@ def run_market_lab(config: MarketLabConfig) -> MarketLabResult:
         price_setter_dominant=dominant,
         price_setter_share_year=share_year,
         mean_price_eur_per_kwh=float(heatmap.mean()),
+        gas_price_by_year_eur_per_mwh=gas_price_by_year,
+        co2_price_by_year_eur_per_ton=co2_price_by_year,
         n_trajectories=config.n_trajectories,
         n_runs=config.n_runs,
     )

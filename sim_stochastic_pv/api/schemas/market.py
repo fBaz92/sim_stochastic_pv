@@ -60,8 +60,8 @@ class MarketLabRunRequest(BaseModel):
     gas_mu_drift_annual: float = 0.0
     co2_mu_drift_annual: float = 0.0
     n_years: Annotated[int, Field(ge=1, le=30)] = 20
-    n_trajectories: Annotated[int, Field(ge=1, le=50)] = 8
-    n_runs: Annotated[int, Field(ge=1, le=50)] = 6
+    n_trajectories: Annotated[int, Field(ge=1, le=100)] = 8
+    n_runs: Annotated[int, Field(ge=1, le=100)] = 6
     seed: int = 42
     display_year: Annotated[int, Field(ge=0)] = 0
 
@@ -133,6 +133,9 @@ class MarketLabResponse(BaseModel):
     price_setter_dominant: list[list[int]]
     price_setter_share_year: dict[str, float]
     mean_price_eur_per_kwh: float
+    # Fuel/CO2 mean-price trajectories over the horizon.
+    gas_price_by_year_eur_per_mwh: list[float]
+    co2_price_by_year_eur_per_ton: list[float]
     n_trajectories: int
     n_runs: int
 

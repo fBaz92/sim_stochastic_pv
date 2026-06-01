@@ -248,10 +248,60 @@
                 ],
             },
             options: {
-                plugins: { legend: { display: true } },
+                plugins: {
+                    legend: {
+                        display: true,
+                        // Hide the invisible lower-bound dataset from the legend.
+                        labels: { filter: (item) => item.text !== "p05" },
+                    },
+                },
                 scales: {
                     x: { title: { display: true, text: "Anno" } },
                     y: { title: { display: true, text: "€/kWh" } },
+                },
+            },
+        };
+    }
+
+    function buildFuelConfig(res) {
+        return {
+            type: "line",
+            data: {
+                labels: res.years,
+                datasets: [
+                    {
+                        label: "Gas (€/MWh)",
+                        data: res.gas_price_by_year_eur_per_mwh,
+                        borderColor: "#ef4444",
+                        backgroundColor: "#ef4444",
+                        pointRadius: 2,
+                        fill: false,
+                        yAxisID: "y",
+                    },
+                    {
+                        label: "CO₂ (€/t)",
+                        data: res.co2_price_by_year_eur_per_ton,
+                        borderColor: "#6b7280",
+                        backgroundColor: "#6b7280",
+                        pointRadius: 2,
+                        fill: false,
+                        yAxisID: "y1",
+                    },
+                ],
+            },
+            options: {
+                plugins: { legend: { display: true } },
+                scales: {
+                    x: { title: { display: true, text: "Anno" } },
+                    y: {
+                        position: "left",
+                        title: { display: true, text: "Gas €/MWh" },
+                    },
+                    y1: {
+                        position: "right",
+                        title: { display: true, text: "CO₂ €/t" },
+                        grid: { drawOnChartArea: false },
+                    },
                 },
             },
         };
@@ -307,7 +357,12 @@
         };
     }
 
+    // Year options for the "Anno mostrato" dropdown (0 .. n_years-1).
+    $: yearOptions = Array.from({ length: Math.max(1, Number(nYears) || 1) }, (_, i) => i);
+    // Keep the displayed-year dropdown valid when the horizon shrinks.
+    $: if (displayYear > (Number(nYears) || 1) - 1) displayYear = Math.max(0, (Number(nYears) || 1) - 1);
     $: fanConfig = result ? buildFanConfig(result) : null;
+    $: fuelConfig = result ? buildFuelConfig(result) : null;
     $: durationConfig = result ? buildDurationConfig(result) : null;
     $: capacityConfig = result ? buildCapacityConfig(result) : null;
     $: setterColors = result ? result.price_setter_techs.map((t, i) => colorFor(t, i)) : [];
@@ -408,17 +463,27 @@
                 </div>
                 <div class="form-group">
                     <label class="label" for="displayYear">Anno mostrato</label>
-                    <input id="displayYear" class="input" type="number" min="0" bind:value={displayYear} />
+                    <select id="displayYear" class="select" bind:value={displayYear} on:change={() => run()}>
+                        {#each yearOptions as y}
+                            <option value={y}>Anno {y}</option>
+                        {/each}
+                    </select>
                 </div>
                 <div class="form-group">
-                    <label class="label" for="nTraj">Traiettorie</label>
-                    <input id="nTraj" class="input" type="number" min="1" max="50" bind:value={nTrajectories} />
+                    <label class="label" for="nTraj" title="Numero di traiettorie di mercato indipendenti per la banda di incertezza del prezzo (fan chart / heatmap / durata)">Traiettorie ⓘ</label>
+                    <input id="nTraj" class="input" type="number" min="1" max="100" bind:value={nTrajectories} />
                 </div>
                 <div class="form-group">
-                    <label class="label" for="nRuns">Run (chi fissa prezzo)</label>
-                    <input id="nRuns" class="input" type="number" min="1" max="50" bind:value={nRuns} />
+                    <label class="label" for="nRuns" title="Simulazioni Monte Carlo del mercato usate per la heatmap «chi fissa il prezzo»: quante volte si ridispatcha l'anno per stimare quale tecnologia è marginale. Più simulazioni = stima più stabile, ma più lento.">Simulazioni «chi fissa il prezzo» ⓘ</label>
+                    <input id="nRuns" class="input" type="number" min="1" max="100" bind:value={nRuns} />
                 </div>
             </div>
+            <p class="hint">
+                «Anno mostrato» ricalcola heatmap, curva di durata e «chi fissa
+                il prezzo» per l'anno scelto. «Traiettorie» allarga/restringe la
+                banda d'incertezza del prezzo; «Simulazioni» raffina la stima di
+                chi fissa il prezzo.
+            </p>
 
             <button class="btn btn-primary run-btn" on:click={run} disabled={running}>
                 {running ? "Calcolo in corso…" : "Calcola mercato"}
@@ -532,6 +597,14 @@
                     <div class="section-title">Capacità installata per tecnologia</div>
                     <div class="chart-wrap">
                         <ResultsChart type={capacityConfig.type} data={capacityConfig.data} options={capacityConfig.options} downloadFilename="mix_capacita" />
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="section-title">Prezzi combustibili — gas e CO₂</div>
+                    <p class="text-meta">Livello medio del prezzo (mean-reversion) per anno: gas in €/MWh termici, CO₂ in €/tonnellata. Sono i driver del prezzo all'ingrosso.</p>
+                    <div class="chart-wrap">
+                        <ResultsChart type={fuelConfig.type} data={fuelConfig.data} options={fuelConfig.options} downloadFilename="prezzi_combustibili" />
                     </div>
                 </div>
 

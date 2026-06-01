@@ -56,6 +56,40 @@ def test_run_market_lab_shapes():
     assert r.price_setter_dominant.shape == (12, 24)
     assert len(r.techs) == 6
     assert r.mean_price_eur_per_kwh > 0.0
+    # Fuel/CO2 trajectories, one value per horizon year, strictly positive.
+    assert r.gas_price_by_year_eur_per_mwh.shape == (3,)
+    assert r.co2_price_by_year_eur_per_ton.shape == (3,)
+    assert (r.gas_price_by_year_eur_per_mwh > 0).all()
+    assert (r.co2_price_by_year_eur_per_ton > 0).all()
+
+
+def test_run_market_lab_fuel_drift_applied():
+    r = run_market_lab(_small_config(gas_mu_drift_annual=0.10))
+    gas = r.gas_price_by_year_eur_per_mwh
+    # +10%/year drift on the gas mean price.
+    assert gas[1] == pytest.approx(gas[0] * 1.10, rel=1e-6)
+
+
+def test_run_endpoint_exposes_fuel_prices(persistence):
+    client = _create_test_client(persistence)
+    resp = client.post("/api/market/run", json=_small_request_body())
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["gas_price_by_year_eur_per_mwh"]) == 3
+    assert len(data["co2_price_by_year_eur_per_ton"]) == 3
+
+
+def test_schema_caps_raised_to_100():
+    # Regression: n_runs / n_trajectories cap raised from 50 to 100. Checked at
+    # the schema layer (instant) rather than via a heavy 100-dispatch run.
+    from sim_stochastic_pv.api.schemas.market import MarketLabRunRequest
+
+    req = MarketLabRunRequest(n_runs=100, n_trajectories=100)
+    assert req.n_runs == 100 and req.n_trajectories == 100
+    with pytest.raises(Exception):
+        MarketLabRunRequest(n_runs=101)
+    with pytest.raises(Exception):
+        MarketLabRunRequest(n_trajectories=101)
 
 
 def test_run_market_lab_fan_band_ordered():

@@ -100,6 +100,8 @@ def _to_response(result: MarketLabResult) -> MarketLabResponse:
         price_setter_dominant=result.price_setter_dominant.tolist(),
         price_setter_share_year=result.price_setter_share_year,
         mean_price_eur_per_kwh=result.mean_price_eur_per_kwh,
+        gas_price_by_year_eur_per_mwh=result.gas_price_by_year_eur_per_mwh.tolist(),
+        co2_price_by_year_eur_per_ton=result.co2_price_by_year_eur_per_ton.tolist(),
         n_trajectories=result.n_trajectories,
         n_runs=result.n_runs,
     )

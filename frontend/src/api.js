@@ -1,5 +1,26 @@
 const API_BASE = 'http://localhost:8000/api';
 
+// Turn a FastAPI error body into a readable string. ``detail`` is a string for
+// HTTPException (our 400/404), but a LIST of {loc,msg,type} objects for 422
+// request-validation errors — stringifying that naively yields "[object
+// Object]", so we extract the field + message instead.
+function formatApiError(body, fallback) {
+    const d = body && body.detail;
+    if (typeof d === 'string') return d;
+    if (Array.isArray(d)) {
+        return d
+            .map((e) => {
+                const loc = Array.isArray(e.loc)
+                    ? e.loc.filter((x) => x !== 'body').join('.')
+                    : '';
+                return loc && e.msg ? `${loc}: ${e.msg}` : (e.msg || JSON.stringify(e));
+            })
+            .join('; ');
+    }
+    if (d && typeof d === 'object') return JSON.stringify(d);
+    return fallback || 'Richiesta API fallita';
+}
+
 async function request(endpoint, options = {}) {
     const url = `${API_BASE}${endpoint}`;
     const headers = {
@@ -11,7 +32,7 @@ async function request(endpoint, options = {}) {
 
     if (!response.ok) {
         const error = await response.json().catch(() => ({ detail: response.statusText }));
-        throw new Error(error.detail || 'API Request Failed');
+        throw new Error(formatApiError(error, 'API Request Failed'));
     }
     // 204 No Content: return null instead of calling .json() (which would throw)
     if (response.status === 204) return null;
@@ -31,7 +52,7 @@ async function downloadPost(endpoint, payload, filename) {
     });
     if (!response.ok) {
         const err = await response.json().catch(() => ({ detail: response.statusText }));
-        throw new Error(err.detail || 'Export failed');
+        throw new Error(formatApiError(err, 'Export failed'));
     }
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
