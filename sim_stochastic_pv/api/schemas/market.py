@@ -9,7 +9,7 @@ the market engine enforces the deeper invariants.
 
 from __future__ import annotations
 
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -150,3 +150,24 @@ class MarketProfileSaveResponse(BaseModel):
 
     id: int
     name: str
+
+
+class MarketProfileDetail(BaseModel):
+    """
+    Full editable detail of a saved market profile.
+
+    Returns the PMG / retail parameters plus the ``build_config`` blob that
+    produced the profile, so the lab UI can reload a saved market into its
+    editor. ``config`` is the (free-form) build configuration as it was stored;
+    the frontend reads the keys it recognises and falls back to defaults for
+    the rest (the seeded default profile stores a lighter config than a
+    lab-designed one).
+    """
+
+    id: int
+    name: str
+    description: Optional[str] = None
+    pmg_base_eur_per_kwh: float = 0.0
+    retail_markup_fraction: Optional[float] = None
+    retail_fixed_components_eur_per_kwh: float = 0.0
+    config: dict[str, Any] = Field(default_factory=dict)

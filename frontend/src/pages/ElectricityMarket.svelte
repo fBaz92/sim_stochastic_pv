@@ -163,6 +163,53 @@
         }
     }
 
+    // Load a saved profile back into the editor (config + PMG/retail), then
+    // recompute. Reads only the keys it recognises so the lighter seeded
+    // profile loads too (the rest keeps the current defaults).
+    async function loadProfile(id) {
+        saveError = null;
+        saveMsg = "";
+        try {
+            const p = await api.getMarketProfile(id);
+            const c = p.config || {};
+            if (c.gas_scenario) gasScenario = c.gas_scenario;
+            if ("co2_scenario" in c) co2Scenario = c.co2_scenario ?? "";
+            if ("coal_scenario" in c) coalScenario = c.coal_scenario ?? "";
+            if (c.gas_mu_drift_annual != null) gasDrift = c.gas_mu_drift_annual;
+            if (c.co2_mu_drift_annual != null) co2Drift = c.co2_mu_drift_annual;
+            if (c.n_years != null) nYears = c.n_years;
+            if (c.n_trajectories != null) nTrajectories = c.n_trajectories;
+            if (c.n_runs != null) nRuns = c.n_runs;
+            if (c.seed != null) seed = c.seed;
+            if (c.display_year != null) displayYear = c.display_year;
+            for (const t of TECHS) {
+                if (c.capacities_gw && c.capacities_gw[t.key] != null) {
+                    techState[t.key].cap = c.capacities_gw[t.key];
+                }
+                const tr = c.capacity_trends && c.capacity_trends[t.key];
+                if (tr) {
+                    techState[t.key].growth = tr.annual_growth_pct ?? 0;
+                    techState[t.key].stepYear = tr.step_year ?? "";
+                    techState[t.key].stepCap = tr.step_capacity_gw ?? "";
+                }
+            }
+            techState = { ...techState }; // trigger reactivity after nested edits
+            savePmg = p.pmg_base_eur_per_kwh ?? savePmg;
+            if (p.retail_markup_fraction != null) {
+                saveRetailEnabled = true;
+                saveMarkupPct = Math.round(p.retail_markup_fraction * 100);
+                saveFixed = p.retail_fixed_components_eur_per_kwh ?? saveFixed;
+            } else {
+                saveRetailEnabled = false;
+            }
+            saveName = p.name;
+            saveMsg = `Profilo "${p.name}" caricato nell'editor.`;
+            await run();
+        } catch (e) {
+            saveError = e.message;
+        }
+    }
+
     onMount(async () => {
         await loadProfiles();
         await run();
@@ -284,28 +331,38 @@
         <!-- ── Config card ─────────────────────────────────────────────── -->
         <div class="card config-card">
             <div class="section-title">Mix e trend di capacità</div>
-            <table class="mix-table">
-                <thead>
-                    <tr>
-                        <th>Tecnologia</th>
-                        <th>GW</th>
-                        <th>%/anno</th>
-                        <th>Anno step</th>
-                        <th>GW step</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {#each TECHS as t}
+            <div class="mix-table-wrap">
+                <table class="mix-table">
+                    <thead>
                         <tr>
-                            <td><span class="dot" style="background:{t.color}"></span>{t.label}</td>
-                            <td><input class="input mini" type="number" min="0" step="0.5" bind:value={techState[t.key].cap} /></td>
-                            <td><input class="input mini" type="number" step="0.5" bind:value={techState[t.key].growth} /></td>
-                            <td><input class="input mini" type="number" min="0" bind:value={techState[t.key].stepYear} placeholder="—" /></td>
-                            <td><input class="input mini" type="number" min="0" step="0.5" bind:value={techState[t.key].stepCap} placeholder="—" /></td>
+                            <th>Tecnologia</th>
+                            <th title="Capacità installata all'anno 0 (GW)">GW</th>
+                            <th title="Crescita (positivo) o dismissione (negativo) annua composta, in % all'anno">%/anno</th>
+                            <th title="Anno (0-based) a partire dal quale si impone una nuova capacità (es. nuovo nucleare)">Anno step</th>
+                            <th title="Capacità imposta (GW) a partire dall'anno step">GW step</th>
                         </tr>
-                    {/each}
-                </tbody>
-            </table>
+                    </thead>
+                    <tbody>
+                        {#each TECHS as t}
+                            <tr>
+                                <td><span class="dot" style="background:{t.color}"></span>{t.label}</td>
+                                <td><input class="input mini" type="number" min="0" step="0.5" bind:value={techState[t.key].cap} /></td>
+                                <td><input class="input mini" type="number" step="0.5" bind:value={techState[t.key].growth} /></td>
+                                <td><input class="input mini" type="number" min="0" bind:value={techState[t.key].stepYear} placeholder="—" /></td>
+                                <td><input class="input mini" type="number" min="0" step="0.5" bind:value={techState[t.key].stepCap} placeholder="—" /></td>
+                            </tr>
+                        {/each}
+                    </tbody>
+                </table>
+            </div>
+            <p class="hint">
+                <strong>%/anno</strong>: crescita (valore positivo) o dismissione
+                (negativo) annua composta della capacità — es. <em>Solare +6</em>,
+                <em>Carbone −10</em>. <strong>Anno step</strong> + <strong>GW step</strong>:
+                impongono una capacità a partire da un dato anno — es. nucleare
+                <em>anno 9 → 4 GW</em> (la crescita riparte da lì). Lascia vuoti i
+                campi step per non usarli.
+            </p>
 
             <div class="divider"></div>
             <div class="section-title">Scenari combustibili</div>
@@ -405,10 +462,15 @@
             {#if saveError}<p class="error-msg">{saveError}</p>{/if}
 
             {#if savedProfiles.length}
+                <p class="hint profile-list-title">Profili salvati — clicca per caricare nell'editor</p>
                 <ul class="profile-list">
                     {#each savedProfiles as p}
                         <li>
-                            <span title={p.description || ""}>{p.name}</span>
+                            <button
+                                class="profile-name-btn"
+                                on:click={() => loadProfile(p.id)}
+                                title={p.description || "Carica questo profilo nell'editor"}
+                            >{p.name}</button>
                             <button class="link-btn" on:click={() => deleteProfile(p.id)} title="Elimina">×</button>
                         </li>
                     {/each}
@@ -513,21 +575,29 @@
     }
     .lab-grid {
         display: grid;
-        grid-template-columns: 360px 1fr;
+        grid-template-columns: 420px 1fr;
         gap: 1.5rem;
         align-items: start;
     }
+    /* min-width:0 lets each grid item shrink to its track and clip its own
+       overflow, so the config card never bleeds over the results column. */
     .config-card {
         position: sticky;
         top: 1rem;
+        min-width: 0;
+        overflow: hidden;
     }
     .results-col {
         display: flex;
         flex-direction: column;
         gap: 1.5rem;
+        min-width: 0;
     }
     .chart-wrap {
         height: 320px;
+    }
+    .mix-table-wrap {
+        overflow-x: auto;
     }
     .mix-table {
         width: 100%;
@@ -538,16 +608,43 @@
         text-align: left;
         font-weight: 600;
         color: var(--color-text-secondary, #6b7280);
-        padding: 2px 4px;
+        padding: 2px 3px;
         font-size: 0.7rem;
+        cursor: help;
     }
     .mix-table td {
-        padding: 2px 4px;
+        padding: 2px 3px;
         white-space: nowrap;
     }
     .input.mini {
-        width: 64px;
-        padding: 3px 5px;
+        width: 52px;
+        padding: 3px 4px;
+    }
+    .hint {
+        font-size: 0.75rem;
+        color: var(--color-text-secondary, #6b7280);
+        line-height: 1.4;
+        margin: 0.5rem 0 0 0;
+    }
+    .profile-list-title {
+        margin-top: 0.75rem;
+        font-weight: 600;
+    }
+    .profile-name-btn {
+        background: none;
+        border: none;
+        padding: 0;
+        color: var(--color-accent, #3b82f6);
+        cursor: pointer;
+        font-size: 0.85rem;
+        text-align: left;
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .profile-name-btn:hover {
+        text-decoration: underline;
     }
     .dot {
         display: inline-block;

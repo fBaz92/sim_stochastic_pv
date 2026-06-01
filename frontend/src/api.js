@@ -182,6 +182,9 @@ export const api = {
     async listMarketProfiles() {
         return request('/market/profiles');
     },
+    async getMarketProfile(id) {
+        return request(`/market/profiles/${id}`);
+    },
     async saveMarketProfile(payload) {
         return request('/market/profiles', {
             method: 'POST',

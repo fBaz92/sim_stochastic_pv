@@ -176,6 +176,34 @@ def test_profiles_save_list_delete_roundtrip(persistence):
     assert client.delete(f"/api/market/profiles/{profile_id}").status_code == 404
 
 
+def test_get_profile_detail_returns_config(persistence):
+    client = _create_test_client(persistence)
+    save = client.post(
+        "/api/market/profiles",
+        json={
+            "name": "Detail test",
+            "config": _small_request_body(gas_scenario="tension", n_years=4),
+            "pmg_base_eur_per_kwh": 0.05,
+            "retail_markup_fraction": 0.7,
+        },
+    )
+    pid = save.json()["id"]
+    detail = client.get(f"/api/market/profiles/{pid}")
+    assert detail.status_code == 200
+    d = detail.json()
+    assert d["name"] == "Detail test"
+    assert d["pmg_base_eur_per_kwh"] == pytest.approx(0.05)
+    assert d["retail_markup_fraction"] == pytest.approx(0.7)
+    # The build config round-trips so the UI can reload it into the editor.
+    assert d["config"]["gas_scenario"] == "tension"
+    assert d["config"]["n_years"] == 4
+
+
+def test_get_profile_detail_404(persistence):
+    client = _create_test_client(persistence)
+    assert client.get("/api/market/profiles/99999").status_code == 404
+
+
 def test_export_xlsx_endpoint(persistence):
     client = _create_test_client(persistence)
     resp = client.post("/api/market/run/export.xlsx", json=_small_request_body())

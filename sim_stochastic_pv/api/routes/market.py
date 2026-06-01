@@ -38,6 +38,7 @@ from .. import dependencies
 from ..schemas.market import (
     MarketLabResponse,
     MarketLabRunRequest,
+    MarketProfileDetail,
     MarketProfileRef,
     MarketProfileSaveRequest,
     MarketProfileSaveResponse,
@@ -182,6 +183,40 @@ def list_market_profiles(
         MarketProfileRef(id=p.id, name=p.name, description=p.description)
         for p in persistence.list_market_profiles()
     ]
+
+
+@router.get("/profiles/{profile_id}", response_model=MarketProfileDetail)
+def get_market_profile(
+    profile_id: int,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> MarketProfileDetail:
+    """
+    Return a saved market profile's editable detail (config + PMG/retail).
+
+    Used by the lab UI to reload a saved market into its editor. The cached
+    price surface is intentionally omitted (it is rebuilt on demand); only the
+    build configuration and the valuation parameters are returned.
+
+    Errors:
+        404 if the profile does not exist.
+    """
+    record = persistence.get_market_profile_by_id(profile_id)
+    if record is None:
+        raise HTTPException(
+            status_code=404, detail=f"Market profile {profile_id} not found"
+        )
+    data = record.data or {}
+    return MarketProfileDetail(
+        id=record.id,
+        name=record.name,
+        description=record.description,
+        pmg_base_eur_per_kwh=float(data.get("pmg_base_eur_per_kwh", 0.0)),
+        retail_markup_fraction=data.get("retail_markup_fraction"),
+        retail_fixed_components_eur_per_kwh=float(
+            data.get("retail_fixed_components_eur_per_kwh", 0.0)
+        ),
+        config=dict(data.get("build_config") or {}),
+    )
 
 
 @router.post("/profiles", response_model=MarketProfileSaveResponse)
