@@ -477,6 +477,17 @@ class MonteCarloResults:
     df_export: Optional[pd.DataFrame] = None
     export_revenue_total_mean_eur: float = 0.0
     export_kwh_total_mean: float = 0.0
+    # Mean hourly profiles by (year, month, hour) with cross-path p05/p95 bands.
+    # ``load_profile_*`` (household consumption, kWh) is always populated;
+    # ``indoor_temp_profile_*`` (indoor temperature, °C) only when the dynamic
+    # RC thermal mode produced an hourly trajectory (else ``None``). Each grid
+    # has shape ``(n_years, 12, 24)``.
+    load_profile_mean_kwh: Optional[np.ndarray] = None
+    load_profile_p05_kwh: Optional[np.ndarray] = None
+    load_profile_p95_kwh: Optional[np.ndarray] = None
+    indoor_temp_profile_mean_c: Optional[np.ndarray] = None
+    indoor_temp_profile_p05_c: Optional[np.ndarray] = None
+    indoor_temp_profile_p95_c: Optional[np.ndarray] = None
 
 
 class MonteCarloSimulator:
@@ -957,6 +968,14 @@ class MonteCarloSimulator:
         export_kwh_paths = np.zeros((n_mc, n_months))
         export_eur_paths = np.zeros((n_mc, n_months))
 
+        # Per-path mean hourly profiles by (year, month, hour): household
+        # consumption (always) and indoor temperature (dynamic RC thermal mode
+        # only). Used to build the Dashboard's monthly hourly-profile views with
+        # p05/p95 bands across paths.
+        load_profile_paths = np.zeros((n_mc, n_years, 12, 24))
+        temp_profile_paths = np.zeros((n_mc, n_years, 12, 24))
+        temp_profile_available = False
+
         months = np.arange(n_months)
         years = months // 12
         month_in_year = months % 12
@@ -1141,6 +1160,20 @@ class MonteCarloSimulator:
 
             soh_paths[i, :] = soh_end_of_month
             soc_profiles_paths[i, :, :] = soc_profile_first_year
+
+            # Per-path hourly profiles by (year, month): consumption (always)
+            # and indoor temperature (dynamic thermal mode only).
+            load_profile = getattr(
+                self.energy_simulator, "last_load_kwh_by_year_month_hour", None
+            )
+            if load_profile is not None:
+                load_profile_paths[i, :, :, :] = load_profile
+            temp_profile = getattr(
+                self.energy_simulator, "last_indoor_temp_c_by_year_month_hour", None
+            )
+            if temp_profile is not None:
+                temp_profile_paths[i, :, :, :] = temp_profile
+                temp_profile_available = True
 
             # Phase 16 — capture the electrical KPI snapshot from the
             # per-path run (None when the model is off).
@@ -1350,6 +1383,19 @@ class MonteCarloSimulator:
                 }
             )
 
+        # Mean hourly profiles by (year, month, hour) with cross-path bands.
+        load_profile_mean = load_profile_paths.mean(axis=0)
+        load_profile_p05 = np.percentile(load_profile_paths, 5, axis=0)
+        load_profile_p95 = np.percentile(load_profile_paths, 95, axis=0)
+        if temp_profile_available:
+            indoor_temp_profile_mean = temp_profile_paths.mean(axis=0)
+            indoor_temp_profile_p05 = np.percentile(temp_profile_paths, 5, axis=0)
+            indoor_temp_profile_p95 = np.percentile(temp_profile_paths, 95, axis=0)
+        else:
+            indoor_temp_profile_mean = None
+            indoor_temp_profile_p05 = None
+            indoor_temp_profile_p95 = None
+
         # Dedicated-withdrawal (ritiro dedicato) export diagnostics. Built only
         # when a market provider was attached; otherwise the per-path arrays are
         # all-zeros and the result fields stay None / 0.0 so legacy consumers
@@ -1450,6 +1496,14 @@ class MonteCarloSimulator:
             df_export=df_export,
             export_revenue_total_mean_eur=export_revenue_total_mean_eur,
             export_kwh_total_mean=export_kwh_total_mean,
+            # Mean hourly profiles (consumption always; indoor temperature only
+            # in dynamic thermal mode).
+            load_profile_mean_kwh=load_profile_mean,
+            load_profile_p05_kwh=load_profile_p05,
+            load_profile_p95_kwh=load_profile_p95,
+            indoor_temp_profile_mean_c=indoor_temp_profile_mean,
+            indoor_temp_profile_p05_c=indoor_temp_profile_p05,
+            indoor_temp_profile_p95_c=indoor_temp_profile_p95,
         )
 
     # ---------- plotting utilities ----------

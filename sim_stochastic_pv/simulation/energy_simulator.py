@@ -187,6 +187,12 @@ class EnergySystemSimulator:
         # NOT bought from the grid. The economic layer can value it against an
         # hourly retail price when the market drives the purchase side too.
         self.last_self_consumption_kwh_by_year_month_hour: np.ndarray | None = None
+        # Mean hourly consumption + indoor-temperature profiles per (year,
+        # month): the average 24-hour shape of each calendar month/year, for the
+        # Dashboard's monthly timeseries views. The temperature profile is
+        # ``None`` unless the dynamic RC thermal mode produced a trajectory.
+        self.last_load_kwh_by_year_month_hour: np.ndarray | None = None
+        self.last_indoor_temp_c_by_year_month_hour: np.ndarray | None = None
 
         self.battery_bank = BatteryBank(
             specs=config.battery_specs,
@@ -325,6 +331,11 @@ class EnergySystemSimulator:
         export_kwh_by_year_month_hour = np.zeros((self.config.n_years, 12, 24))
         # Self-consumption (PV-direct + battery-to-load) by (year, month, hour).
         self_consumption_kwh_by_year_month_hour = np.zeros((self.config.n_years, 12, 24))
+        # Total household load by (year, month, hour): summed over the days of
+        # each month, then divided by the day count at the end to yield the
+        # mean hourly consumption profile of that calendar month/year.
+        load_sum_by_year_month_hour = np.zeros((self.config.n_years, 12, 24))
+        days_by_year_month = np.zeros((self.config.n_years, 12), dtype=float)
 
         soc_accum = np.zeros((12, 24))
         soc_count = np.zeros((12, 24), dtype=int)
@@ -395,12 +406,14 @@ class EnergySystemSimulator:
                 self_consumption_kwh_by_year_month_hour[year_idx, month_in_year, h] += (
                     e_pv_direct + e_batt_discharge_to_load
                 )
+                load_sum_by_year_month_hour[year_idx, month_in_year, h] += e_load
 
                 if year_idx == 0:
                     soc = self.battery_bank.soc_fraction()
                     soc_accum[month_in_year, h] += soc
                     soc_count[month_in_year, h] += 1
 
+            days_by_year_month[year_idx, month_in_year] += 1.0
             soh_end_of_month[month_idx] = self.battery_bank.soh
 
         soc_profile_first_year = np.zeros_like(soc_accum)
@@ -453,6 +466,32 @@ class EnergySystemSimulator:
         self.last_self_consumption_kwh_by_year_month_hour = (
             self_consumption_kwh_by_year_month_hour
         )
+        # Mean hourly consumption profile per (year, month): the per-month sum
+        # divided by the day count (broadcast over the 24 hours).
+        with np.errstate(invalid="ignore", divide="ignore"):
+            days = days_by_year_month[:, :, None]
+            self.last_load_kwh_by_year_month_hour = np.where(
+                days > 0.0, load_sum_by_year_month_hour / np.where(days > 0.0, days, 1.0), 0.0
+            )
+        # Mean indoor-temperature profile per (year, month, hour) — only when the
+        # dynamic RC thermal mode produced an hourly trajectory; ``None`` (no
+        # temperature) in steady-state or when HVAC is disabled.
+        if self.last_indoor_temp_c is not None:
+            t_hourly = np.asarray(self.last_indoor_temp_c, dtype=float).reshape(n_days, 24)
+            t_sum = np.zeros((self.config.n_years, 12, 24))
+            for h in range(24):
+                np.add.at(
+                    t_sum[:, :, h],
+                    (self.year_index_for_day, self.month_in_year_for_day),
+                    t_hourly[:, h],
+                )
+            with np.errstate(invalid="ignore", divide="ignore"):
+                days = days_by_year_month[:, :, None]
+                self.last_indoor_temp_c_by_year_month_hour = np.where(
+                    days > 0.0, t_sum / np.where(days > 0.0, days, 1.0), np.nan
+                )
+        else:
+            self.last_indoor_temp_c_by_year_month_hour = None
 
         return (
             monthly_pv_prod_kwh,

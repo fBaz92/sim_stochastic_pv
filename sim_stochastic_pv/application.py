@@ -391,6 +391,55 @@ def _build_market_payload(
     return payload
 
 
+def _build_profiles_payload(
+    results: MonteCarloResults,
+) -> Optional[Dict[str, Any]]:
+    """
+    Build the mean hourly-profile block for the Dashboard (consumption +
+    indoor temperature by year × month, with p05/p95 bands).
+
+    Each profile is a ``(n_years, 12, 24)`` grid surfaced as nested lists so
+    the Dashboard can pick a (year, month) and draw the 24-hour shape with its
+    band. ``indoor_temp_c`` is ``None`` unless the run used the dynamic RC
+    thermal mode. Returns ``None`` if no consumption profile was produced.
+
+    Args:
+        results: The completed :class:`MonteCarloResults`.
+
+    Returns:
+        A JSON-friendly dict with ``consumption_kwh`` (and ``indoor_temp_c``),
+        or ``None``.
+    """
+    if results.load_profile_mean_kwh is None:
+        return None
+
+    def _grid(mean, p05, p95, decimals: int) -> Dict[str, Any]:
+        return {
+            "n_years": int(mean.shape[0]),
+            "mean": np.round(mean, decimals).tolist(),
+            "p05": np.round(p05, decimals).tolist(),
+            "p95": np.round(p95, decimals).tolist(),
+        }
+
+    payload: Dict[str, Any] = {
+        "consumption_kwh": _grid(
+            results.load_profile_mean_kwh,
+            results.load_profile_p05_kwh,
+            results.load_profile_p95_kwh,
+            4,
+        ),
+        "indoor_temp_c": None,
+    }
+    if results.indoor_temp_profile_mean_c is not None:
+        payload["indoor_temp_c"] = _grid(
+            results.indoor_temp_profile_mean_c,
+            results.indoor_temp_profile_p05_c,
+            results.indoor_temp_profile_p95_c,
+            2,
+        )
+    return payload
+
+
 class SimulationApplication:
     """
     High-level orchestrator used by the CLI and (future) FastAPI surface.
@@ -595,6 +644,9 @@ class SimulationApplication:
                 market_provider=market_provider,
                 build_config=market_build_config,
             ),
+            # Mean hourly profiles (consumption + indoor temperature) by
+            # year×month, with p05/p95 bands, for the Dashboard timeseries views.
+            "profiles": _build_profiles_payload(results),
             "plots_data": {
                 "profit": {
                     "months": results.df_profit["month_index"].tolist(),

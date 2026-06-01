@@ -28,6 +28,28 @@
     // Market tab: selected (year, month) for the hourly wholesale-price profile.
     let mktProfileYear = 0;
     let mktProfileMonth = 0;
+    // Energy/Thermal tabs: (year, month) for the consumption / indoor-temp profiles.
+    let consProfYear = 0;
+    let consProfMonth = 0;
+    let tempProfYear = 0;
+    let tempProfMonth = 0;
+    const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+    // Year×month matrix of monthly TOTAL from a {mean} profile grid (sum over
+    // the 24 hourly means × days-in-month).
+    function profileMonthlyTotalMatrix(grid) {
+        if (!grid || !grid.mean) return [];
+        return grid.mean.map((yearRows) =>
+            yearRows.map((hourArr, m) => hourArr.reduce((a, b) => a + b, 0) * DAYS_IN_MONTH[m]),
+        );
+    }
+    // Year×month matrix of the monthly MEAN over hours (for temperature).
+    function profileMonthlyMeanMatrix(grid) {
+        if (!grid || !grid.mean) return [];
+        return grid.mean.map((yearRows) =>
+            yearRows.map((hourArr) => hourArr.reduce((a, b) => a + b, 0) / hourArr.length),
+        );
+    }
 
     // Phase 12+ — toggle for the profit projection chart: "nominal"
     // shows the legacy nominal cumulative gain (default); "real" shows
@@ -584,6 +606,29 @@
         };
     }
 
+    // Generic 24h profile chart (mean + p05/p95 band) from a {mean,p05,p95}
+    // grid, for a chosen (year, month). Used for consumption and indoor temp.
+    function getHourlyProfileChart(grid, year, month, label, color, unit) {
+        const safe = (g) => (g && g[year] && g[year][month]) ? g[year][month] : new Array(24).fill(null);
+        return {
+            data: {
+                labels: HOURS_LABELS,
+                datasets: [
+                    { label: "p05", data: safe(grid.p05), borderColor: "transparent", pointRadius: 0, fill: false },
+                    { label: "p05–p95", data: safe(grid.p95), borderColor: "transparent", backgroundColor: color + "26", pointRadius: 0, fill: "-1" },
+                    { label, data: safe(grid.mean), borderColor: color, backgroundColor: color, pointRadius: 0, fill: false },
+                ],
+            },
+            options: {
+                plugins: { legend: { display: true, labels: { filter: (item) => item.text !== "p05" } } },
+                scales: {
+                    x: { title: { display: true, text: "Ora del giorno" } },
+                    y: { title: { display: true, text: unit } },
+                },
+            },
+        };
+    }
+
     // Hourly wholesale-price profile (24h) for a chosen (year, month) with bands.
     function getPriceProfileChart(market, year, month) {
         const mean = market.price_profile_mean_eur_per_kwh;
@@ -1022,6 +1067,35 @@
                                 }}
                             />
                         </div>
+                        {#if selectedRun.summary.profiles?.consumption_kwh}
+                            {@const cp = selectedRun.summary.profiles.consumption_kwh}
+                            {@const cfg = getHourlyProfileChart(cp, consProfYear, consProfMonth, "Consumo", "#0d6efd", "kWh/h")}
+                            <div class="card chart-section">
+                                <div class="chart-toolbar">
+                                    <h3>Consumo — profilo orario medio mensile</h3>
+                                    <div class="chart-controls">
+                                        <select class="select select-sm" bind:value={consProfYear}>
+                                            {#each Array.from({ length: cp.n_years || cp.mean.length }, (_, i) => i) as y}
+                                                <option value={y}>Anno {y}</option>
+                                            {/each}
+                                        </select>
+                                        <select class="select select-sm" bind:value={consProfMonth}>
+                                            {#each MONTHS_SHORT as mn, mi}
+                                                <option value={mi}>{mn}</option>
+                                            {/each}
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="chart-wrap">
+                                    <ResultsChart type="line" data={cfg.data} options={cfg.options} downloadFilename={`run_${selectedRun.id}_consumo`} />
+                                </div>
+                            </div>
+                            {@const mat = profileMonthlyTotalMatrix(cp)}
+                            <div class="card">
+                                <h4 class="heatmap-title">Consumo mensile (kWh) — anno × mese</h4>
+                                <Heatmap matrix={mat} rowLabels={mat.map((_, i) => "A" + i)} colLabels={MONTHS_SHORT} unit="kWh" valueDigits={0} colLabelEvery={1} />
+                            </div>
+                        {/if}
                     {:else}
                         <p>No energy data available.</p>
                     {/if}
@@ -1217,7 +1291,7 @@
                             {@const cfg = getFuelChart(m)}
                             <div class="card chart-section">
                                 <h3>Prezzi combustibili — gas e CO₂</h3>
-                                <p class="muted">Livello medio per anno: gas €/MWh termici, CO₂ €/tonnellata — i driver del prezzo all'ingrosso.</p>
+                                <p class="muted">Livello medio (trend) per anno: gas €/MWh termici, CO₂ €/tonnellata. È piatto se il profilo non ha drift; la volatilità di gas/CO₂ si riflette nella banda del prezzo all'ingrosso, non qui.</p>
                                 <div class="chart-wrap">
                                     <ResultsChart type="line" data={cfg.data} options={cfg.options} downloadFilename={`run_${selectedRun.id}_combustibili`} />
                                 </div>
@@ -1297,14 +1371,52 @@
                                 <h3>T interna max</h3>
                                 <p class="value text-specs">{t.t_in_max_c != null ? t.t_in_max_c.toFixed(1) + " °C" : "—"}</p>
                             </div>
+                            <div class="card stat">
+                                <h3>Ore riscaldamento / anno</h3>
+                                <p class="value text-specs">{t.heating_hours_per_year_mean != null ? Math.round(t.heating_hours_per_year_mean) + " h" : "—"}</p>
+                            </div>
+                            <div class="card stat">
+                                <h3>Ore raffrescamento / anno</h3>
+                                <p class="value text-specs">{t.cooling_hours_per_year_mean != null ? Math.round(t.cooling_hours_per_year_mean) + " h" : "—"}</p>
+                            </div>
                         </div>
-                        <p class="muted">
-                            I profili orari medi mensili di consumo e temperatura interna
-                            (con bande p05–p95 e tendina mese/anno) e le ore di
-                            riscaldamento/raffrescamento attivo arriveranno in un
-                            prossimo aggiornamento (richiedono nuovi accumulatori nel
-                            motore di simulazione).
-                        </p>
+
+                        {#if selectedRun.summary.profiles?.indoor_temp_c}
+                            {@const tp = selectedRun.summary.profiles.indoor_temp_c}
+                            {@const cfg = getHourlyProfileChart(tp, tempProfYear, tempProfMonth, "Temperatura interna", "#8b5cf6", "°C")}
+                            <div class="card chart-section">
+                                <div class="chart-toolbar">
+                                    <h3>Temperatura interna — profilo orario medio</h3>
+                                    <div class="chart-controls">
+                                        <select class="select select-sm" bind:value={tempProfYear}>
+                                            {#each Array.from({ length: tp.n_years || tp.mean.length }, (_, i) => i) as y}
+                                                <option value={y}>Anno {y}</option>
+                                            {/each}
+                                        </select>
+                                        <select class="select select-sm" bind:value={tempProfMonth}>
+                                            {#each MONTHS_SHORT as mn, mi}
+                                                <option value={mi}>{mn}</option>
+                                            {/each}
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="chart-wrap">
+                                    <ResultsChart type="line" data={cfg.data} options={cfg.options} downloadFilename={`run_${selectedRun.id}_temp_interna`} />
+                                </div>
+                            </div>
+                            {@const mat = profileMonthlyMeanMatrix(tp)}
+                            <div class="card">
+                                <h4 class="heatmap-title">Temperatura interna media (°C) — anno × mese</h4>
+                                <Heatmap matrix={mat} rowLabels={mat.map((_, i) => "A" + i)} colLabels={MONTHS_SHORT} unit="°C" valueDigits={1} colLabelEvery={1} />
+                            </div>
+                        {:else}
+                            <p class="muted">
+                                Il profilo orario della temperatura interna è
+                                disponibile solo con il modello termico in modalità
+                                <em>dinamica</em> (RC). In modalità steady-state la
+                                temperatura è fissata ai setpoint.
+                            </p>
+                        {/if}
                     {:else}
                         <p>Modulo termico non attivo per questo run.</p>
                     {/if}

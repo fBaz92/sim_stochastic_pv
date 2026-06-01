@@ -348,6 +348,9 @@ class ThermalLoadKPIs:
             In steady-state mode set to ``t_setpoint_cooling_c``; in
             dynamic mode the true maximum (rises above the cooling setpoint
             when cooling capacity is insufficient).
+        heating_hours_per_year: Yearly hours the HVAC ran in heating mode
+            (heat-pump electric draw > 0 while warming the home).
+        cooling_hours_per_year: Yearly hours the HVAC ran in cooling mode.
     """
 
     hvac_kwh_annual: float = 0.0
@@ -356,6 +359,8 @@ class ThermalLoadKPIs:
     p_elec_hvac_peak_kw: float = 0.0
     t_in_min_c: float = 0.0
     t_in_max_c: float = 0.0
+    heating_hours_per_year: float = 0.0
+    cooling_hours_per_year: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -606,6 +611,8 @@ class HvacController:
             p_elec_hvac_peak_kw=float(p_elec_kw_hourly.max()) if n_hours else 0.0,
             t_in_min_c=sp.t_setpoint_heating_c,
             t_in_max_c=sp.t_setpoint_cooling_c,
+            heating_hours_per_year=float((p_elec_heating > 0.0).sum()) / n_years,
+            cooling_hours_per_year=float((p_elec_cooling > 0.0).sum()) / n_years,
         )
         return p_elec_kw_hourly, kpis
 
@@ -673,6 +680,8 @@ class HvacController:
         t_in = np.empty(n_hours, dtype=float)
         p_elec = np.empty(n_hours, dtype=float)
         breach = 0
+        heating_count = 0
+        cooling_count = 0
         t_prev = float(sp.t_setpoint_heating_c)
 
         for h in range(n_hours):
@@ -688,6 +697,7 @@ class HvacController:
                     q = q_need
                 p_elec[h] = q / cop_h
                 t_new = (base + q) / a
+                heating_count += 1
             elif t_free > t_set_cooling[h]:  # cooling
                 q_need = base - a * t_set_cooling[h]
                 if q_need > q_max_cool:
@@ -697,6 +707,7 @@ class HvacController:
                     q = q_need
                 p_elec[h] = q / cop_c
                 t_new = (base - q) / a
+                cooling_count += 1
             else:  # dead-band → HVAC off, free run
                 p_elec[h] = 0.0
                 t_new = t_free
@@ -712,6 +723,8 @@ class HvacController:
             p_elec_hvac_peak_kw=float(p_elec.max()) if n_hours else 0.0,
             t_in_min_c=float(t_in.min()) if n_hours else sp.t_setpoint_heating_c,
             t_in_max_c=float(t_in.max()) if n_hours else sp.t_setpoint_cooling_c,
+            heating_hours_per_year=float(heating_count) / n_years,
+            cooling_hours_per_year=float(cooling_count) / n_years,
         )
         return p_elec, kpis
 
@@ -745,6 +758,8 @@ def aggregate_thermal_kpis(per_path: list) -> dict:
             "p_elec_hvac_peak_kw_mean": 0.0,
             "t_in_min_c": 0.0,
             "t_in_max_c": 0.0,
+            "heating_hours_per_year_mean": 0.0,
+            "cooling_hours_per_year_mean": 0.0,
         }
     return {
         "hvac_kwh_annual_mean": float(
@@ -761,4 +776,10 @@ def aggregate_thermal_kpis(per_path: list) -> dict:
         ),
         "t_in_min_c": float(np.min([k.t_in_min_c for k in per_path])),
         "t_in_max_c": float(np.max([k.t_in_max_c for k in per_path])),
+        "heating_hours_per_year_mean": float(
+            np.mean([k.heating_hours_per_year for k in per_path])
+        ),
+        "cooling_hours_per_year_mean": float(
+            np.mean([k.cooling_hours_per_year for k in per_path])
+        ),
     }
