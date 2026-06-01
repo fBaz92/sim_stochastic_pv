@@ -4,11 +4,30 @@
     import { api } from "../api";
     import { pendingRunId } from "../lib/stores";
     import ResultsChart from "../components/ResultsChart.svelte";
+    import Heatmap from "../components/Heatmap.svelte";
 
     let runs = [];
     let loading = true;
     let selectedRun = null;
-    let activeTab = "overview"; // overview, energy, soc, price, inflation, cashflow, raw
+    let activeTab = "overview"; // overview, energy, soc, price, inflation, cashflow, market, thermal, raw
+
+    const MONTHS_SHORT = ["Gen", "Feb", "Mar", "Apr", "Mag", "Giu", "Lug", "Ago", "Set", "Ott", "Nov", "Dic"];
+    const HOURS_LABELS = Array.from({ length: 24 }, (_, h) => String(h));
+
+    // Reshape a flat monthly series (length n_years*12) into a year×month
+    // matrix for the year×month heatmaps.
+    function toYearMonthMatrix(series) {
+        if (!series) return [];
+        const rows = [];
+        for (let i = 0; i < series.length; i += 12) {
+            rows.push(series.slice(i, i + 12));
+        }
+        return rows;
+    }
+
+    // Market tab: selected (year, month) for the hourly wholesale-price profile.
+    let mktProfileYear = 0;
+    let mktProfileMonth = 0;
 
     // Phase 12+ — toggle for the profit projection chart: "nominal"
     // shows the legacy nominal cumulative gain (default); "real" shows
@@ -503,6 +522,92 @@
 
         return { labels: sliceByRange(p.months), datasets };
     }
+
+    // ── Market tab chart configs ─────────────────────────────────────────
+    function getMarketMonthlyChart(market) {
+        const eur = market.monthly_export_eur_mean || [];
+        const kwh = market.monthly_export_kwh_mean || [];
+        return {
+            data: {
+                labels: eur.map((_, i) => i),
+                datasets: [
+                    {
+                        label: "Ricavo immissione (€)",
+                        data: eur,
+                        borderColor: "#16a34a",
+                        backgroundColor: "rgba(22,163,74,0.15)",
+                        pointRadius: 0,
+                        fill: true,
+                        yAxisID: "y",
+                    },
+                    {
+                        label: "Energia immessa (kWh)",
+                        data: kwh,
+                        borderColor: "#f59e0b",
+                        backgroundColor: "#f59e0b",
+                        pointRadius: 0,
+                        fill: false,
+                        yAxisID: "y1",
+                    },
+                ],
+            },
+            options: {
+                plugins: { legend: { display: true } },
+                scales: {
+                    x: { title: { display: true, text: "Mese (indice)" } },
+                    y: { position: "left", title: { display: true, text: "€/mese" } },
+                    y1: { position: "right", title: { display: true, text: "kWh/mese" }, grid: { drawOnChartArea: false } },
+                },
+            },
+        };
+    }
+
+    function getFuelChart(market) {
+        const gas = market.gas_price_by_year_eur_per_mwh || [];
+        const co2 = market.co2_price_by_year_eur_per_ton || [];
+        return {
+            data: {
+                labels: gas.map((_, i) => i),
+                datasets: [
+                    { label: "Gas (€/MWh)", data: gas, borderColor: "#ef4444", backgroundColor: "#ef4444", pointRadius: 2, fill: false, yAxisID: "y" },
+                    { label: "CO₂ (€/t)", data: co2, borderColor: "#6b7280", backgroundColor: "#6b7280", pointRadius: 2, fill: false, yAxisID: "y1" },
+                ],
+            },
+            options: {
+                plugins: { legend: { display: true } },
+                scales: {
+                    x: { title: { display: true, text: "Anno" } },
+                    y: { position: "left", title: { display: true, text: "Gas €/MWh" } },
+                    y1: { position: "right", title: { display: true, text: "CO₂ €/t" }, grid: { drawOnChartArea: false } },
+                },
+            },
+        };
+    }
+
+    // Hourly wholesale-price profile (24h) for a chosen (year, month) with bands.
+    function getPriceProfileChart(market, year, month) {
+        const mean = market.price_profile_mean_eur_per_kwh;
+        const p05 = market.price_profile_p05_eur_per_kwh;
+        const p95 = market.price_profile_p95_eur_per_kwh;
+        const safe = (grid) => (grid && grid[year] && grid[year][month]) ? grid[year][month] : new Array(24).fill(null);
+        return {
+            data: {
+                labels: HOURS_LABELS,
+                datasets: [
+                    { label: "p05", data: safe(p05), borderColor: "transparent", pointRadius: 0, fill: false },
+                    { label: "p05–p95", data: safe(p95), borderColor: "transparent", backgroundColor: "rgba(59,130,246,0.15)", pointRadius: 0, fill: "-1" },
+                    { label: "media", data: safe(mean), borderColor: "#1d4ed8", backgroundColor: "#1d4ed8", pointRadius: 0, fill: false },
+                ],
+            },
+            options: {
+                plugins: { legend: { display: true, labels: { filter: (item) => item.text !== "p05" } } },
+                scales: {
+                    x: { title: { display: true, text: "Ora del giorno" } },
+                    y: { title: { display: true, text: "€/kWh" } },
+                },
+            },
+        };
+    }
 </script>
 
 <div class="container dashboard">
@@ -688,6 +793,20 @@
                     class:active={activeTab === "cashflow"}
                     on:click={() => (activeTab = "cashflow")}>Cash flow</button
                 >
+                {#if selectedRun.summary?.market}
+                    <button
+                        class="tab-btn"
+                        class:active={activeTab === "market"}
+                        on:click={() => (activeTab = "market")}>Mercato</button
+                    >
+                {/if}
+                {#if selectedRun.summary?.thermal}
+                    <button
+                        class="tab-btn"
+                        class:active={activeTab === "thermal"}
+                        on:click={() => (activeTab = "thermal")}>Termico</button
+                    >
+                {/if}
                 <button
                     class="tab-btn"
                     class:active={activeTab === "raw"}
@@ -1066,6 +1185,129 @@
                             nuovo l'analisi per generare la tabella.
                         </p>
                     {/if}
+                {:else if activeTab === "market"}
+                    {#if selectedRun.summary.market}
+                        {@const m = selectedRun.summary.market}
+                        <div class="stat-cards">
+                            <div class="card stat">
+                                <h3>Ricavo immissione</h3>
+                                <p class="value text-specs">€ {m.export_revenue_total_mean_eur != null ? m.export_revenue_total_mean_eur.toFixed(0) : "—"}</p>
+                            </div>
+                            <div class="card stat">
+                                <h3>Energia immessa</h3>
+                                <p class="value text-specs">{m.export_kwh_total_mean != null ? Math.round(m.export_kwh_total_mean).toLocaleString("it-IT") + " kWh" : "—"}</p>
+                            </div>
+                            <div class="card stat">
+                                <h3>Mercato guida acquisto</h3>
+                                <p class="value text-specs">{m.market_drives_purchase ? "Sì" : "No"}</p>
+                            </div>
+                        </div>
+
+                        {#if m.monthly_export_eur_mean}
+                            {@const cfg = getMarketMonthlyChart(m)}
+                            <div class="card chart-section">
+                                <h3>Immissione mensile — ricavo ed energia</h3>
+                                <div class="chart-wrap">
+                                    <ResultsChart type="line" data={cfg.data} options={cfg.options} downloadFilename={`run_${selectedRun.id}_immissione`} />
+                                </div>
+                            </div>
+                        {/if}
+
+                        {#if m.gas_price_by_year_eur_per_mwh}
+                            {@const cfg = getFuelChart(m)}
+                            <div class="card chart-section">
+                                <h3>Prezzi combustibili — gas e CO₂</h3>
+                                <p class="muted">Livello medio per anno: gas €/MWh termici, CO₂ €/tonnellata — i driver del prezzo all'ingrosso.</p>
+                                <div class="chart-wrap">
+                                    <ResultsChart type="line" data={cfg.data} options={cfg.options} downloadFilename={`run_${selectedRun.id}_combustibili`} />
+                                </div>
+                            </div>
+                        {/if}
+
+                        {#if m.price_profile_mean_eur_per_kwh}
+                            {@const cfg = getPriceProfileChart(m, mktProfileYear, mktProfileMonth)}
+                            <div class="card chart-section">
+                                <div class="chart-toolbar">
+                                    <h3>Prezzo orario medio all'ingrosso — profilo mensile</h3>
+                                    <div class="chart-controls">
+                                        <select class="select select-sm" bind:value={mktProfileYear}>
+                                            {#each Array.from({ length: m.surface_n_years || 1 }, (_, i) => i) as y}
+                                                <option value={y}>Anno {y}</option>
+                                            {/each}
+                                        </select>
+                                        <select class="select select-sm" bind:value={mktProfileMonth}>
+                                            {#each MONTHS_SHORT as mn, mi}
+                                                <option value={mi}>{mn}</option>
+                                            {/each}
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="chart-wrap">
+                                    <ResultsChart type="line" data={cfg.data} options={cfg.options} downloadFilename={`run_${selectedRun.id}_profilo_prezzo`} />
+                                </div>
+                            </div>
+                        {/if}
+
+                        <div class="card">
+                            <h3>Heatmap anno × mese</h3>
+                            {#if selectedRun.summary.plots_data?.cashflow_table?.mean_price_eur_per_kwh}
+                                {@const mat = toYearMonthMatrix(selectedRun.summary.plots_data.cashflow_table.mean_price_eur_per_kwh)}
+                                <h4 class="heatmap-title">Prezzo medio (€/kWh)</h4>
+                                <Heatmap matrix={mat} rowLabels={mat.map((_, i) => "A" + i)} colLabels={MONTHS_SHORT} unit="€/kWh" valueDigits={3} colLabelEvery={1} />
+                            {/if}
+                            {#if selectedRun.summary.plots_data?.energy_monthly?.pv_prod_mean_kwh}
+                                {@const mat = toYearMonthMatrix(selectedRun.summary.plots_data.energy_monthly.pv_prod_mean_kwh)}
+                                <h4 class="heatmap-title">Produzione PV (kWh)</h4>
+                                <Heatmap matrix={mat} rowLabels={mat.map((_, i) => "A" + i)} colLabels={MONTHS_SHORT} unit="kWh" valueDigits={0} colLabelEvery={1} />
+                            {/if}
+                            {#if m.monthly_export_eur_mean}
+                                {@const mat = toYearMonthMatrix(m.monthly_export_eur_mean)}
+                                <h4 class="heatmap-title">Ricavo immissione (€)</h4>
+                                <Heatmap matrix={mat} rowLabels={mat.map((_, i) => "A" + i)} colLabels={MONTHS_SHORT} unit="€" valueDigits={1} colLabelEvery={1} />
+                            {/if}
+                        </div>
+                    {:else}
+                        <p>Nessun mercato simulato per questo run (scegli un profilo di mercato nello scenario).</p>
+                    {/if}
+                {:else if activeTab === "thermal"}
+                    {#if selectedRun.summary.thermal}
+                        {@const t = selectedRun.summary.thermal}
+                        <div class="stat-cards">
+                            <div class="card stat">
+                                <h3>Consumo HVAC / anno</h3>
+                                <p class="value text-specs">{t.hvac_kwh_annual_mean != null ? t.hvac_kwh_annual_mean.toFixed(0) + " kWh" : "—"}</p>
+                            </div>
+                            <div class="card stat">
+                                <h3>Quota sul carico</h3>
+                                <p class="value text-specs">{t.hvac_share_of_total_load_pct_mean != null ? t.hvac_share_of_total_load_pct_mean.toFixed(1) + " %" : "—"}</p>
+                            </div>
+                            <div class="card stat">
+                                <h3>Ore di disagio / anno</h3>
+                                <p class="value text-specs">{t.comfort_breach_hours_per_year_mean != null ? t.comfort_breach_hours_per_year_mean.toFixed(0) + " h" : "—"}</p>
+                            </div>
+                            <div class="card stat">
+                                <h3>Picco potenza HVAC</h3>
+                                <p class="value text-specs">{t.p_elec_hvac_peak_kw_mean != null ? t.p_elec_hvac_peak_kw_mean.toFixed(2) + " kW" : "—"}</p>
+                            </div>
+                            <div class="card stat">
+                                <h3>T interna min</h3>
+                                <p class="value text-specs">{t.t_in_min_c != null ? t.t_in_min_c.toFixed(1) + " °C" : "—"}</p>
+                            </div>
+                            <div class="card stat">
+                                <h3>T interna max</h3>
+                                <p class="value text-specs">{t.t_in_max_c != null ? t.t_in_max_c.toFixed(1) + " °C" : "—"}</p>
+                            </div>
+                        </div>
+                        <p class="muted">
+                            I profili orari medi mensili di consumo e temperatura interna
+                            (con bande p05–p95 e tendina mese/anno) e le ore di
+                            riscaldamento/raffrescamento attivo arriveranno in un
+                            prossimo aggiornamento (richiedono nuovi accumulatori nel
+                            motore di simulazione).
+                        </p>
+                    {:else}
+                        <p>Modulo termico non attivo per questo run.</p>
+                    {/if}
                 {:else if activeTab === "raw"}
                     <div class="raw-data">
                         <pre>{JSON.stringify(
@@ -1389,5 +1631,17 @@
         font-size: 0.82rem;
         color: var(--color-text-muted, #6c757d);
         margin: 0 0 0.75rem;
+    }
+    .heatmap-title {
+        font-size: 0.85rem;
+        font-weight: 600;
+        margin: 1rem 0 0.4rem;
+        color: var(--color-text-secondary, #6b7280);
+    }
+    .select-sm {
+        width: auto;
+        min-width: 90px;
+        padding: 4px 8px;
+        font-size: 0.85rem;
     }
 </style>

@@ -117,6 +117,43 @@ def test_load_market_provider_missing_returns_none(persistence):
 # ── scenario_builder hydration ─────────────────────────────────────────────
 
 
+def test_run_summary_market_block_has_price_profile_and_fuel(
+    persistence, simple_scenario_data
+):
+    """The run summary's market block carries the hourly price profile + fuel
+    prices the Dashboard 'Mercato' tab needs."""
+    from sim_stochastic_pv.application import SimulationApplication
+
+    grid = np.full((3, 2, 12, 24), 0.05)
+    surface = PriceSurface(price_eur_per_kwh=grid, n_trajectories=3, n_years=2)
+    provider = MarketPriceProvider(surface, pmg_base_eur_per_kwh=0.05)
+    data = provider.to_config_dict(
+        build_config={
+            "gas_scenario": "tension",
+            "gas_mu_drift_annual": 0.05,
+            "co2_scenario": "high",
+        }
+    )
+    rec = persistence.upsert_market_profile({"name": "M", "data": data})
+
+    scenario = dict(simple_scenario_data)
+    scenario["solar"]["pv_kwp"] = 6.0
+    scenario["energy"]["pv_kwp"] = 6.0
+    scenario["energy"]["inverter_p_ac_max_kw"] = 4.0
+    scenario["market_profile_id"] = rec.id
+
+    app = SimulationApplication(persistence=persistence)
+    res = app.run_analysis(scenario_data=scenario, seed=7)
+    m = res["market"]
+    assert m is not None
+    assert m["surface_n_years"] == 2
+    assert np.array(m["price_profile_mean_eur_per_kwh"]).shape == (2, 12, 24)
+    # tension gas mu = 55, +5%/yr drift, high CO2 mu = 100.
+    assert m["gas_price_by_year_eur_per_mwh"][0] == pytest.approx(55.0)
+    assert m["gas_price_by_year_eur_per_mwh"][1] == pytest.approx(57.75)
+    assert m["co2_price_by_year_eur_per_ton"][0] == pytest.approx(100.0)
+
+
 def test_build_default_market_provider_none_without_reference(persistence):
     assert build_default_market_provider({"foo": 1}, persistence) is None
 

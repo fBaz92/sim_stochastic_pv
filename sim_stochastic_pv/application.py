@@ -32,6 +32,7 @@ from .scenario_builder import (
 )
 from .simulation.energy_simulator import EnergySystemSimulator
 from .simulation.prices import PriceModel
+from .market.config import CO2_SCENARIOS, GAS_SCENARIOS
 
 ScenarioData = Mapping[str, Any] | str | Path | None
 
@@ -308,20 +309,31 @@ def _build_cashflow_table_payload(results: MonteCarloResults) -> Dict[str, Any]:
 
 
 def _build_market_payload(
-    results: MonteCarloResults, market_drives_purchase: bool
+    results: MonteCarloResults,
+    market_drives_purchase: bool,
+    market_provider=None,
+    build_config: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Build the electricity-market KPI block for the Dashboard.
 
     Surfaces the dedicated-withdrawal export valuation (total revenue + energy
-    and the monthly export series) and a flag telling the UI whether the
-    simulated market also drove the purchase price. Returns ``None`` when the
-    scenario was run without any market coupling, so the Dashboard hides the
-    "Mercato elettrico" card entirely.
+    and the monthly export series) and, when the run was coupled to a saved
+    market profile, the market context the "Mercato" tab visualises: the mean
+    hourly wholesale-price profile per (year, month) with p05/p95 bands (read
+    from the profile's price surface) and the gas/CO2 mean-price trajectories
+    over the horizon (derived from the profile's build configuration). Returns
+    ``None`` when the scenario was run without any market coupling, so the
+    Dashboard hides the market views entirely.
 
     Args:
         results: The completed :class:`MonteCarloResults`.
         market_drives_purchase: Whether the market drove the purchase side.
+        market_provider: The :class:`MarketPriceProvider` used for the run (or
+            ``None``). Its price surface backs the hourly-price-profile views.
+        build_config: The market profile's stored ``build_config`` (or ``None``),
+            from which the gas/CO2 scenarios + drifts are read for the fuel-price
+            trajectories.
 
     Returns:
         A JSON-friendly dict, or ``None`` when no market was coupled.
@@ -330,9 +342,11 @@ def _build_market_payload(
         - ``export_revenue_total_mean_eur`` is exactly the mean contribution of
           dedicated withdrawal to the final cumulative profit (it is folded into
           the cash flow), so the Dashboard can show "of which from export".
+        - The price-profile grids are ``(n_years, 12, 24)`` in EUR/kWh, rounded
+          to 6 decimals to keep the run summary tight.
     """
     has_export = results.df_export is not None
-    if not has_export and not market_drives_purchase:
+    if not has_export and not market_drives_purchase and market_provider is None:
         return None
 
     payload: Dict[str, Any] = {
@@ -345,6 +359,35 @@ def _build_market_payload(
     if has_export:
         payload["monthly_export_eur_mean"] = results.df_export["export_eur_mean"].tolist()
         payload["monthly_export_kwh_mean"] = results.df_export["export_kwh_mean"].tolist()
+
+    # Market context for the dedicated "Mercato" tab: the hourly wholesale-price
+    # profile per (year, month) with bands (from the cached surface) and the
+    # fuel-price trajectories (from the profile build config).
+    if market_provider is not None:
+        surface = market_provider.price_surface
+        payload["surface_n_years"] = int(surface.n_years)
+        payload["price_profile_mean_eur_per_kwh"] = np.round(
+            surface.mean_grid(), 6
+        ).tolist()
+        payload["price_profile_p05_eur_per_kwh"] = np.round(
+            surface.percentile_grid(5.0), 6
+        ).tolist()
+        payload["price_profile_p95_eur_per_kwh"] = np.round(
+            surface.percentile_grid(95.0), 6
+        ).tolist()
+
+        bc = build_config or {}
+        n_years = int(surface.n_years)
+        gas_mu = float(GAS_SCENARIOS.get(bc.get("gas_scenario", "base"), GAS_SCENARIOS["base"])["mu"])
+        gas_drift = float(bc.get("gas_mu_drift_annual", 0.0) or 0.0)
+        co2_mu = float(CO2_SCENARIOS.get(bc.get("co2_scenario") or "base", CO2_SCENARIOS["base"])["mu"])
+        co2_drift = float(bc.get("co2_mu_drift_annual", 0.0) or 0.0)
+        payload["gas_price_by_year_eur_per_mwh"] = [
+            round(gas_mu * (1.0 + gas_drift) ** y, 3) for y in range(n_years)
+        ]
+        payload["co2_price_by_year_eur_per_ton"] = [
+            round(co2_mu * (1.0 + co2_drift) ** y, 3) for y in range(n_years)
+        ]
     return payload
 
 
@@ -457,6 +500,14 @@ class SimulationApplication:
         market_provider = build_default_market_provider(
             scenario_payload, self.persistence
         )
+        # Fetch the profile's build config (gas/CO2 scenarios + drifts) so the
+        # Dashboard "Mercato" tab can chart the fuel-price trajectories.
+        market_build_config: Optional[Dict[str, Any]] = None
+        _mpid = scenario_payload.get("market_profile_id")
+        if self.persistence is not None and _mpid is not None:
+            _rec = self.persistence.get_market_profile_by_id(int(_mpid))
+            if _rec is not None:
+                market_build_config = (_rec.data or {}).get("build_config")
         value_export = bool(scenario_payload.get("dedicated_withdrawal", True))
         market_drives_purchase = bool(
             scenario_payload.get("market_drives_purchase", False)
@@ -538,7 +589,12 @@ class SimulationApplication:
             # Electricity-market coupling KPIs (None when no market is wired).
             # Dashboard renders the dedicated-withdrawal export revenue/energy
             # and whether the market drove the purchase price.
-            "market": _build_market_payload(results, market_drives_purchase),
+            "market": _build_market_payload(
+                results,
+                market_drives_purchase,
+                market_provider=market_provider,
+                build_config=market_build_config,
+            ),
             "plots_data": {
                 "profit": {
                     "months": results.df_profit["month_index"].tolist(),
