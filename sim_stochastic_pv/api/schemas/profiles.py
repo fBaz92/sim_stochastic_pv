@@ -136,6 +136,84 @@ class LoadProfileCreate(BaseModel):
     data: Dict[str, Any] = Field(..., description="Profile configuration data")
 
 
+class LoadProfilePreviewParams(BaseModel):
+    """
+    Tunable parameters of a load-profile representative-week preview.
+
+    Shared by the saved-profile preview (``/{id}/preview``, where the profile
+    shape comes from the DB) and the inline preview
+    (:class:`LoadProfilePreviewRequest`, where the shape is in the body).
+
+    Attributes:
+        month: Calendar month to preview (0=January … 11=December).
+        regime: ``"home"`` (full personality: variability + appliances + HVAC)
+            or ``"away"`` (semi-constant + optional variability only).
+        climate_profile_id: Optional climate profile id. When set, the weekly
+            outdoor temperature is returned and (if the profile enables HVAC)
+            the heat-pump load is simulated against that climate.
+        n_paths: Monte Carlo paths for the bands. Kept modest for interactivity.
+        seed: Master seed for reproducibility.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    month: int = Field(0, ge=0, le=11, description="Month 0=Jan … 11=Dec")
+    regime: str = Field("home", description="'home' or 'away'")
+    climate_profile_id: Optional[int] = Field(
+        None, description="Climate profile id for temperature / HVAC overlay"
+    )
+    n_paths: int = Field(80, ge=1, le=500, description="Monte Carlo paths")
+    seed: int = Field(42, description="Master RNG seed")
+
+
+class LoadProfilePreviewRequest(LoadProfilePreviewParams):
+    """
+    Inline load-profile preview request (for unsaved edits in the editor).
+
+    Carries the full profile shape in the body so the detail page can preview
+    edits live before they are persisted. The ``data`` may include the optional
+    ``stochastic`` / ``appliances`` / ``thermal`` blocks alongside the home/away
+    patterns.
+    """
+
+    profile_type: str = Field(..., description="home_away / custom / custom_24h / weekly / arera")
+    data: Dict[str, Any] = Field(..., description="Profile configuration data")
+
+
+class LoadProfilePreviewResponse(BaseModel):
+    """
+    Aggregated representative-week preview of one load-profile regime.
+
+    Mirrors :class:`sim_stochastic_pv.simulation.load_preview.LoadPreviewResult`.
+    Weekly arrays are length 168 (7 days × 24 h), weekday-major; power in kW,
+    energy in kWh, temperature in °C. Temperature fields are ``null`` when no
+    climate was supplied; ``temp_in_c_mean`` is ``null`` outside dynamic HVAC.
+    """
+
+    regime: str
+    month: int
+    n_paths: int
+    week_hours: List[int]
+    total_kw_mean: List[float]
+    total_kw_p05: List[float]
+    total_kw_p95: List[float]
+    baseline_kw_mean: List[float]
+    appliance_kw_mean: List[float]
+    hvac_kw_mean: List[float]
+    annual_kwh_mean: float
+    baseline_kwh_annual: float
+    appliance_kwh_annual: float
+    hvac_kwh_annual_mean: float
+    appliance_kwh_annual_by_name: Dict[str, float]
+    has_appliances: bool
+    has_hvac: bool
+    has_thermal: bool
+    temp_out_c_mean: Optional[List[float]] = None
+    temp_out_c_p05: Optional[List[float]] = None
+    temp_out_c_p95: Optional[List[float]] = None
+    temp_in_c_mean: Optional[List[float]] = None
+
+
 class PriceProfileResponse(BaseModel):
     """
     Electricity price profile response schema.

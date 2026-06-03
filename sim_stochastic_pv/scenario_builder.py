@@ -490,6 +490,59 @@ def build_default_load_profile(scenario_data: Mapping[str, Any] | str | Path | N
     return load_blueprint.build_load_profile()
 
 
+def build_regime_load_profile_factory(
+    profile_type: str | None,
+    data: Mapping[str, Any],
+    regime: str,
+) -> "callable":
+    """
+    Build a factory for one *regime* (home or away) of a saved load profile.
+
+    Used by the load-profile preview to simulate each regime independently
+    (the user's "scenario misto": full personality when home, semi-constant
+    when away). It maps the DB-stored ``(profile_type, data)`` onto a concrete
+    :class:`LoadProfile` factory:
+
+    - ``profile_type="home_away"`` → ``data["home"]`` / ``data["away"]`` are
+      sub-profile dicts; a missing side falls back to ARERA.
+    - single-sided types (``custom``, ``custom_24h``, ``weekly``, ``arera``):
+      the ``"home"`` regime uses the root ``data`` as the sub-profile; the
+      ``"away"`` regime falls back to ARERA (appliances/HVAC are home-only,
+      so the away regime is intentionally simple).
+
+    Args:
+        profile_type: The stored profile type (``home_away``/``custom``/
+            ``custom_24h``/``weekly``/``arera``). ``None`` is treated as a
+            single-sided custom profile.
+        data: The profile's ``data`` JSON.
+        regime: ``"home"`` or ``"away"``.
+
+    Returns:
+        Zero-argument callable returning a fresh :class:`LoadProfile`.
+
+    Raises:
+        ValueError: When ``regime`` is not ``"home"`` or ``"away"``, or when a
+            sub-profile dict is structurally invalid (propagated from
+            :func:`_build_single_load_profile_factory`).
+    """
+    if regime not in ("home", "away"):
+        raise ValueError(f"regime must be 'home' or 'away', got {regime!r}")
+    pt = str(profile_type or "").lower()
+
+    if pt == "home_away":
+        sub = data.get(regime)
+        if isinstance(sub, Mapping):
+            return _build_single_load_profile_factory(sub)
+        return lambda: AreraLoadProfile()
+
+    # Single-sided profile: the away regime is always the simple ARERA shape.
+    if regime == "away":
+        return lambda: AreraLoadProfile()
+    if pt == "arera" or str(data.get("type", "")).lower() == "arera" or not data:
+        return lambda: AreraLoadProfile()
+    return _build_single_load_profile_factory(data)
+
+
 def build_default_solar_model(
     scenario_data: Mapping[str, Any] | str | Path | None = None,
     persistence=None,
@@ -937,12 +990,22 @@ def build_default_thermal_load_config(
     scenario_data: Mapping[str, Any] | str | Path | None = None,
 ) -> ThermalLoadConfig | None:
     """
-    Resolve the Phase-17 ``thermal_load`` block into a runtime config.
+    Resolve the HVAC / heat-pump block into a runtime config.
 
     The block is opt-in. Returns ``None`` when missing or
     ``enabled=False`` (the simulator then skips the HVAC controller
     entirely). Otherwise hydrates the three nested dataclasses (house,
     heat_pump, setpoint).
+
+    Resolution order (first match wins):
+
+    1. ``data["thermal_load"]`` — a scenario-level block (explicit override,
+       or a legacy inline scenario).
+    2. ``data["load_profile"]["thermal"]`` — the block carried by the chosen
+       load profile (the "consumption personality"). After hydration the
+       referenced profile's ``data`` lands in ``data["load_profile"]``, so a
+       scenario inherits the profile's heat-pump configuration automatically.
+       The climate itself stays a scenario property (``climate_profile_id``).
 
     Args:
         scenario_data: JSON path / mapping / None.
@@ -951,12 +1014,16 @@ def build_default_thermal_load_config(
         :class:`ThermalLoadConfig` or ``None``.
 
     Raises:
-        ValueError: When ``thermal_load.enabled=True`` but a required
-            sub-block contains a value that fails the dataclass
-            ``__post_init__`` checks (delegated to the dataclass).
+        ValueError: When ``enabled=True`` but a required sub-block contains a
+            value that fails the dataclass ``__post_init__`` checks (delegated
+            to the dataclass).
     """
     data = load_scenario_data(scenario_data)
     raw = data.get("thermal_load")
+    if not isinstance(raw, Mapping):
+        load_cfg = data.get("load_profile")
+        if isinstance(load_cfg, Mapping):
+            raw = load_cfg.get("thermal")
     if not isinstance(raw, Mapping):
         return None
     enabled = bool(raw.get("enabled", False))

@@ -7,6 +7,7 @@
     import SavedScenariosManager from "../components/database/SavedScenariosManager.svelte";
     import SavedCampaignsManager from "../components/database/SavedCampaignsManager.svelte";
     import LocationsManager from "../components/database/LocationsManager.svelte";
+    import MarketProfileManager from "../components/database/MarketProfileManager.svelte";
 
     const TABS = [
         { id: "scenarios", label: "Scenari" },
@@ -17,6 +18,7 @@
         { id: "batteries", label: "Batterie" },
         { id: "loads", label: "Profili di carico" },
         { id: "prices", label: "Profili di prezzo" },
+        { id: "markets", label: "Profili di mercato" },
     ];
 
     let activeTab = "scenarios";
@@ -60,6 +62,8 @@
             <LoadProfileManager />
         {:else if activeTab === "prices"}
             <PriceProfileManager />
+        {:else if activeTab === "markets"}
+            <MarketProfileManager />
         {/if}
     </div>
 </div>

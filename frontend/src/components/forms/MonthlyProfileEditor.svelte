@@ -43,7 +43,7 @@
 <div class="card monthly-editor">
     <div class="editor-header">
         <h3>{label}</h3>
-        <button class="btn btn-outline btn-sm" on:click={copyToAll}
+        <button type="button" class="btn btn-outline btn-sm" on:click={copyToAll}
             >Copy {MONTHS[selectedMonth]} to All</button
         >
     </div>
@@ -51,6 +51,7 @@
     <div class="month-selector">
         {#each MONTHS as m, i}
             <button
+                type="button"
                 class="selector-btn"
                 class:active={selectedMonth === i}
                 on:click={() => (selectedMonth = i)}

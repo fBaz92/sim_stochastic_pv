@@ -14,12 +14,24 @@
 
     let poll = null;
     let dismissed = false;
+    /** Timer that auto-hides the widget a few seconds after completion. */
+    let autoDismissTimer = null;
+    /** How long the "done" card stays before it fades away on its own. */
+    const AUTO_DISMISS_MS = 6000;
 
     /** Stop polling and clear the active-job store. */
     function stopPolling() {
         if (poll != null) {
             clearInterval(poll);
             poll = null;
+        }
+    }
+
+    /** Clear the pending auto-dismiss timer, if any. */
+    function clearAutoDismiss() {
+        if (autoDismissTimer != null) {
+            clearTimeout(autoDismissTimer);
+            autoDismissTimer = null;
         }
     }
 
@@ -56,6 +68,13 @@
                         // will show the most recent runs.
                         if (snap.run_id != null) pendingRunId.set(snap.run_id);
                         window.location.hash = "/";
+                        // The card no longer lingers forever: it fades on its
+                        // own after a few seconds, and the user can click it
+                        // (or the ×) to dismiss/reopen the run immediately.
+                        clearAutoDismiss();
+                        autoDismissTimer = setTimeout(() => {
+                            activeJob.set(null);
+                        }, AUTO_DISMISS_MS);
                     } else if (snap.status === "failed") {
                         stopPolling();
                     }
@@ -68,26 +87,59 @@
         stopPolling();
     }
 
-    onDestroy(stopPolling);
+    onDestroy(() => {
+        stopPolling();
+        clearAutoDismiss();
+    });
 
     function dismiss() {
         dismissed = true;
+        clearAutoDismiss();
         activeJob.set(null);
+    }
+
+    /**
+     * Open the finished run in the Dashboard and dismiss the widget.
+     *
+     * Invoked when the user clicks the completed card: for analyses we
+     * pre-select the freshly created run; for multi-run design sweeps the
+     * run_id may be null, so we just land on the Dashboard.
+     */
+    function openResult() {
+        if ($activeJob && $activeJob.run_id != null) {
+            pendingRunId.set($activeJob.run_id);
+        }
+        window.location.hash = "/";
+        dismiss();
     }
 </script>
 
 {#if $activeJob && !dismissed}
-    <div class="job-progress" class:done={$activeJob.status === "done"} class:failed={$activeJob.status === "failed"}>
+    <div
+        class="job-progress"
+        class:done={$activeJob.status === "done"}
+        class:failed={$activeJob.status === "failed"}
+        class:clickable={$activeJob.status === "done"}
+        role={$activeJob.status === "done" ? "button" : undefined}
+        tabindex={$activeJob.status === "done" ? 0 : undefined}
+        on:click={$activeJob.status === "done" ? openResult : undefined}
+        on:keydown={(e) => {
+            if ($activeJob.status === "done" && (e.key === "Enter" || e.key === " ")) {
+                e.preventDefault();
+                openResult();
+            }
+        }}
+    >
         <div class="row top">
             <span class="kind">{kindLabel($activeJob.kind)}</span>
-            {#if $activeJob.status === "failed"}
-                <button class="dismiss" type="button" on:click={dismiss} title="Chiudi">×</button>
+            {#if $activeJob.status === "failed" || $activeJob.status === "done"}
+                <button class="dismiss" type="button" on:click|stopPropagation={dismiss} title="Chiudi">×</button>
             {/if}
         </div>
         {#if $activeJob.status === "failed"}
             <div class="message error-msg">Errore: {$activeJob.error || "esecuzione fallita"}</div>
         {:else if $activeJob.status === "done"}
-            <div class="message">Completato — apertura risultati...</div>
+            <div class="message">Completato — clicca per aprire i risultati</div>
             <div class="bar"><div class="bar-fill" style="width: 100%"></div></div>
         {:else}
             <div class="message">
@@ -128,6 +180,12 @@
     }
     .job-progress.done {
         border-left-color: var(--color-success, #198754);
+    }
+    .job-progress.clickable {
+        cursor: pointer;
+    }
+    .job-progress.clickable:hover {
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.14);
     }
     .job-progress.failed {
         border-left-color: var(--color-danger, #dc3545);

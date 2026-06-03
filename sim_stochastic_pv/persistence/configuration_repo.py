@@ -68,6 +68,19 @@ class ConfigurationRepository:
             stmt = select(LoadProfileModel).order_by(LoadProfileModel.name)
             return list(session.execute(stmt).scalars().all())
 
+    def get_load_profile_by_id(self, profile_id: int) -> LoadProfileModel | None:
+        """
+        Fetch a single load profile by primary key.
+
+        Args:
+            profile_id: Primary-key ID of the load profile.
+
+        Returns:
+            The :class:`LoadProfileModel` record, or ``None`` if not found.
+        """
+        with self._session_factory() as session:
+            return session.get(LoadProfileModel, profile_id)
+
     def delete_load_profile(self, profile_id: int) -> bool:
         """
         Delete a load profile by primary key.

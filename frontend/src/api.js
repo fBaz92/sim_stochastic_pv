@@ -1,4 +1,7 @@
-const API_BASE = 'http://localhost:8000/api';
+// API base URL. Overridable at build/dev time via the Vite env var
+// VITE_API_BASE (e.g. a local dev backend on a different port). Defaults to
+// localhost:8000 so the Docker/production build is unaffected.
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000/api';
 
 // Turn a FastAPI error body into a readable string. ``detail`` is a string for
 // HTTPException (our 400/404), but a LIST of {loc,msg,type} objects for 422
@@ -139,6 +142,15 @@ export const api = {
     updateLoadProfile: (id, data) =>
         request(`/profiles/load/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     deleteLoadProfile: (id) => request(`/profiles/load/${id}`, { method: 'DELETE' }),
+    // Representative-week preview of a load profile (consumption personality).
+    // Inline: pass {profile_type, data, month, regime, climate_profile_id, n_paths, seed}.
+    async previewLoadProfileInline(payload) {
+        return request('/profiles/load/preview', { method: 'POST', body: JSON.stringify(payload) });
+    },
+    // Saved: profile shape read from DB; pass {month, regime, climate_profile_id, n_paths, seed}.
+    async previewLoadProfileById(id, params) {
+        return request(`/profiles/load/${id}/preview`, { method: 'POST', body: JSON.stringify(params) });
+    },
 
     async listPriceProfiles() { return request('/profiles/price'); },
     async createPriceProfile(data) {

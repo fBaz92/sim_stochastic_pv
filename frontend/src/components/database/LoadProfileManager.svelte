@@ -4,6 +4,7 @@
     import MonthInput from "../forms/MonthInput.svelte";
     import MonthlyProfileEditor from "../forms/MonthlyProfileEditor.svelte";
     import WeeklyPatternEditor from "../forms/WeeklyPatternEditor.svelte";
+    import LoadProfileDetail from "./LoadProfileDetail.svelte";
 
     /**
      * Load Profile Manager — Phase 8 edition.
@@ -26,6 +27,9 @@
 
     let items = [];
     let showForm = false;
+
+    /** When set, the dedicated detail/personality page is shown for this item. */
+    let detailItem = null;
 
     /** ID del profilo in editing; null = modalità creazione. */
     let editingId = null;
@@ -232,6 +236,13 @@
     }
 </script>
 
+{#if detailItem}
+    <LoadProfileDetail
+        profile={detailItem}
+        on:close={() => (detailItem = null)}
+        on:saved={async () => { await load(); detailItem = items.find((it) => it.id === detailItem.id) || detailItem; }}
+    />
+{:else}
 <div class="manager">
     <div class="toolbar">
         <h2>Profili di carico</h2>
@@ -409,7 +420,9 @@
             {#each items as item (item.id)}
                 <div class="card item-card" class:editing={editingId === item.id}>
                     <div class="item-body">
-                        <h3>{item.name}</h3>
+                        <button class="title-btn" on:click={() => (detailItem = item)} title="Apri il dettaglio del profilo">
+                            {item.name}
+                        </button>
                         <p class="meta">{describeItem(item)}</p>
                     </div>
                     <div class="item-actions">
@@ -420,7 +433,9 @@
                             <button class="btn btn-sm btn-ghost"
                                     on:click={() => deleteConfirmId = null}>No</button>
                         {:else}
-                            <button class="btn btn-sm btn-ghost" title="Modifica"
+                            <button class="btn btn-sm btn-ghost" title="Dettaglio e personalità"
+                                    on:click={() => (detailItem = item)}>📊</button>
+                            <button class="btn btn-sm btn-ghost" title="Modifica pattern"
                                     on:click={() => startEdit(item)}>✏️</button>
                             <button class="btn btn-sm btn-ghost btn-del" title="Elimina"
                                     on:click={() => { deleteConfirmId = item.id; editingId = null; }}>🗑️</button>
@@ -431,9 +446,12 @@
         </div>
     {/if}
 </div>
+{/if}
 
 <style>
     .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; }
+    .title-btn { background: none; border: none; padding: 0; font-size: 1.05rem; font-weight: 600; color: var(--color-accent, #0d6efd); cursor: pointer; text-align: left; }
+    .title-btn:hover { text-decoration: underline; }
     .item-card { padding: 1rem; margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
     .item-card.editing { border-color: var(--color-accent, #0d6efd); outline: 2px solid var(--color-accent, #0d6efd); outline-offset: 2px; }
     .item-body { flex: 1; }

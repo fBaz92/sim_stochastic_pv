@@ -4,15 +4,15 @@
     {
       "name": "frontend",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--", "--host", "127.0.0.1", "--port", "5174"],
+      "runtimeArgs": ["run", "dev"],
       "cwd": "frontend",
       "port": 5174
     },
     {
       "name": "backend",
-      "runtimeExecutable": "venv/bin/uvicorn",
-      "runtimeArgs": ["api_main:app", "--host", "127.0.0.1", "--port", "8000"],
-      "port": 8000
+      "runtimeExecutable": "venv/bin/python",
+      "runtimeArgs": ["-c", "import os; from sim_stochastic_pv import config; import uvicorn; uvicorn.run('api_main:app', host='127.0.0.1', port=int(os.getenv('BACKEND_PORT', '8000')))"],
+      "port": 8001
     }
   ]
 }

@@ -828,9 +828,10 @@
 
         applyLoadProfile(scenarioClone);
 
-        // Phase 17 — append the optional stochastic-load block under
-        // load_profile.stochastic. The simulator reads it from there.
-        if (stochasticLoadEnabled && scenarioClone.load_profile) {
+        // Optional stochastic-load block under load_profile.stochastic, for
+        // inline profiles only. A saved profile carries its own variability
+        // (inherited via hydration), so the wizard must not also write it.
+        if (loadSource === "inline" && stochasticLoadEnabled && scenarioClone.load_profile) {
             scenarioClone.load_profile.stochastic = {
                 enabled: true,
                 sigma_log: Number(stochasticSigmaLog),
@@ -838,10 +839,10 @@
             };
         }
 
-        // Phase 17-bis — append the optional discrete appliances block.
-        // The block lives under load_profile.appliances; per-item
-        // schedule_mode overrides the global smart_pv default.
-        if (appliancesEnabled && scenarioClone.load_profile) {
+        // Optional discrete-appliances block (inline profiles only). The block
+        // lives under load_profile.appliances; per-item schedule_mode overrides
+        // the global smart_pv default. A saved profile carries its own.
+        if (loadSource === "inline" && appliancesEnabled && scenarioClone.load_profile) {
             const selectedItems = APPLIANCE_CATALOG
                 .filter((a) => appliancesSelection[a.key]?.enabled)
                 .map((a) => {
@@ -861,10 +862,10 @@
             }
         }
 
-        // Phase 17 — append the optional thermal_load (HVAC) block. The
-        // climate_profile_id is propagated up so the backend can wire
-        // the ThermalModel from the climate DB.
-        if (thermalLoadEnabled) {
+        // Optional inline thermal_load (HVAC) block — inline profiles only.
+        // For a saved profile the HVAC config lives on the profile and is
+        // inherited via hydration; the wizard must not override it here.
+        if (loadSource === "inline" && thermalLoadEnabled) {
             scenarioClone.thermal_load = {
                 enabled: true,
                 house: {
@@ -884,6 +885,13 @@
             if (climateProfileId != null && scenarioClone.climate_profile_id == null) {
                 scenarioClone.climate_profile_id = climateProfileId;
             }
+        }
+
+        // A saved profile may carry its own HVAC: propagate the climate chosen
+        // in the Luogo step so the inherited heat-pump model has hourly
+        // temperatures. Guarded so it never overrides an already-set value.
+        if (climateProfileId != null && scenarioClone.climate_profile_id == null) {
+            scenarioClone.climate_profile_id = climateProfileId;
         }
 
         // Electricity-market coupling: reference a saved market profile and
@@ -1795,7 +1803,10 @@
             <MonthInput label="Giorni minimi a casa / mese" bind:values={minDaysHome} />
             <MonthInput label="Giorni massimi a casa / mese" bind:values={maxDaysHome} />
 
-            <!-- Phase 17 — opt-in stochastic intra-day variability. -->
+            {#if loadSource === "inline"}
+            <!-- Consumption layers (variability / appliances / HVAC) are edited
+                 here only for an inline profile. For a saved profile they are
+                 part of the profile's personality and inherited automatically. -->
             <hr class="section-divider" />
             <div class="form-group">
                 <label class="toggle-row">
@@ -1964,6 +1975,19 @@
                     {:else}
                         <p class="hint">Seleziona almeno un appliance per iniziare.</p>
                     {/if}
+                </div>
+            {/if}
+            {:else}
+                <hr class="section-divider" />
+                <div class="card subtle preview-box">
+                    <p class="hint">
+                        <strong>Variabilità giornaliera, elettrodomestici e pompa di
+                        calore</strong> fanno parte del <em>profilo di carico</em>:
+                        definiscili e visualizzali aprendo il profilo in
+                        <em>Database → Profili di carico</em>. Lo scenario li eredita
+                        automaticamente dal profilo selezionato (il clima resta una
+                        scelta dello step Luogo).
+                    </p>
                 </div>
             {/if}
         </div>

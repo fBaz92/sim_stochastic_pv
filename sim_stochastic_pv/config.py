@@ -1,18 +1,46 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Dict
 
+_logger = logging.getLogger(__name__)
 
-def _load_dotenv(path: str = ".env") -> Dict[str, str]:
+
+def _load_dotenv(path: str = ".env", fallback: str = ".env.example") -> Dict[str, str]:
     """
-    Basic .env loader to populate os.environ when python-dotenv is unavailable.
-    Returns a mapping of parsed key/value pairs.
+    Populate ``os.environ`` from a dotenv file, with a logged fallback.
+
+    The single source of truth for configuration is ``.env``. When it is
+    absent the loader falls back to ``fallback`` (the committed
+    ``.env.example`` template) and logs a warning so the substitution is
+    visible in the logs. When neither file exists nothing is loaded.
+
+    Existing environment variables always win (values are applied with
+    :meth:`os.environ.setdefault`), so an explicit shell/Docker env overrides
+    the file.
+
+    Args:
+        path: Primary dotenv file. Defaults to ``.env``.
+        fallback: File used when ``path`` is missing. Defaults to
+            ``.env.example``.
+
+    Returns:
+        Mapping of the key/value pairs parsed from whichever file was used
+        (empty when neither exists).
     """
     env_path = Path(path)
     if not env_path.exists():
-        return {}
+        fallback_path = Path(fallback)
+        if not fallback_path.exists():
+            return {}
+        _logger.warning(
+            "Config: '%s' non trovato — uso il fallback '%s' per le variabili "
+            "d'ambiente. Copia '%s' in '%s' per personalizzarle.",
+            path, fallback, fallback, path,
+        )
+        env_path = fallback_path
 
     parsed: Dict[str, str] = {}
     for line in env_path.read_text(encoding="utf-8").splitlines():

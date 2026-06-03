@@ -6,6 +6,12 @@ COPY package*.json ./
 RUN npm ci
 
 COPY . .
+
+# Browser → API URL, injected by docker-compose from .env (VITE_API_BASE).
+# Vite bakes VITE_-prefixed vars into the static build; src/api.js falls back
+# to http://localhost:8000/api when unset.
+ARG VITE_API_BASE
+ENV VITE_API_BASE=$VITE_API_BASE
 RUN npm run build
 
 

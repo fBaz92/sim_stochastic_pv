@@ -1211,6 +1211,92 @@ componenti aggregate); modalità "coupled" meteo↔prezzo.
 
 ---
 
+## Fase 21 — Profilo di carico come personalità di consumo completa + pagina di dettaglio
+
+**Problema**: oggi un profilo di carico salvato nel DB è solo i pattern casa/via
+(home/away). Le dimensioni di realismo del consumo — variabilità giornaliera
+(LogN/AR(1)), elettrodomestici discreti, pompa di calore/HVAC con modello casa —
+vivono come parametri dello *scenario* (step Carico del wizard), non del profilo.
+Conseguenze: (a) l'utente le ridefinisce a ogni scenario; (b) non sono
+riutilizzabili; (c) non c'è modo di *vedere* un profilo prima di usarlo — a
+differenza di prezzo (anteprima fan chart) e clima (anteprima temperatura), il
+profilo di carico non ha alcuna visualizzazione, e l'elenco mostra solo testo.
+
+**Decisione utente (2026-06-01)**: queste dimensioni diventano **attributi del
+profilo** (la "personalità di consumo" completa e riutilizzabile). Lo scenario
+eredita dal profilo scelto; nello scenario restano solo i giorni casa/via
+(`min_days_home`/`max_days_home`) e il riferimento al profilo climatico
+(`climate_profile_id`, perché il clima è proprietà del *sito*, non della persona).
+
+**Deliverable** (slice indipendenti, ognuna a suite verde):
+
+- **21a — Schema profilo esteso (backend)**: `LoadProfileModel.data` (JSON, nessuna
+  colonna nuova) porta opzionalmente `stochastic {enabled, sigma_log,
+  phi_intra_day}`, `appliances {enabled, smart_pv, items[]}`, `thermal {enabled,
+  house, heat_pump, setpoint, dynamic}`. Profili senza i blocchi = comportamento
+  attuale (byte-identico). Idratazione: quando lo scenario referenzia
+  `load_profile_id`, i tre blocchi arrivano dal **profilo** (via
+  `load_profile.{stochastic,appliances,thermal}` dopo l'hydration); le
+  `build_default_stochastic_load_config` / `_appliance_profile_config` /
+  `_thermal_load_config` leggono prima dal profilo, poi (transitorio) dallo
+  scenario inline. `thermal` richiede ancora un `climate_profile_id` di scenario.
+  Validazione dei nuovi blocchi nel profilo. Test.
+- **21b — Endpoint anteprima profilo (backend)**: `POST /api/profiles/load/preview`
+  (+ `/{id}/preview`) → dato profilo (o id) + mese + `climate_profile_id`
+  opzionale + n_paths + seed, simula una **settimana rappresentativa** (168 h) del
+  mese: carico orario medio (kW) con bande p05/p95, breakdown
+  baseline/elettrodomestici/HVAC, kWh/anno totale (+ split casa/via, kWh/anno per
+  elettrodomestico) e — se clima+thermal — temperatura esterna settimanale (e
+  interna se dynamic). Helper riusabile, niente rete. Test (vol/appliance=0
+  collassa le bande, ecc.).
+- **21c — Pagina di dettaglio del profilo (frontend)**: cliccando un profilo si
+  apre una vista dedicata con KPI numerici (kWh/anno, casa/via, per-elettrodomestico),
+  grafico timeseries **settimanale per mese** (selettore mese, media + bande, stack
+  baseline/elettrodomestici/HVAC), controllo variabilità giornaliera con re-preview
+  live, **editor elettrodomestici** (definire/aggiungere appliance custom: nome, kW,
+  durata h, volte/settimana, ore consentite; + preset del catalogo), toggle HVAC con
+  parametri, grafico **temperatura esterna (e interna) settimanale per mese** quando è
+  selezionato un clima. Scenario misto casa/via: lato casa = modello completo, lato
+  via = semi-costante + variabilità opzionale. Salvataggio sul profilo.
+- **21d — Sgancio dal wizard**: rimozione degli input variabilità/elettrodomestici/HVAC
+  dallo step Carico del wizard (ora ereditati dal profilo selezionato). Lo scenario
+  tiene giorni casa/via + selezione clima; anteprima read-only del profilo ereditato.
+
+**Out of scope ora**: editing dei pattern casa/via stessi resta nel
+`LoadProfileManager` (la pagina di dettaglio aggiunge anteprima + i nuovi blocchi);
+demand response / prezzi orari; modello multi-zona della casa; acqua calda sanitaria
+separata.
+
+---
+
+## Fase 22 — Editor del mercato elettrico nella sezione Database
+
+**Problema**: il modello di mercato (mix gas/CO₂/carbone, trend di capacità, PMG,
+tariffa retail) si progetta e si salva come profilo **solo** nella pagina "Mercato
+elettrico". L'utente si aspetta di gestirlo dalla sezione **Database**, dove vivono
+tutte le altre entità riutilizzabili (scenari, design, posizioni, hardware, profili
+di carico/prezzo). Manca la scoperta del legame "qui definisci il modello del gas".
+
+**Decisione utente (2026-06-01)**: editor **completo** nel Database (non solo un link
+al lab).
+
+**Deliverable**:
+
+- Componente condiviso `MarketConfigEditor.svelte` (form mix + scenari combustibili +
+  parametri simulazione + PMG/retail) usato sia dalla pagina "Mercato elettrico" sia
+  dal nuovo manager (DRY, §2.1); builder dei grafici estratti in
+  `frontend/src/lib/marketCharts.js`.
+- Nuova scheda "Profili di mercato" nella sezione Database con
+  `MarketProfileManager.svelte`: lista (nome/descrizione), crea/modifica (editor
+  completo + anteprima fan chart annuale e heatmap prezzo riusando `POST /api/market/run`),
+  elimina. CRUD sulle API esistenti (`/api/market/profiles`, upsert by name).
+- Nessun nuovo endpoint backend (il CRUD dei profili di mercato esiste già).
+
+**Out of scope ora**: nuove visualizzazioni di mercato oltre a quelle già nel lab;
+preview con debounce live (basta un pulsante "Anteprima").
+
+---
+
 ## Dipendenze fra fasi
 
 ```
@@ -1267,6 +1353,68 @@ strategie di scheduling intelligente (auto EV su PV, smart timer).
 _Nessuna fase attualmente in corso._
 
 ### ✅ Completate
+
+**Fase 21 — Profilo di carico come personalità di consumo completa + pagina di
+dettaglio** — chiusa 2026-06-02 (tutte le slice 21a–21d; suite 615 test backend
+verde; build frontend OK; verificata end-to-end nel browser).
+
+- **21b — anteprima backend**: `simulation/load_preview.py`
+  (`simulate_load_profile_preview` → settimana rappresentativa 168 h con bande
+  p05/p95, breakdown baseline/elettrodomestici/HVAC, kWh/anno, temperatura
+  esterna/interna se clima); endpoint `POST /api/profiles/load/preview` (inline) e
+  `POST /api/profiles/load/{id}/preview` (salvato) in `api/routes/profiles.py`;
+  schemi `LoadProfilePreviewParams/Request/Response`; helper
+  `build_regime_load_profile_factory` in `scenario_builder.py`;
+  `get_load_profile_by_id` in persistence. `tests/test_load_preview.py` (12 test).
+- **21c — pagina di dettaglio**: `components/database/LoadProfileDetail.svelte`
+  (selettore mese/regime, grafico settimana tipo con bande + toggle composizione,
+  KPI kWh/anno con split, slider variabilità, editor elettrodomestici
+  preset+custom kW/durata/volte-settimana, HVAC con selettore clima + parametri,
+  grafico temperatura settimanale); aperta cliccando un profilo nel
+  `LoadProfileManager`; metodi `previewLoadProfile*` in `api.js`. Anteprima live
+  via endpoint inline; salva i blocchi nel `data` del profilo.
+- **21a — ereditarietà scenario**: l'hydration copia il `data` del profilo in
+  `load_profile`, quindi `build_default_stochastic_load_config` /
+  `_appliance_profile_config` ereditano automaticamente; aggiunto il fallback
+  `load_profile.thermal` in `build_default_thermal_load_config` (con il
+  `thermal_load` di scenario che mantiene la precedenza). 5 test di ereditarietà.
+- **21d — sgancio dal wizard**: nello step Carico del wizard gli editor
+  variabilità/elettrodomestici/HVAC sono ora mostrati solo per il profilo
+  *inline*; con un profilo *dal database* compare una nota "ereditati dal profilo"
+  (link a Database → Profili di carico). `buildPayload` scrive i blocchi inline
+  solo in modalità inline e propaga sempre `climate_profile_id` quando presente,
+  così l'HVAC ereditato da un profilo salvato dispone delle temperature orarie.
+
+Nota infrastrutturale (2026-06-02): **una sola fonte di verità per le porte** in
+`.env` (fallback `.env.example`, loggato). Lo leggono Docker Compose
+(`docker-compose.yml` con substitution `${BACKEND_PORT}`/`${FRONTEND_PORT}` +
+build-arg `VITE_API_BASE` nel `frontend/Dockerfile`), i server di sviluppo
+(`make dev-backend`/`make dev-frontend` e `vite.config.js` che risolve
+porta + API base dalla root `.env`), e il backend (`config.py._load_dotenv`,
+ora con fallback `.env.example` + warning di log). Entry point unico: `Makefile`
+(`make up`/`down`/`dev-*`). Default committati: backend 8001, frontend 5174.
+`frontend/src/api.js` legge `VITE_API_BASE` (fallback `http://localhost:8000/api`).
+
+**Fase 22 — Editor del mercato elettrico nella sezione Database** — chiusa
+2026-06-01 (suite 598 test backend verde — nessuna modifica Python; build frontend
+OK; verificata end-to-end nel browser). Estratto il form di configurazione mercato
+in `frontend/src/components/MarketConfigEditor.svelte` (metodi imperativi
+`getConfig`/`setConfig` + evento `displaychange`) e i builder dei grafici in
+`frontend/src/lib/marketCharts.js`, riusati sia dalla pagina "Mercato elettrico"
+(rifattorizzata, verificata invariata) sia dal nuovo
+`frontend/src/components/database/MarketProfileManager.svelte`. Aggiunta la scheda
+"Profili di mercato" alla sezione Database (`Database.svelte`) con CRUD completo
+(crea/modifica/elimina via `/api/market/profiles`, upsert by name) e anteprima live
+(fan chart annuale + heatmap prezzo mese×ora via `POST /api/market/run`). Nessun
+nuovo endpoint backend. Verificato nel browser: lab invariato (4 grafici + heatmap),
+nuova scheda crea→anteprima→salva→modifica→elimina senza errori console.
+
+Insieme alla fase: corretti due bug frontend segnalati dall'utente —
+(1) nel `MonthlyProfileEditor` i pulsanti dei mesi e "Copy to All" mancavano di
+`type="button"` e dentro il `<form>` del `LoadProfileManager` agivano da submit
+(cambiare mese salvava e chiudeva l'editor); (2) il widget `JobProgress` a fine run
+("Analisi scenario — Completato") non era chiudibile e restava appeso: ora è
+cliccabile (apre il run), ha una × di chiusura e si auto-chiude dopo 6 s.
 
 **Fase 20 — Mercato elettrico sottostante (prezzo endogeno + ritiro dedicato)**
 — chiusa 2026-05-31 (tutte e 7 le slice 20a–20g; suite 585 test backend verde;

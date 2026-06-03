@@ -3,46 +3,20 @@
     import { api } from "../api.js";
     import ResultsChart from "../components/ResultsChart.svelte";
     import Heatmap from "../components/Heatmap.svelte";
+    import MarketConfigEditor from "../components/MarketConfigEditor.svelte";
+    import {
+        TECHS,
+        colorFor,
+        MONTHS,
+        HOURS,
+        buildFanConfig,
+        buildFuelConfig,
+        buildDurationConfig,
+        buildCapacityConfig,
+    } from "../lib/marketCharts.js";
 
-    // ── Technology display config (label + colour) ────────────────────────
-    const TECHS = [
-        { key: "gas", label: "Gas", color: "#ef4444" },
-        { key: "coal", label: "Carbone", color: "#6b7280" },
-        { key: "nuclear", label: "Nucleare", color: "#8b5cf6" },
-        { key: "wind", label: "Eolico", color: "#10b981" },
-        { key: "solar", label: "Solare", color: "#f59e0b" },
-        { key: "hydro_mustrun", label: "Idro (must-run)", color: "#3b82f6" },
-    ];
-    const TECH_COLOR = {
-        gas: "#ef4444", coal: "#6b7280", nuclear: "#8b5cf6",
-        wind: "#10b981", solar: "#f59e0b", hydro_mustrun: "#3b82f6",
-        import: "#ec4899",
-    };
-    const FALLBACK = ["#ef4444", "#f59e0b", "#10b981", "#3b82f6", "#8b5cf6", "#6b7280", "#ec4899"];
-    const colorFor = (tech, i) => TECH_COLOR[tech] ?? FALLBACK[i % FALLBACK.length];
-
-    const MONTHS = ["Gen", "Feb", "Mar", "Apr", "Mag", "Giu", "Lug", "Ago", "Set", "Ott", "Nov", "Dic"];
-    const HOURS = Array.from({ length: 24 }, (_, h) => String(h));
-
-    // ── Form state (defaults = Italian base mix) ──────────────────────────
-    let techState = {
-        gas: { cap: 45, growth: 0, stepYear: "", stepCap: "" },
-        coal: { cap: 0, growth: 0, stepYear: "", stepCap: "" },
-        nuclear: { cap: 0, growth: 0, stepYear: "", stepCap: "" },
-        wind: { cap: 13, growth: 4, stepYear: "", stepCap: "" },
-        solar: { cap: 30, growth: 6, stepYear: "", stepCap: "" },
-        hydro_mustrun: { cap: 8, growth: 0, stepYear: "", stepCap: "" },
-    };
-    let gasScenario = "base";
-    let co2Scenario = "base";
-    let coalScenario = "";
-    let gasDrift = 0.0;
-    let co2Drift = 0.0;
-    let nYears = 20;
-    let nTrajectories = 8;
-    let nRuns = 6;
-    let displayYear = 0;
-    let seed = 42;
+    // Bound reference to the shared config editor (owns the mix/fuel/sim form).
+    let marketEditor;
 
     // ── Run / result state ────────────────────────────────────────────────
     let result = null;
@@ -61,40 +35,12 @@
     let saveError = null;
     let savedProfiles = [];
 
-    function buildPayload() {
-        const capacities_gw = {};
-        const capacity_trends = {};
-        for (const t of TECHS) {
-            const s = techState[t.key];
-            capacities_gw[t.key] = Number(s.cap);
-            const trend = { annual_growth_pct: Number(s.growth) };
-            if (s.stepYear !== "" && s.stepCap !== "") {
-                trend.step_year = Number(s.stepYear);
-                trend.step_capacity_gw = Number(s.stepCap);
-            }
-            capacity_trends[t.key] = trend;
-        }
-        return {
-            capacities_gw,
-            capacity_trends,
-            gas_scenario: gasScenario,
-            co2_scenario: co2Scenario || null,
-            coal_scenario: coalScenario || null,
-            gas_mu_drift_annual: Number(gasDrift),
-            co2_mu_drift_annual: Number(co2Drift),
-            n_years: Number(nYears),
-            n_trajectories: Number(nTrajectories),
-            n_runs: Number(nRuns),
-            seed: Number(seed),
-            display_year: Number(displayYear),
-        };
-    }
-
     async function run() {
+        if (!marketEditor) return;
         running = true;
         runError = null;
         try {
-            result = await api.runMarketLab(buildPayload());
+            result = await api.runMarketLab(marketEditor.getConfig());
         } catch (e) {
             runError = e.message;
             result = null;
@@ -104,10 +50,10 @@
     }
 
     async function doExport(kind) {
-        if (exporting) return;
+        if (exporting || !marketEditor) return;
         exporting = kind;
         try {
-            const payload = buildPayload();
+            const payload = marketEditor.getConfig();
             if (kind === "xlsx") await api.exportMarketXlsx(payload);
             else await api.exportMarketPdf(payload);
         } catch (e) {
@@ -137,7 +83,7 @@
             const payload = {
                 name: saveName.trim(),
                 description: null,
-                config: buildPayload(),
+                config: marketEditor.getConfig(),
                 pmg_base_eur_per_kwh: Number(savePmg),
             };
             if (saveRetailEnabled) {
@@ -171,29 +117,7 @@
         saveMsg = "";
         try {
             const p = await api.getMarketProfile(id);
-            const c = p.config || {};
-            if (c.gas_scenario) gasScenario = c.gas_scenario;
-            if ("co2_scenario" in c) co2Scenario = c.co2_scenario ?? "";
-            if ("coal_scenario" in c) coalScenario = c.coal_scenario ?? "";
-            if (c.gas_mu_drift_annual != null) gasDrift = c.gas_mu_drift_annual;
-            if (c.co2_mu_drift_annual != null) co2Drift = c.co2_mu_drift_annual;
-            if (c.n_years != null) nYears = c.n_years;
-            if (c.n_trajectories != null) nTrajectories = c.n_trajectories;
-            if (c.n_runs != null) nRuns = c.n_runs;
-            if (c.seed != null) seed = c.seed;
-            if (c.display_year != null) displayYear = c.display_year;
-            for (const t of TECHS) {
-                if (c.capacities_gw && c.capacities_gw[t.key] != null) {
-                    techState[t.key].cap = c.capacities_gw[t.key];
-                }
-                const tr = c.capacity_trends && c.capacity_trends[t.key];
-                if (tr) {
-                    techState[t.key].growth = tr.annual_growth_pct ?? 0;
-                    techState[t.key].stepYear = tr.step_year ?? "";
-                    techState[t.key].stepCap = tr.step_capacity_gw ?? "";
-                }
-            }
-            techState = { ...techState }; // trigger reactivity after nested edits
+            marketEditor.setConfig(p.config || {});
             savePmg = p.pmg_base_eur_per_kwh ?? savePmg;
             if (p.retail_markup_fraction != null) {
                 saveRetailEnabled = true;
@@ -216,151 +140,6 @@
     });
 
     // ── Chart configs ──────────────────────────────────────────────────────
-    function buildFanConfig(res) {
-        return {
-            type: "line",
-            data: {
-                labels: res.years,
-                datasets: [
-                    {
-                        label: "p05",
-                        data: res.annual_price_p05_eur_per_kwh,
-                        borderColor: "transparent",
-                        pointRadius: 0,
-                        fill: false,
-                    },
-                    {
-                        label: "p05–p95",
-                        data: res.annual_price_p95_eur_per_kwh,
-                        borderColor: "transparent",
-                        backgroundColor: "rgba(59,130,246,0.15)",
-                        pointRadius: 0,
-                        fill: "-1",
-                    },
-                    {
-                        label: "media",
-                        data: res.annual_price_mean_eur_per_kwh,
-                        borderColor: "#1d4ed8",
-                        backgroundColor: "#1d4ed8",
-                        pointRadius: 2,
-                        fill: false,
-                    },
-                ],
-            },
-            options: {
-                plugins: {
-                    legend: {
-                        display: true,
-                        // Hide the invisible lower-bound dataset from the legend.
-                        labels: { filter: (item) => item.text !== "p05" },
-                    },
-                },
-                scales: {
-                    x: { title: { display: true, text: "Anno" } },
-                    y: { title: { display: true, text: "€/kWh" } },
-                },
-            },
-        };
-    }
-
-    function buildFuelConfig(res) {
-        return {
-            type: "line",
-            data: {
-                labels: res.years,
-                datasets: [
-                    {
-                        label: "Gas (€/MWh)",
-                        data: res.gas_price_by_year_eur_per_mwh,
-                        borderColor: "#ef4444",
-                        backgroundColor: "#ef4444",
-                        pointRadius: 2,
-                        fill: false,
-                        yAxisID: "y",
-                    },
-                    {
-                        label: "CO₂ (€/t)",
-                        data: res.co2_price_by_year_eur_per_ton,
-                        borderColor: "#6b7280",
-                        backgroundColor: "#6b7280",
-                        pointRadius: 2,
-                        fill: false,
-                        yAxisID: "y1",
-                    },
-                ],
-            },
-            options: {
-                plugins: { legend: { display: true } },
-                scales: {
-                    x: { title: { display: true, text: "Anno" } },
-                    y: {
-                        position: "left",
-                        title: { display: true, text: "Gas €/MWh" },
-                    },
-                    y1: {
-                        position: "right",
-                        title: { display: true, text: "CO₂ €/t" },
-                        grid: { drawOnChartArea: false },
-                    },
-                },
-            },
-        };
-    }
-
-    function buildDurationConfig(res) {
-        return {
-            type: "line",
-            data: {
-                labels: res.duration_curve_x.map((v) => (v * 100).toFixed(0)),
-                datasets: [
-                    {
-                        label: "Prezzo €/kWh",
-                        data: res.duration_curve_price_eur_per_kwh,
-                        borderColor: "#0d9488",
-                        backgroundColor: "rgba(13,148,136,0.15)",
-                        pointRadius: 0,
-                        fill: true,
-                    },
-                ],
-            },
-            options: {
-                plugins: { legend: { display: false } },
-                scales: {
-                    x: { title: { display: true, text: "% delle ore dell'anno" } },
-                    y: { title: { display: true, text: "€/kWh" } },
-                },
-            },
-        };
-    }
-
-    function buildCapacityConfig(res) {
-        return {
-            type: "line",
-            data: {
-                labels: res.years,
-                datasets: TECHS.filter((t) => res.capacity_by_year_gw[t.key]).map((t) => ({
-                    label: t.label,
-                    data: res.capacity_by_year_gw[t.key],
-                    borderColor: t.color,
-                    backgroundColor: t.color + "cc",
-                    pointRadius: 0,
-                    fill: true,
-                })),
-            },
-            options: {
-                plugins: { legend: { display: true } },
-                scales: {
-                    x: { title: { display: true, text: "Anno" } },
-                    y: { stacked: true, title: { display: true, text: "GW installati" } },
-                },
-            },
-        };
-    }
-
-    // Year options for the "Anno mostrato" dropdown (0 .. n_years-1).
-    $: yearOptions = Array.from({ length: Math.max(1, Number(nYears) || 1) }, (_, i) => i);
-    // Keep the displayed-year dropdown valid when the horizon shrinks.
-    $: if (displayYear > (Number(nYears) || 1) - 1) displayYear = Math.max(0, (Number(nYears) || 1) - 1);
     $: fanConfig = result ? buildFanConfig(result) : null;
     $: fuelConfig = result ? buildFuelConfig(result) : null;
     $: durationConfig = result ? buildDurationConfig(result) : null;
@@ -385,105 +164,7 @@
     <div class="lab-grid">
         <!-- ── Config card ─────────────────────────────────────────────── -->
         <div class="card config-card">
-            <div class="section-title">Mix e trend di capacità</div>
-            <div class="mix-table-wrap">
-                <table class="mix-table">
-                    <thead>
-                        <tr>
-                            <th>Tecnologia</th>
-                            <th title="Capacità installata all'anno 0 (GW)">GW</th>
-                            <th title="Crescita (positivo) o dismissione (negativo) annua composta, in % all'anno">%/anno</th>
-                            <th title="Anno (0-based) a partire dal quale si impone una nuova capacità (es. nuovo nucleare)">Anno step</th>
-                            <th title="Capacità imposta (GW) a partire dall'anno step">GW step</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {#each TECHS as t}
-                            <tr>
-                                <td><span class="dot" style="background:{t.color}"></span>{t.label}</td>
-                                <td><input class="input mini" type="number" min="0" step="0.5" bind:value={techState[t.key].cap} /></td>
-                                <td><input class="input mini" type="number" step="0.5" bind:value={techState[t.key].growth} /></td>
-                                <td><input class="input mini" type="number" min="0" bind:value={techState[t.key].stepYear} placeholder="—" /></td>
-                                <td><input class="input mini" type="number" min="0" step="0.5" bind:value={techState[t.key].stepCap} placeholder="—" /></td>
-                            </tr>
-                        {/each}
-                    </tbody>
-                </table>
-            </div>
-            <p class="hint">
-                <strong>%/anno</strong>: crescita (valore positivo) o dismissione
-                (negativo) annua composta della capacità — es. <em>Solare +6</em>,
-                <em>Carbone −10</em>. <strong>Anno step</strong> + <strong>GW step</strong>:
-                impongono una capacità a partire da un dato anno — es. nucleare
-                <em>anno 9 → 4 GW</em> (la crescita riparte da lì). Lascia vuoti i
-                campi step per non usarli.
-            </p>
-
-            <div class="divider"></div>
-            <div class="section-title">Scenari combustibili</div>
-            <div class="grid-mini">
-                <div class="form-group">
-                    <label class="label" for="gas">Scenario gas</label>
-                    <select id="gas" class="select" bind:value={gasScenario}>
-                        <option value="base">Base</option>
-                        <option value="tension">Tensione</option>
-                        <option value="crisis">Crisi</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label class="label" for="co2">Scenario CO₂</label>
-                    <select id="co2" class="select" bind:value={co2Scenario}>
-                        <option value="">Default motore</option>
-                        <option value="base">Base</option>
-                        <option value="low">Basso</option>
-                        <option value="high">Alto</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label class="label" for="coal">Scenario carbone</label>
-                    <select id="coal" class="select" bind:value={coalScenario}>
-                        <option value="">Default motore</option>
-                        <option value="base">Base</option>
-                        <option value="tension">Tensione</option>
-                        <option value="crisis">Crisi</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label class="label" for="gasDrift">Drift gas %/anno</label>
-                    <input id="gasDrift" class="input" type="number" step="0.01" bind:value={gasDrift} />
-                </div>
-            </div>
-
-            <div class="divider"></div>
-            <div class="section-title">Simulazione</div>
-            <div class="grid-mini">
-                <div class="form-group">
-                    <label class="label" for="nYears">Anni orizzonte</label>
-                    <input id="nYears" class="input" type="number" min="1" max="30" bind:value={nYears} />
-                </div>
-                <div class="form-group">
-                    <label class="label" for="displayYear">Anno mostrato</label>
-                    <select id="displayYear" class="select" bind:value={displayYear} on:change={() => run()}>
-                        {#each yearOptions as y}
-                            <option value={y}>Anno {y}</option>
-                        {/each}
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label class="label" for="nTraj" title="Numero di traiettorie di mercato indipendenti per la banda di incertezza del prezzo (fan chart / heatmap / durata)">Traiettorie ⓘ</label>
-                    <input id="nTraj" class="input" type="number" min="1" max="100" bind:value={nTrajectories} />
-                </div>
-                <div class="form-group">
-                    <label class="label" for="nRuns" title="Simulazioni Monte Carlo del mercato usate per la heatmap «chi fissa il prezzo»: quante volte si ridispatcha l'anno per stimare quale tecnologia è marginale. Più simulazioni = stima più stabile, ma più lento.">Simulazioni «chi fissa il prezzo» ⓘ</label>
-                    <input id="nRuns" class="input" type="number" min="1" max="100" bind:value={nRuns} />
-                </div>
-            </div>
-            <p class="hint">
-                «Anno mostrato» ricalcola heatmap, curva di durata e «chi fissa
-                il prezzo» per l'anno scelto. «Traiettorie» allarga/restringe la
-                banda d'incertezza del prezzo; «Simulazioni» raffina la stima di
-                chi fissa il prezzo.
-            </p>
+            <MarketConfigEditor bind:this={marketEditor} on:displaychange={run} />
 
             <button class="btn btn-primary run-btn" on:click={run} disabled={running}>
                 {running ? "Calcolo in corso…" : "Calcola mercato"}
@@ -669,30 +350,6 @@
     .chart-wrap {
         height: 320px;
     }
-    .mix-table-wrap {
-        overflow-x: auto;
-    }
-    .mix-table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 0.8rem;
-    }
-    .mix-table th {
-        text-align: left;
-        font-weight: 600;
-        color: var(--color-text-secondary, #6b7280);
-        padding: 2px 3px;
-        font-size: 0.7rem;
-        cursor: help;
-    }
-    .mix-table td {
-        padding: 2px 3px;
-        white-space: nowrap;
-    }
-    .input.mini {
-        width: 52px;
-        padding: 3px 4px;
-    }
     .hint {
         font-size: 0.75rem;
         color: var(--color-text-secondary, #6b7280);
@@ -718,13 +375,6 @@
     }
     .profile-name-btn:hover {
         text-decoration: underline;
-    }
-    .dot {
-        display: inline-block;
-        width: 9px;
-        height: 9px;
-        border-radius: 50%;
-        margin-right: 5px;
     }
     .run-btn {
         width: 100%;

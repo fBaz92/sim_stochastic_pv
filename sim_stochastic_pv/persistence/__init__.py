@@ -244,6 +244,10 @@ class PersistenceService:
         """List all saved load profiles."""
         return self.configurations.list_load_profiles()
 
+    def get_load_profile_by_id(self, profile_id: int) -> LoadProfileModel | None:
+        """Fetch a single load profile by ID, or None if not found."""
+        return self.configurations.get_load_profile_by_id(profile_id)
+
     def delete_load_profile(self, profile_id: int) -> bool:
         """Delete a load profile by ID. Returns True if deleted, False if not found."""
         return self.configurations.delete_load_profile(profile_id)

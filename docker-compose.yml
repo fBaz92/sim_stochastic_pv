@@ -1,11 +1,15 @@
+# Ports come from .env (single source of truth). Run via `make up`, which
+# resolves .env → .env.example (logged) and passes it with --env-file. The
+# ":-" defaults below only apply if a variable is genuinely unset.
 services:
   backend:
     build:
       context: .
       dockerfile: Dockerfile.backend
     container_name: sim-pv-backend
+    # Host BACKEND_PORT → the container always listens internally on 8000.
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:8000"
     environment:
       MPLCONFIGDIR: /tmp/matplotlib
       XDG_CACHE_HOME: /tmp
@@ -19,9 +23,13 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      # The browser → API URL is baked into the static build at image-build time.
+      args:
+        VITE_API_BASE: ${VITE_API_BASE:-http://localhost:8000/api}
     container_name: sim-pv-frontend
+    # Host FRONTEND_PORT → the nginx container always listens internally on 80.
     ports:
-      - "4173:80"
+      - "${FRONTEND_PORT:-4173}:80"
     depends_on:
       - backend
     restart: unless-stopped

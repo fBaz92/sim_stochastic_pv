@@ -22,7 +22,18 @@ from fastapi.responses import StreamingResponse
 
 from ...output.exporters import build_template_xlsx, parse_load_profile_xlsx
 from ...persistence import PersistenceService
-from ...scenario_builder import build_default_price_model
+from ...scenario_builder import (
+    build_default_appliance_profile_config,
+    build_default_price_model,
+    build_default_solar_model,
+    build_default_stochastic_load_config,
+    build_default_thermal_load_config,
+    build_regime_load_profile_factory,
+)
+from ...simulation.load_preview import (
+    LoadPreviewResult,
+    simulate_load_profile_preview,
+)
 from ...simulation.prices import (
     PricePreviewResult,
     simulate_price_preview,
@@ -215,6 +226,148 @@ def delete_load_profile(
     if not persistence.delete_load_profile(profile_id):
         raise HTTPException(status_code=404, detail=f"Load profile id={profile_id} not found")
     return {"ok": True, "id": profile_id}
+
+
+def _run_load_preview(
+    profile_type: str,
+    data: Dict[str, Any],
+    params: profile_schemas.LoadProfilePreviewParams,
+    persistence: PersistenceService,
+) -> LoadPreviewResult:
+    """
+    Shared core of the load-profile preview endpoints.
+
+    Resolves the regime sub-profile factory and the optional behaviour layers
+    (daily variability, discrete appliances, HVAC) from the profile's ``data``
+    blocks, hydrates the climate model when requested, and runs the
+    representative-week Monte Carlo. Appliances and HVAC apply only to the
+    ``home`` regime (the away regime is intentionally a simple shape).
+
+    Args:
+        profile_type: Stored profile type (home_away / custom / custom_24h / …).
+        data: Profile ``data`` JSON, optionally with ``stochastic`` /
+            ``appliances`` / ``thermal`` blocks.
+        params: Preview tuning parameters (month, regime, climate, n_paths, seed).
+        persistence: Persistence service for the climate-profile lookup.
+
+    Returns:
+        The :class:`LoadPreviewResult` to be serialised into the response.
+
+    Raises:
+        HTTPException 400: invalid regime/shape or HVAC requested without a
+            climate profile.
+        HTTPException 404: ``climate_profile_id`` does not resolve.
+    """
+    regime = str(params.regime or "home").lower()
+    if regime not in ("home", "away"):
+        raise HTTPException(status_code=400, detail="regime must be 'home' or 'away'")
+
+    try:
+        factory = build_regime_load_profile_factory(profile_type, data, regime)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Appliances + HVAC are home-only; the away regime keeps just the (optional)
+    # daily variability on top of its semi-constant pattern.
+    wrapper = {
+        "load_profile": {
+            "stochastic": data.get("stochastic"),
+            "appliances": data.get("appliances") if regime == "home" else None,
+        },
+        "thermal_load": data.get("thermal") if regime == "home" else None,
+    }
+    try:
+        stochastic_config = build_default_stochastic_load_config(wrapper)
+        appliance_config = build_default_appliance_profile_config(wrapper)
+        thermal_load_config = build_default_thermal_load_config(wrapper)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    thermal_model = None
+    if params.climate_profile_id is not None:
+        thermal_model = persistence.load_thermal_model(int(params.climate_profile_id))
+        if thermal_model is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Climate profile {params.climate_profile_id} not found",
+            )
+    if thermal_load_config is not None and thermal_model is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Il modello HVAC del profilo richiede un profilo climatico: "
+                "seleziona un clima (climate_profile_id) per l'anteprima."
+            ),
+        )
+
+    solar_hourly_shape = None
+    if appliance_config is not None and any(
+        a.schedule_mode == "smart_pv" for a in appliance_config.appliances
+    ):
+        # A generic daytime PV shape is sufficient to bias smart_pv starts in a
+        # preview (the real scenario uses its own solar profile).
+        solar_hourly_shape = build_default_solar_model().hourly_shape
+
+    try:
+        return simulate_load_profile_preview(
+            base_profile_factory=factory,
+            regime=regime,
+            month=params.month,
+            n_paths=params.n_paths,
+            seed=params.seed,
+            stochastic_config=stochastic_config,
+            appliance_config=appliance_config,
+            thermal_load_config=thermal_load_config,
+            thermal_model=thermal_model,
+            solar_hourly_shape=solar_hourly_shape,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post(
+    "/profiles/load/preview",
+    response_model=profile_schemas.LoadProfilePreviewResponse,
+)
+def preview_load_profile_inline(
+    payload: profile_schemas.LoadProfilePreviewRequest,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> profile_schemas.LoadProfilePreviewResponse:
+    """
+    Preview an *unsaved* load profile (shape carried in the request body).
+
+    Powers the live preview in the detail-page editor: the user tweaks
+    variability / appliances / HVAC and sees the representative week update
+    before saving. See :func:`_run_load_preview` for the semantics.
+    """
+    result = _run_load_preview(payload.profile_type, payload.data, payload, persistence)
+    return profile_schemas.LoadProfilePreviewResponse(**asdict(result))
+
+
+@router.post(
+    "/profiles/load/{profile_id}/preview",
+    response_model=profile_schemas.LoadProfilePreviewResponse,
+)
+def preview_load_profile_saved(
+    profile_id: int,
+    payload: profile_schemas.LoadProfilePreviewParams,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> profile_schemas.LoadProfilePreviewResponse:
+    """
+    Preview a *saved* load profile by id (shape read from the database).
+
+    Raises:
+        HTTPException 404: the load profile id does not exist.
+    """
+    record = persistence.get_load_profile_by_id(profile_id)
+    if record is None:
+        raise HTTPException(
+            status_code=404, detail=f"Load profile id={profile_id} not found"
+        )
+    result = _run_load_preview(
+        record.profile_type, record.data or {}, payload, persistence
+    )
+    return profile_schemas.LoadProfilePreviewResponse(**asdict(result))
 
 
 @router.get("/profiles/price", response_model=list[profile_schemas.PriceProfileResponse])
