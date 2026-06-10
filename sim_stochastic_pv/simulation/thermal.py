@@ -185,7 +185,11 @@ class GPDTail:
             (when ξ < 1) is ``σ / (1 − ξ)``.
         exceedance_prob: Marginal probability of an exceedance on any
             day in this month. Equal to (n_exceedances / n_days_in_month)
-            during calibration.
+            during calibration. Audit/diagnostic value: the simulator's
+            exceedance *frequency* emerges from the AR(1) dynamics
+            crossing the threshold (≈ this value by construction, since
+            the threshold is the empirical p90 of the same residuals) —
+            the GPD governs the excess *magnitude* only.
 
     Example:
         ```python
@@ -274,6 +278,16 @@ class ThermalMonthParams:
             as positive magnitude). ``None`` to disable.
         t_amplitude_c: Average diurnal half-amplitude (°C), i.e.
             ``(Tmax_avg − Tmin_avg) / 2`` over the calibration window.
+        amp_slope_per_c: Sensitivity of the diurnal half-amplitude to the
+            daily-mean residual (°C of amplitude per °C of residual).
+            Hot anomalies are typically clear-sky days with a *larger*
+            diurnal swing than the monthly average (at Pavullo the
+            hottest-decile July days run ~+1.4 °C of half-amplitude above
+            the mean); using only the average amplitude systematically
+            shaves the simulated annual T_max. Empirical summer values
+            are ≈ +0.2..+0.5 °C/°C; winter values can be ≈ 0 or negative.
+            Default 0 reproduces the legacy constant-amplitude behaviour
+            bit-for-bit.
 
     Notes:
         - All fields are immutable (``frozen=True``) so a model can be
@@ -287,6 +301,7 @@ class ThermalMonthParams:
     t_amplitude_c: float
     gpd_upper: GPDTail | None = None
     gpd_lower: GPDTail | None = None
+    amp_slope_per_c: float = 0.0
 
     def __post_init__(self) -> None:
         if self.t_std_residual_c < 0:
@@ -297,6 +312,8 @@ class ThermalMonthParams:
             )
         if self.t_amplitude_c < 0:
             raise ValueError("t_amplitude_c must be >= 0")
+        if not np.isfinite(self.amp_slope_per_c):
+            raise ValueError("amp_slope_per_c must be finite")
 
 
 # ---------------------------------------------------------------------------
@@ -430,16 +447,25 @@ class ThermalModel:
             3. ``seasonal = harmonic.evaluate(doy) + trend · year``.
             4. ``σ_innov = σ_residual · √(1 − φ²)``.
             5. ``new_residual = φ · prev_residual + rng.normal() · σ_innov``.
-            6. If ``rng.random() < gpd_upper.exceedance_prob``:
-                draw excess, ``new_residual = max(new_residual,
-                threshold + excess)``.
-            7. Symmetric for lower tail.
+            6. If ``new_residual > gpd_upper.threshold``: redraw the
+               *excess* from the GPD —
+               ``new_residual = threshold + gpd_upper.sample_excess()``.
+            7. Symmetric for the lower tail
+               (``new_residual < −gpd_lower.threshold``).
             8. ``T[d] = seasonal + new_residual``.
 
-            The asymmetric ``max`` / ``min`` rule means the extreme draw
-            only fires if it would actually push the residual into the
-            tail — avoids inflating events that were already near-tail by
-            chance.
+            This is **tail replacement**, the standard POT coupling: the
+            AR(1) dynamics decide *when* the residual enters the tail
+            (≈ ``exceedance_prob`` of the days by construction, since the
+            threshold is the empirical p90 of the same residuals) and how
+            long the event persists (φ carries the replaced residual
+            forward — the heatwave plateau); the GPD decides *how far*
+            into the tail the excursion goes, replacing the too-thin
+            Gaussian excess. An earlier formulation fired independent GPD
+            events *on top of* the AR(1) exceedances at the empirical
+            rate, double-counting tail days and overshooting the annual
+            maxima by ~1.5 °C once the diurnal-amplitude coupling was in
+            place.
         """
         if n_days <= 0:
             raise ValueError(f"n_days must be > 0 (got {n_days})")
@@ -469,8 +495,6 @@ class ThermalModel:
         # reduce overhead in the per-day loop. The actual scaling depends
         # on the month's σ_innov so we draw N(0,1) here and rescale inside.
         innovations = rng.standard_normal(n_days)
-        uniforms_upper = rng.random(n_days)
-        uniforms_lower = rng.random(n_days)
 
         for d in range(n_days):
             params = self.monthly_params[months[d]]
@@ -478,27 +502,25 @@ class ThermalModel:
             sigma_innov = params.t_std_residual_c * np.sqrt(max(0.0, 1.0 - phi * phi))
             new_residual = phi * prev_residual + innovations[d] * sigma_innov
 
+            # Tail replacement: when the AR(1) residual crosses the POT
+            # threshold, the Gaussian excess is replaced by a GPD draw.
             up = params.gpd_upper
-            if up is not None and up.exceedance_prob > 0 and uniforms_upper[d] < up.exceedance_prob:
+            if up is not None and new_residual > up.threshold:
                 excess = up.sample_excess(rng)
-                candidate = up.threshold + excess
-                if candidate > new_residual:
-                    new_residual = candidate
-                    if report is not None:
-                        report.upper_event_days.append(d)
-                        if excess > report.max_excess_upper_c:
-                            report.max_excess_upper_c = float(excess)
+                new_residual = up.threshold + excess
+                if report is not None:
+                    report.upper_event_days.append(d)
+                    if excess > report.max_excess_upper_c:
+                        report.max_excess_upper_c = float(excess)
 
             lo = params.gpd_lower
-            if lo is not None and lo.exceedance_prob > 0 and uniforms_lower[d] < lo.exceedance_prob:
+            if lo is not None and new_residual < -lo.threshold:
                 excess = lo.sample_excess(rng)
-                candidate = -(lo.threshold + excess)
-                if candidate < new_residual:
-                    new_residual = candidate
-                    if report is not None:
-                        report.lower_event_days.append(d)
-                        if excess > report.max_excess_lower_c:
-                            report.max_excess_lower_c = float(excess)
+                new_residual = -(lo.threshold + excess)
+                if report is not None:
+                    report.lower_event_days.append(d)
+                    if excess > report.max_excess_lower_c:
+                        report.max_excess_lower_c = float(excess)
 
             result[d] = seasonal[d] + new_residual
             prev_residual = new_residual
@@ -520,17 +542,29 @@ class ThermalModel:
 
         For each day ``d``:
 
-            T(h) = daily_means[d] + amplitude[month(d)] · cos(2π · (h − 14) / 24)
+            T(h) = daily_means[d] + amplitude_d · cos(2π · (h − 14) / 24)
 
-        Peak at 14:00 (≈ solar afternoon), trough at 02:00, amplitude
-        equal to the month-specific ``t_amplitude_c``. This deliberate
-        simplification keeps the Phase-16 electrical model and the
-        Phase-17 HVAC model on a single shared T_amb(t) source without
-        introducing further free parameters.
+        Peak at 14:00 (≈ solar afternoon), trough at 02:00. The per-day
+        amplitude is the month-specific average half-amplitude plus an
+        optional residual-dependent term:
+
+            amplitude_d = max(0, t_amplitude_c[m] +
+                              amp_slope_per_c[m] · residual_d)
+
+        where ``residual_d = daily_means[d] − (seasonal(doy) + trend·year)``
+        is the same anomaly the AR(1)/GPD machinery produced. With a
+        positive slope, hot anomalies (clear-sky days) swing wider than
+        the monthly average — without it the simulated annual T_max is
+        systematically shaved by ~1–2 °C at mid-latitudes. When every
+        ``amp_slope_per_c`` is 0 (legacy profiles) the output is
+        bit-identical to the constant-amplitude behaviour.
 
         Args:
             daily_means: Output of :meth:`simulate_daily_means`,
-                shape ``(n_days,)``.
+                shape ``(n_days,)``. Index 0 is assumed to be day
+                ``start_day_of_year`` of simulation year 0, matching the
+                convention of :meth:`simulate_daily_means` (the residual
+                reconstruction needs the same seasonal + trend baseline).
             start_day_of_year: Day-of-year offset for the first entry.
                 Defaults to 0 (January 1).
 
@@ -555,13 +589,31 @@ class ThermalModel:
         h = np.arange(24)
         cos_diurnal = np.cos(2.0 * np.pi * (h - 14.0) / 24.0)  # shape (24,)
 
-        # Per-day month lookup → per-day amplitude.
-        doy = (np.arange(n_days) + start_day_of_year) % 365
+        # Per-day month lookup → per-day amplitude parameters.
+        day_index = np.arange(n_days) + start_day_of_year
+        doy = day_index % 365
+        years = day_index // 365
         months = np.asarray(month_of_year(doy), dtype=np.int64)
-        amplitudes = np.array(
+        amp_mean = np.array(
             [self.monthly_params[m].t_amplitude_c for m in months],
             dtype=float,
         )  # shape (n_days,)
+        amp_slope = np.array(
+            [self.monthly_params[m].amp_slope_per_c for m in months],
+            dtype=float,
+        )
+
+        if np.any(amp_slope != 0.0):
+            # Reconstruct the daily anomaly against the same deterministic
+            # baseline used by simulate_daily_means (seasonal + trend).
+            seasonal = (
+                np.asarray(self.harmonic.evaluate(doy), dtype=float)
+                + self.climate_trend_c_per_year * years
+            )
+            residuals = np.asarray(daily_means, dtype=float) - seasonal
+            amplitudes = np.maximum(0.0, amp_mean + amp_slope * residuals)
+        else:
+            amplitudes = amp_mean
 
         # Outer-product-ish: shape (n_days, 24).
         hourly = daily_means[:, None] + amplitudes[:, None] * cos_diurnal[None, :]

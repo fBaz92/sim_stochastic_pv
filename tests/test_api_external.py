@@ -159,6 +159,39 @@ def test_climate_preview_404_on_missing(persistence: PersistenceService) -> None
     assert resp.status_code == 404
 
 
+def test_climate_extremes_check(persistence: PersistenceService) -> None:
+    """Backtest endpoint: a profile calibrated on the stub archive must
+    pass its own extremes check (high coverage, small bias, OK verdict)."""
+    client = _create_test_client(persistence)
+    profile_id = _create_climate_profile(client, "Extremes_C")
+
+    resp = client.get(
+        f"/api/profiles/climate/{profile_id}/extremes-check",
+        params={"n_paths": 20, "lookback_years": 10, "seed": 7},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # Stub archive covers 2014–2023 → 10 complete observed years.
+    assert body["observed_years"] == list(range(2014, 2024))
+    assert len(body["observed_annual_tmax"]) == 10
+    assert body["n_years"] == 10
+    # Band ordering on both tails.
+    assert body["sim_tmax_p05"] < body["sim_tmax_p50"] < body["sim_tmax_p95"]
+    assert body["sim_tmin_p05"] < body["sim_tmin_p50"] < body["sim_tmin_p95"]
+    # Self-consistency: the model was calibrated on this very archive.
+    assert body["tmax_coverage"] >= 0.6
+    assert abs(body["tmax_median_bias_c"]) <= 1.5
+    assert body["verdict"].startswith("OK")
+
+
+def test_climate_extremes_check_404_on_missing(
+    persistence: PersistenceService,
+) -> None:
+    client = _create_test_client(persistence)
+    resp = client.get("/api/profiles/climate/999999/extremes-check")
+    assert resp.status_code == 404
+
+
 def test_climate_list_and_delete(persistence: PersistenceService) -> None:
     client = _create_test_client(persistence)
     profile_id = _create_climate_profile(client, "ListDel_C")

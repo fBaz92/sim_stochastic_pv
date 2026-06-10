@@ -127,6 +127,12 @@ export const api = {
         const q = new URLSearchParams({ n_paths, n_years, seed }).toString();
         return request(`/profiles/climate/${id}/preview?${q}`);
     },
+    // Backtest of the saved climate model against the observed annual
+    // extremes (re-fetches the Open-Meteo archive server-side).
+    async checkClimateExtremes(id, { n_paths = 50, lookback_years = 10, seed = 42 } = {}) {
+        const q = new URLSearchParams({ n_paths, lookback_years, seed }).toString();
+        return request(`/profiles/climate/${id}/extremes-check?${q}`);
+    },
     updateClimateProfile: (id, data) =>
         request(`/profiles/climate/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     deleteClimateProfile: (id) => request(`/profiles/climate/${id}`, { method: 'DELETE' }),

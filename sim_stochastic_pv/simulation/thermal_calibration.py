@@ -61,6 +61,21 @@ DEFAULT_POT_PERCENTILE = 90.0
 # Fallback diurnal amplitude (°C) when no (tmax, tmin) data is provided.
 DEFAULT_FALLBACK_AMPLITUDE_C = 4.0
 
+# Minimum number of (residual, amplitude) pairs in a month to fit the
+# amplitude-vs-residual slope. Below this the slope stays at 0 (constant
+# amplitude, legacy behaviour).
+MIN_SAMPLES_AMP_SLOPE = 30
+
+# Hard clip for the fitted amplitude slope (°C of half-amplitude per °C of
+# residual). Physical values are well inside ±1; the clip only guards
+# against degenerate regressions on pathological inputs.
+AMP_SLOPE_CLIP = 2.0
+
+# Minimum span (years) of ``year_offset`` data required to fit the linear
+# climate trend. With a shorter span the trend estimate is dominated by
+# interannual noise and is left at 0.
+MIN_YEARS_SPAN_FOR_TREND = 3.0
+
 
 @dataclass(frozen=True)
 class DailyArchiveSample:
@@ -69,13 +84,17 @@ class DailyArchiveSample:
 
     Attributes:
         day_of_year: 0-indexed day of year (0..364). Used for the
-            harmonic regression and the month lookup. Pass it instead of
-            a full date because the regression doesn't care about the
-            calendar year of the sample.
+            harmonic regression and the month lookup.
         t_mean_c: Daily mean temperature (°C). Required.
         t_max_c: Daily maximum temperature (°C). Optional — contributes
             to the diurnal-amplitude calibration only.
         t_min_c: Daily minimum temperature (°C). Optional.
+        year_offset: Years elapsed since the start of the calibration
+            window (e.g. 0.0 for the first January, 9.5 for mid-year of
+            the tenth year). Optional — when present on enough samples
+            the calibration fits a linear warming trend and detrends the
+            residuals before the per-month AR(1)/GPD fits; when absent
+            the calibration is trend-blind (legacy behaviour).
 
     Notes:
         Either ``t_mean_c`` alone or the trio ``(t_mean_c, t_max_c, t_min_c)``
@@ -87,6 +106,7 @@ class DailyArchiveSample:
     t_mean_c: float
     t_max_c: float | None = None
     t_min_c: float | None = None
+    year_offset: float | None = None
 
 
 @dataclass
@@ -100,18 +120,26 @@ class CalibrationReport:
         rmse_harmonic_c: Root mean square error of the harmonic seasonal
             fit (°C). A small value (≤ 4 °C for European mid-latitudes)
             indicates a well-behaved annual cycle.
+        fitted_trend_c_per_year: Linear warming trend fitted on the
+            harmonic residuals vs. years-since-window-start (°C/year).
+            0.0 when the samples carry no ``year_offset`` information.
+            Recent Po-valley/Apennine windows run ≈ +0.05..+0.12 °C/year.
         per_month_n_samples: Per-month sample counts. Indexed 0..11.
         per_month_gpd_upper_fitted: True if the upper-tail GPD was fitted
             for that month, False if skipped.
         per_month_gpd_lower_fitted: Same for the lower tail.
+        per_month_amp_slope: Fitted sensitivity of the diurnal
+            half-amplitude to the daily residual, per month (°C/°C).
     """
 
     n_samples: int = 0
     years_covered: float = 0.0
     rmse_harmonic_c: float = 0.0
+    fitted_trend_c_per_year: float = 0.0
     per_month_n_samples: list[int] = field(default_factory=lambda: [0] * 12)
     per_month_gpd_upper_fitted: list[bool] = field(default_factory=lambda: [False] * 12)
     per_month_gpd_lower_fitted: list[bool] = field(default_factory=lambda: [False] * 12)
+    per_month_amp_slope: list[float] = field(default_factory=lambda: [0.0] * 12)
 
 
 # ---------------------------------------------------------------------------
@@ -303,9 +331,81 @@ def fit_gpd_tail(
 # ---------------------------------------------------------------------------
 
 
+def fit_linear_trend(
+    year_offset: np.ndarray,
+    residuals: np.ndarray,
+    min_years_span: float = MIN_YEARS_SPAN_FOR_TREND,
+) -> float:
+    """
+    Least-squares slope of the harmonic residuals vs. time (°C/year).
+
+    Fitting the trend on the *residuals* (observed minus seasonal
+    harmonic) instead of the raw series keeps the two regressions
+    orthogonal: the harmonic absorbs the within-year cycle, the trend
+    absorbs the across-year drift.
+
+    Args:
+        year_offset: Years since the window start per sample, shape (N,).
+            May contain NaN for samples without year information — those
+            are excluded from the fit.
+        residuals: Harmonic residuals (°C), same shape.
+        min_years_span: Minimum span (max − min year_offset) required to
+            attempt the fit; below it the trend estimate would be noise
+            and 0.0 is returned.
+
+    Returns:
+        The fitted slope in °C/year, or 0.0 when the span is too short
+        or fewer than 2 valid samples exist.
+    """
+    valid = np.isfinite(year_offset) & np.isfinite(residuals)
+    if valid.sum() < 2:
+        return 0.0
+    x = year_offset[valid]
+    if float(x.max() - x.min()) < min_years_span:
+        return 0.0
+    y = residuals[valid]
+    slope = np.polyfit(x - x.min(), y, 1)[0]
+    return float(slope)
+
+
+def fit_amplitude_slope(
+    residuals: np.ndarray,
+    amplitudes: np.ndarray,
+    min_samples: int = MIN_SAMPLES_AMP_SLOPE,
+) -> float:
+    """
+    Least-squares slope of the diurnal half-amplitude vs. the daily
+    residual, for one month (°C of amplitude per °C of residual).
+
+    Captures the clear-sky effect: positive temperature anomalies are
+    usually sunny days with a wider day/night swing, so the hottest days
+    peak higher than ``daily_mean + average_amplitude`` would suggest.
+
+    Args:
+        residuals: Detrended harmonic residuals for the month, shape (N,).
+        amplitudes: Matching half-amplitudes ``(tmax − tmin)/2``, shape (N,).
+            NaN pairs are excluded.
+        min_samples: Minimum number of valid pairs to attempt the fit;
+            below it 0.0 is returned (constant amplitude).
+
+    Returns:
+        The fitted slope clipped to ``[-AMP_SLOPE_CLIP, AMP_SLOPE_CLIP]``,
+        or 0.0 when the sample is too small or degenerate.
+    """
+    valid = np.isfinite(residuals) & np.isfinite(amplitudes)
+    if valid.sum() < min_samples:
+        return 0.0
+    x = residuals[valid]
+    y = amplitudes[valid]
+    if float(np.std(x)) == 0.0:
+        return 0.0
+    slope = np.polyfit(x, y, 1)[0]
+    return float(np.clip(slope, -AMP_SLOPE_CLIP, AMP_SLOPE_CLIP))
+
+
 def calibrate_thermal_model(
     samples: Sequence[DailyArchiveSample],
-    climate_trend_c_per_year: float = 0.0,
+    climate_trend_c_per_year: float | None = None,
     pot_percentile: float = DEFAULT_POT_PERCENTILE,
     min_samples_per_month_gpd: int = DEFAULT_MIN_SAMPLES_PER_MONTH_GPD,
     fallback_amplitude_c: float = DEFAULT_FALLBACK_AMPLITUDE_C,
@@ -318,21 +418,33 @@ def calibrate_thermal_model(
     1. Stack samples → arrays.
     2. Fit harmonic seasonal mean over the full window.
     3. Compute per-day residuals = t_mean − harmonic(doy).
-    4. For each month:
-       a. Subset residuals belonging to that month.
+    4. Fit the linear warming trend on residuals vs. ``year_offset``
+       (when the samples carry year information) and **detrend** the
+       residuals before any per-month statistic — otherwise the warming
+       of the recent years is smeared into σ/GPD instead of being
+       extrapolated forward.
+    5. For each month:
+       a. Subset detrended residuals belonging to that month.
        b. Fit AR(1) → ``(σ, φ)``.
        c. Fit GPD upper / lower tails (or ``None`` if sample too small).
-       d. Compute mean diurnal half-amplitude from tmax/tmin if available,
-          else use ``fallback_amplitude_c``.
-    5. Wrap into a :class:`ThermalModel`.
+       d. Compute mean diurnal half-amplitude from tmax/tmin if available
+          (else ``fallback_amplitude_c``) plus the amplitude-vs-residual
+          slope (clear-sky coupling, see
+          :attr:`ThermalMonthParams.amp_slope_per_c`).
+    6. Wrap into a :class:`ThermalModel` whose trend is the fitted one
+       (or the explicit override).
 
     Args:
         samples: Iterable of :class:`DailyArchiveSample`. Order does not
             matter — the calibration is invariant under permutation.
-        climate_trend_c_per_year: Trend baked into the resulting
-            :class:`ThermalModel`. The calibration **does not** fit a
-            trend (it would conflate with the harmonic on short windows);
-            pass it explicitly when you want to extrapolate.
+        climate_trend_c_per_year: ``None`` (default) lets the calibration
+            *fit* the trend from the data and bake it into the model
+            (0.0 when the samples carry no ``year_offset``). Pass an
+            explicit float to force a specific trend — e.g. 0.0 for a
+            deliberately stationary model, or an IPCC-derived value.
+            The per-month statistics are detrended with the *fitted*
+            slope in both cases, so an override changes only the forward
+            extrapolation, not the residual calibration.
         pot_percentile: Threshold percentile for the GPD fits (default 90).
         min_samples_per_month_gpd: Minimum month sample count to attempt
             GPD; below this, both tails are ``None``.
@@ -360,6 +472,10 @@ def calibrate_thermal_model(
         [s.t_min_c if s.t_min_c is not None else np.nan for s in sample_list],
         dtype=float,
     )
+    year_offset = np.asarray(
+        [s.year_offset if s.year_offset is not None else np.nan for s in sample_list],
+        dtype=float,
+    )
 
     # 1. Harmonic seasonal mean
     harmonic, rmse = fit_harmonic_seasonal_mean(doy, tmean)
@@ -367,12 +483,23 @@ def calibrate_thermal_model(
     # 2. Residuals = observed - harmonic
     residuals = tmean - harmonic.evaluate(doy)
 
-    # 3. Per-month bookkeeping
+    # 3. Linear warming trend on the residuals, then detrend so the
+    #    per-month statistics describe the *stationary* fluctuation.
+    fitted_trend = fit_linear_trend(year_offset, residuals)
+    if fitted_trend != 0.0:
+        x = np.where(np.isfinite(year_offset), year_offset, 0.0)
+        # Centre the detrend on the window midpoint so the harmonic a0
+        # stays the window-average temperature and the model extrapolates
+        # the trend from "now" (the calibration epoch) forward.
+        residuals = residuals - fitted_trend * (x - float(np.nanmean(year_offset)))
+
+    # 4. Per-month bookkeeping
     months = month_of_year(doy)
     report = CalibrationReport(
         n_samples=n,
         years_covered=round(n / 365.0, 2),
         rmse_harmonic_c=rmse,
+        fitted_trend_c_per_year=fitted_trend,
     )
     monthly_params: list[ThermalMonthParams] = []
 
@@ -385,13 +512,16 @@ def calibrate_thermal_model(
 
         sigma, phi = fit_ar1(m_residuals)
 
-        # Diurnal amplitude
+        # Diurnal amplitude: monthly mean + residual coupling.
         valid_pairs = ~np.isnan(m_tmax) & ~np.isnan(m_tmin)
         if valid_pairs.any():
-            amplitudes = (m_tmax[valid_pairs] - m_tmin[valid_pairs]) / 2.0
-            t_amplitude_c = float(np.mean(amplitudes))
+            amplitudes_all = (m_tmax - m_tmin) / 2.0
+            t_amplitude_c = float(np.nanmean(amplitudes_all[valid_pairs]))
+            amp_slope = fit_amplitude_slope(m_residuals, amplitudes_all)
         else:
             t_amplitude_c = fallback_amplitude_c
+            amp_slope = 0.0
+        report.per_month_amp_slope[m] = amp_slope
 
         # GPD tails (only if enough samples)
         gpd_upper: GPDTail | None = None
@@ -410,13 +540,18 @@ def calibrate_thermal_model(
                 t_amplitude_c=max(t_amplitude_c, 0.0),
                 gpd_upper=gpd_upper,
                 gpd_lower=gpd_lower,
+                amp_slope_per_c=amp_slope,
             )
         )
 
     model = ThermalModel(
         harmonic=harmonic,
         monthly_params=monthly_params,
-        climate_trend_c_per_year=climate_trend_c_per_year,
+        climate_trend_c_per_year=(
+            fitted_trend
+            if climate_trend_c_per_year is None
+            else float(climate_trend_c_per_year)
+        ),
     )
     return model, report
 
@@ -436,6 +571,11 @@ def samples_from_daily_arrays(
     Convert parallel daily arrays (typically from Open-Meteo's
     ``daily`` payload) into a list of :class:`DailyArchiveSample`,
     dropping rows with missing ``t_mean_c``.
+
+    The calendar year embedded in each ISO date populates
+    :attr:`DailyArchiveSample.year_offset` (years since the first valid
+    sample's year), which enables the linear-trend fit in
+    :func:`calibrate_thermal_model`.
 
     Args:
         dates: ISO-format date strings, e.g. ``"2020-01-01"``.
@@ -459,6 +599,7 @@ def samples_from_daily_arrays(
         raise ValueError(f"t_min_c length {len(t_min_c)} != dates length {n}")
 
     samples: list[DailyArchiveSample] = []
+    base_year: int | None = None
     for i, iso_date in enumerate(dates):
         tm = t_mean_c[i]
         if tm is None:
@@ -470,6 +611,7 @@ def samples_from_daily_arrays(
         if not np.isfinite(tm_f):
             continue
         try:
+            year = int(iso_date[0:4])
             month = int(iso_date[5:7])
             day = int(iso_date[8:10])
         except (ValueError, IndexError):
@@ -478,10 +620,19 @@ def samples_from_daily_arrays(
         cum = (0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334)
         doy = cum[month - 1] + (day - 1)
         doy = max(0, min(364, doy))
+        if base_year is None:
+            base_year = year
+        year_offset = (year - base_year) + doy / 365.0
         tx = _coerce_optional(t_max_c[i]) if t_max_c is not None else None
         tn = _coerce_optional(t_min_c[i]) if t_min_c is not None else None
         samples.append(
-            DailyArchiveSample(day_of_year=doy, t_mean_c=tm_f, t_max_c=tx, t_min_c=tn)
+            DailyArchiveSample(
+                day_of_year=doy,
+                t_mean_c=tm_f,
+                t_max_c=tx,
+                t_min_c=tn,
+                year_offset=year_offset,
+            )
         )
     return samples
 

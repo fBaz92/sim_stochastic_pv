@@ -201,12 +201,13 @@ class TestAR1Properties:
 
 
 class TestGPDExtremeEvents:
-    def test_upper_events_fire_at_target_rate(self) -> None:
-        """With exceedance_prob = 0.1 and a non-trivial threshold, about
-        10% of days should fire an upper-tail GPD event (the asymmetric
-        max() rule may suppress some near-tail draws, so we use a generous
-        threshold to make every fired draw a real event)."""
-        upper = GPDTail(threshold=5.0, shape=0.1, scale=2.0, exceedance_prob=0.1)
+    def test_upper_events_fire_at_ar1_crossing_rate(self) -> None:
+        """Tail replacement: events fire when the AR(1) residual crosses
+        the POT threshold, so with the threshold at the marginal p90
+        (≈ 1.2816·σ for a Gaussian) roughly 10% of days are events.
+        Persistence (the replaced residual feeds the next day) pushes the
+        rate slightly above the iid value, hence the asymmetric band."""
+        upper = GPDTail(threshold=1.2816, shape=0.1, scale=1.0, exceedance_prob=0.1)
         model = ThermalModel(
             HarmonicSeasonalMean(a0=0.0, a1=0.0, a2=0.0),
             _flat_monthly_params(std=1.0, phi=0.5, gpd_upper=upper),
@@ -215,14 +216,26 @@ class TestGPDExtremeEvents:
             5_000, np.random.default_rng(17), track_events=True,
         )
         empirical_rate = len(report.upper_event_days) / 5_000
-        # ~10% target; allow a generous band because the max() filter
-        # discards near-tail draws that the AR(1) already produced.
-        assert 0.06 < empirical_rate < 0.11
+        assert 0.07 < empirical_rate < 0.20
+
+    def test_upper_events_never_fire_with_unreachable_threshold(self) -> None:
+        """With a threshold far beyond the AR(1) marginal (5σ) the
+        replacement never triggers — extreme draws are not injected
+        independently of the AR(1) dynamics."""
+        upper = GPDTail(threshold=5.0, shape=0.1, scale=2.0, exceedance_prob=0.1)
+        model = ThermalModel(
+            HarmonicSeasonalMean(a0=0.0, a1=0.0, a2=0.0),
+            _flat_monthly_params(std=1.0, phi=0.5, gpd_upper=upper),
+        )
+        _, report = model.simulate_daily_means(
+            5_000, np.random.default_rng(17), track_events=True,
+        )
+        assert report.upper_event_days == []
 
     def test_lower_events_produce_negative_excursions(self) -> None:
-        """A lower-tail-only model should produce many days with strongly
-        negative residuals (below the threshold)."""
-        lower = GPDTail(threshold=5.0, shape=0.1, scale=2.0, exceedance_prob=0.1)
+        """A lower-tail-only model should produce days with residuals
+        below the (negative) threshold whenever the AR(1) crosses it."""
+        lower = GPDTail(threshold=1.2816, shape=0.1, scale=1.0, exceedance_prob=0.1)
         model = ThermalModel(
             HarmonicSeasonalMean(a0=0.0, a1=0.0, a2=0.0),
             _flat_monthly_params(std=1.0, phi=0.5, gpd_lower=lower),
@@ -231,9 +244,9 @@ class TestGPDExtremeEvents:
             5_000, np.random.default_rng(19), track_events=True,
         )
         assert len(report.lower_event_days) > 0
-        # On firing days the residual should be < -threshold.
+        # On firing days the residual sits below the negative threshold.
         firing_residuals = out[report.lower_event_days]
-        assert (firing_residuals < -5.0).all()
+        assert (firing_residuals < -1.2816).all()
 
     def test_disabled_tails_dont_fire(self) -> None:
         model = _trivial_model()  # no GPD tails at all

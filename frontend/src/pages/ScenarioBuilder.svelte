@@ -185,7 +185,7 @@
                 azimuth_degrees: importAzimuth,
                 loss_pct: importLossPct,
                 lookback_years: importLookbackYears,
-                climate_trend_c_per_year: 0.0,
+                // climate trend left unset → auto-fitted from the archive
             });
 
             if (res.solar_profile) {

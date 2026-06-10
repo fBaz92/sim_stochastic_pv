@@ -19,6 +19,7 @@
     import LeafletMap from "../LeafletMap.svelte";
     import LocationSearch from "../LocationSearch.svelte";
     import ClimateNormalsPreview from "../ClimateNormalsPreview.svelte";
+    import ResultsChart from "../ResultsChart.svelte";
 
     let locations = [];
     let orphanSolar = [];
@@ -165,6 +166,93 @@
         } finally {
             refreshingId = null;
         }
+    }
+
+    // ── Extremes backtest panel ───────────────────────────────────────
+    // Compares the saved climate model with the observed annual extremes
+    // (server-side re-fetch of the Open-Meteo archive). Keyed by location
+    // id; only one panel open at a time.
+    let extremesOpenId = null;
+    let extremesLoading = false;
+    let extremesResult = null;
+    let extremesError = null;
+
+    async function toggleExtremes(loc) {
+        if (extremesOpenId === loc.id) {
+            extremesOpenId = null;
+            extremesResult = null;
+            return;
+        }
+        const climateId = loc.climate_profiles[0]?.id;
+        if (!climateId) return;
+        extremesOpenId = loc.id;
+        extremesLoading = true;
+        extremesResult = null;
+        extremesError = null;
+        try {
+            extremesResult = await api.checkClimateExtremes(climateId, {});
+        } catch (e) {
+            extremesError = e.message || "Errore durante la verifica.";
+        } finally {
+            extremesLoading = false;
+        }
+    }
+
+    function extremesChartConfig(r) {
+        const n = r.observed_years.length;
+        const constant = (v) => Array(n).fill(v);
+        return {
+            type: "line",
+            data: {
+                labels: r.observed_years,
+                datasets: [
+                    {
+                        label: "p05",
+                        data: constant(r.sim_tmax_p05),
+                        borderColor: "transparent",
+                        pointRadius: 0,
+                        fill: false,
+                    },
+                    {
+                        label: "Banda simulata p05–p95",
+                        data: constant(r.sim_tmax_p95),
+                        borderColor: "transparent",
+                        backgroundColor: "rgba(239,68,68,0.15)",
+                        pointRadius: 0,
+                        fill: "-1",
+                    },
+                    {
+                        label: "Mediana simulata",
+                        data: constant(r.sim_tmax_p50),
+                        borderColor: "#ef4444",
+                        borderDash: [6, 4],
+                        pointRadius: 0,
+                        fill: false,
+                    },
+                    {
+                        label: "Max annuo osservato",
+                        data: r.observed_annual_tmax,
+                        borderColor: "#1d4ed8",
+                        backgroundColor: "#1d4ed8",
+                        pointRadius: 4,
+                        showLine: false,
+                        fill: false,
+                    },
+                ],
+            },
+            options: {
+                plugins: {
+                    legend: {
+                        display: true,
+                        labels: { filter: (item) => item.text !== "p05" },
+                    },
+                },
+                scales: {
+                    x: { title: { display: true, text: "Anno" } },
+                    y: { title: { display: true, text: "°C (ora più calda dell'anno)" } },
+                },
+            },
+        };
     }
 
     // ── Add-new flow ──────────────────────────────────────────────────
@@ -478,6 +566,11 @@
                                     disabled={refreshingId === loc.id}
                                     on:click={() => refreshComponent(loc, { solar: false, climate: true })}
                                 >↻</button>
+                                <button
+                                    class="btn btn-xs btn-ghost"
+                                    title="Confronta gli estremi simulati con quelli osservati"
+                                    on:click={() => toggleExtremes(loc)}
+                                >{extremesOpenId === loc.id ? "Chiudi verifica" : "Verifica estremi"}</button>
                             {:else}
                                 <span class="badge missing">🌡 Clima mancante</span>
                                 <button
@@ -490,6 +583,53 @@
                                 <span class="badge">aggiornamento…</span>
                             {/if}
                         </div>
+                        {#if extremesOpenId === loc.id}
+                            <div class="extremes-panel">
+                                {#if extremesLoading}
+                                    <p class="hint small">Backtest in corso (riscarico l'archivio osservato e simulo il modello)…</p>
+                                {:else if extremesError}
+                                    <p class="error">{extremesError}</p>
+                                {:else if extremesResult}
+                                    <p
+                                        class="verdict"
+                                        class:verdict-ok={extremesResult.verdict.startsWith("OK")}
+                                        class:verdict-warn={!extremesResult.verdict.startsWith("OK")}
+                                    >{extremesResult.verdict}</p>
+                                    {@const cfg = extremesChartConfig(extremesResult)}
+                                    <div class="extremes-chart">
+                                        <ResultsChart
+                                            type={cfg.type}
+                                            data={cfg.data}
+                                            options={cfg.options}
+                                            downloadFilename="verifica_estremi"
+                                        />
+                                    </div>
+                                    <div class="extremes-stats">
+                                        <span>
+                                            Massimi: copertura banda {Math.round(extremesResult.tmax_coverage * 100)}%
+                                            · bias mediana {extremesResult.tmax_median_bias_c >= 0 ? "+" : ""}{extremesResult.tmax_median_bias_c.toFixed(1)} °C
+                                        </span>
+                                        <span>
+                                            Minimi: simulati [{extremesResult.sim_tmin_p05.toFixed(1)}, {extremesResult.sim_tmin_p95.toFixed(1)}] °C
+                                            · osservati [{Math.min(...extremesResult.observed_annual_tmin).toFixed(1)}, {Math.max(...extremesResult.observed_annual_tmin).toFixed(1)}] °C
+                                            · copertura {Math.round(extremesResult.tmin_coverage * 100)}%
+                                        </span>
+                                        <span>
+                                            Trend nel modello: {extremesResult.climate_trend_c_per_year >= 0 ? "+" : ""}{extremesResult.climate_trend_c_per_year.toFixed(3)} °C/anno
+                                            ({extremesResult.n_paths} path · finestra {extremesResult.n_years} anni)
+                                        </span>
+                                        {#if extremesResult.elevation_m != null}
+                                            <span class="hint small">
+                                                Nota: i dati osservati sono della cella Open-Meteo a
+                                                {Math.round(extremesResult.elevation_m)} m s.l.m. — stazioni
+                                                di fondovalle o di pianura possono registrare massimi
+                                                più alti di questa quota.
+                                            </span>
+                                        {/if}
+                                    </div>
+                                {/if}
+                            </div>
+                        {/if}
                     </div>
                     <div class="item-actions">
                         {#if deleteConfirmKey === rowKey('location', loc.id)}
@@ -722,6 +862,29 @@
         border: 1px solid var(--color-warning, #ffc107);
         border-radius: 6px;
         font-size: 0.9rem;
+    }
+    .extremes-panel {
+        margin-top: 0.75rem;
+        padding: 0.75rem;
+        border: 1px solid var(--color-border, #ddd);
+        border-radius: 6px;
+        background: var(--color-bg-tertiary, #fafafa);
+    }
+    .verdict {
+        margin: 0 0 0.5rem;
+        font-size: 0.9rem;
+        font-weight: 500;
+    }
+    .extremes-chart { height: 260px; position: relative; margin-bottom: 2.5rem; }
+    .verdict-ok { color: var(--color-success, #28a745); }
+    .verdict-warn { color: var(--color-warning-text, #b8860b); }
+    .extremes-stats {
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+        margin-top: 0.5rem;
+        font-size: 0.82rem;
+        color: var(--color-text-secondary);
     }
     .warning ul { margin: 0.4rem 0; padding-left: 1.2rem; }
     .empty { color: var(--color-text-muted, #6c757d); font-style: italic; }

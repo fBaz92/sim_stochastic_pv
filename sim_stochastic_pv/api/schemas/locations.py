@@ -147,7 +147,10 @@ class LocationImportRequest(BaseModel):
         lookback_years: Archive window for Open-Meteo aggregations and
             climate calibration (default 10).
         climate_trend_c_per_year: Linear warming trend baked into the
-            calibrated climate model (°C/year, default 0).
+            calibrated climate model (°C/year). ``None`` (default) lets
+            the calibration fit the trend from the archive itself —
+            recent Italian windows run ≈ +0.05..+0.12 °C/year. Pass an
+            explicit value (e.g. 0.0) to force a stationary model.
     """
 
     model_config = ConfigDict(json_schema_extra={
@@ -174,7 +177,7 @@ class LocationImportRequest(BaseModel):
     azimuth_degrees: Annotated[float, Field(ge=0.0, le=360.0)] = 180.0
     loss_pct: Annotated[float, Field(ge=0.0, le=100.0)] = 14.0
     lookback_years: Annotated[int, Field(ge=1, le=30)] = 10
-    climate_trend_c_per_year: Annotated[float, Field(ge=-0.5, le=0.5)] = 0.0
+    climate_trend_c_per_year: Annotated[float | None, Field(ge=-0.5, le=0.5)] = None
 
 
 class LocationImportResponse(BaseModel):

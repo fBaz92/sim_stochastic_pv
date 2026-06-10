@@ -1493,21 +1493,47 @@ verificare: la calibrazione su 30 anni diluisce il riscaldamento dell'ultimo
 decennio; `climate_trend_c_per_year` di default a 0; soglia/fit della coda
 GPD; il profilo diurno sinusoidale che smussa i picchi orari.
 
-**Deliverable**:
+**Deliverable** (aggiornato 2026-06-10 dopo la diagnosi empirica su Pavullo —
+la cella Open-Meteo a ~690 m non ha mai toccato 41 °C, max osservato 36,4 °C:
+i 41 °C ricordati sono di stazioni di pianura; la diagnosi ha però rivelato
+tre difetti reali del modello, corretti qui):
 
-- Harness di backtest in `thermal_calibration.py`: confronto della
-  distribuzione dei **massimi annui** simulati vs osservati (ultimi 5–10
-  anni dall'archivio Open-Meteo), QQ-plot delle code, copertura dei
-  percentili estremi. Test statistici con tolleranze esplicite.
-- Correzioni di calibrazione guidate dai risultati: finestra pesata verso
-  gli anni recenti *oppure* detrend + trend attivo di default; revisione
-  della soglia POT e del fit GPD per la coda calda.
-- Pannello diagnostico nella UI clima: "max annuo simulato (bande) vs
-  osservato" per il sito, così l'utente vede subito se il modello è
-  credibile per il suo luogo.
+- Harness di backtest in `simulation/thermal_validation.py`
+  (`backtest_annual_extremes`): confronto della distribuzione dei
+  **massimi/minimi annui orari** simulati vs osservati sull'archivio
+  Open-Meteo, con ri-ancoraggio dell'epoca al inizio finestra, copertura
+  della banda p05–p95 e bias della mediana. Test statistici con tolleranze
+  esplicite (`tests/test_thermal_validation.py`).
+- Correzioni di calibrazione guidate dai risultati:
+  1. **detrend + trend attivo di default** — la calibrazione fitta il
+     trend lineare sui residui (`year_offset` nei sample) e lo bake-a nel
+     modello (`climate_trend_c_per_year=None` = auto; override esplicito
+     possibile). A Pavullo: +0,092 °C/anno sulla finestra 2016–2025.
+  2. **Accoppiamento ampiezza diurna–residuo** (`amp_slope_per_c` per
+     mese): i giorni caldi sono giorni sereni con escursione maggiore
+     (+1,4 °C di semi-ampiezza nel decile caldo estivo); `to_hourly` usa
+     `ampiezza = media + slope·residuo`. Slope 0 = comportamento legacy
+     bit-identico (profili salvati prima restano validi).
+  3. **Tail replacement nella simulazione**: l'evento GPD non spara più
+     in modo indipendente al tasso empirico *sopra* le escursioni AR(1)
+     (double counting che gonfiava i massimi di ~1,5 °C una volta
+     corretta l'ampiezza); ora quando l'AR(1) supera la soglia POT
+     l'*eccedenza* viene ridisegnata dalla GPD — frequenza dalla
+     dinamica, magnitudine dalla coda.
+- Endpoint `GET /api/profiles/climate/{id}/extremes-check`: riscarica
+  l'archivio osservato, esegue il backtest e restituisce osservato vs
+  simulato + verdetto leggibile (soglie: copertura ≥ 60%, |bias| ≤ 1,5 °C).
+- Pannello "Verifica estremi" nella card posizione (Database → Posizioni):
+  grafico max annuo osservato (punti) vs banda simulata p05–p95 + mediana,
+  statistiche di copertura/bias per entrambe le code, trend del modello e
+  nota sulla quota della cella (spiega i "41 °C visti al telegiornale").
+
+Esito del backtest su Pavullo dopo le correzioni: mediana simulata 33,7 °C
+vs osservata 33,8; copertura massimi 70%, minimi 90%; bias −0,1 °C.
 
 **Out of scope ora**: downscaling regionale, scenari climatici IPCC,
-correlazione spaziale fra siti.
+correlazione spaziale fra siti; QQ-plot dettagliato per coda (la copertura
+di banda + bias coprono il caso d'uso).
 
 ---
 
@@ -1759,9 +1785,37 @@ design serio); la 23 è la fondazione architetturale di tutto l'arco; la
 ### 🚧 In corso
 
 _Nessuna fase attualmente in corso._ Prossima della sequenza confermata
-(27 → 28 → 23 → 24 → 25 → 29 ∥ 26 → 32 → 30 → 31 → 33): **Fase 28**.
+(27 → 28 → 23 → 24 → 25 → 29 ∥ 26 → 32 → 30 → 31 → 33): **Fase 23**.
 
 ### ✅ Completate
+
+**Fase 28 — Validazione del modello climatico sugli estremi osservati**
+— chiusa 2026-06-10 (suite 637 test backend verde nel container; build
+frontend OK; verificata end-to-end nel browser su Pavullo con dati reali).
+
+- **Diagnosi**: la cella Open-Meteo di Pavullo (~690 m) ha max osservato
+  36,4 °C nel 2016–2025 — i "41 °C" sono di stazioni di pianura. Il modello
+  pre-correzioni centrava la mediana per compensazione di due errori
+  opposti (ampiezza diurna media che tagliava i picchi vs doppio conteggio
+  della coda GPD) e ignorava il trend (+0,10 °C/anno nella finestra).
+- **Correzioni** (dettaglio nel blocco Deliverable della fase): trend
+  fittato e attivo di default con detrend dei residui
+  (`fit_linear_trend`), accoppiamento ampiezza-residuo per mese
+  (`amp_slope_per_c`, `fit_amplitude_slope`, retro-compatibile a slope 0),
+  tail replacement nella simulazione (frequenza eventi dalla dinamica
+  AR(1), magnitudine dalla GPD). Serializzazione estesa
+  (`climate_repo`), profili legacy invariati.
+- **Strumenti**: `simulation/thermal_validation.py`
+  (`backtest_annual_extremes`, `observed_annual_extremes`), endpoint
+  `GET /api/profiles/climate/{id}/extremes-check` con verdetto, pannello
+  "Verifica estremi" nella card posizione (grafico osservato-vs-banda,
+  copertura/bias, nota quota). 16 test nuovi
+  (`tests/test_thermal_validation.py` + 2 endpoint); 2 test del modello
+  riallineati alla semantica tail-replacement; stub archivio test con
+  rumore AR(1) deterministico.
+- Backtest finale su Pavullo: mediana simulata 33,7 vs osservata 33,8 °C,
+  copertura massimi 70% / minimi 90%, bias −0,1 °C; in proiezione il
+  trend porta le code oltre 40 °C entro ~15 anni.
 
 **Fase 27 — Il sito come entità: LocationModel + robustezza PVGIS/geocoding**
 — chiusa 2026-06-10 (suite 621 test backend verde nel container; build
@@ -3104,7 +3158,7 @@ nelle fasi 23–33):
 - [ ] Fase 25 — Comparatore di design (delta con valutazione MC)
 - [ ] Fase 26 — Relazione tecnica di progetto in PDF
 - [x] Fase 27 — Il sito come entità: LocationModel + robustezza PVGIS (✅ 2026-06-10)
-- [ ] Fase 28 — Validazione del modello climatico sugli estremi osservati
+- [x] Fase 28 — Validazione del modello climatico sugli estremi osservati (✅ 2026-06-10)
 - [ ] Fase 29 — Schede prodotto nel Database (curve per componente)
 - [ ] Fase 30 — Vettori energetici, sorgenti di calore, casa multi-zona
 - [ ] Fase 31 — Dispatch termico multi-sorgente + lab di ottimizzazione

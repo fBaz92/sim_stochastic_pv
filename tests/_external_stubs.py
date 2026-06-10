@@ -81,7 +81,11 @@ class StubOpenMeteo:
     """
     Returns 12 constant monthly normals (40% cloud → p_sunny=0.6) for
     :meth:`fetch_climate_normals`, and a synthetic 10-year daily archive
-    with a clean seasonal sinusoid for :meth:`fetch_daily_archive`.
+    (seasonal sinusoid + deterministic AR(1) noise + residual-coupled
+    diurnal amplitude) for :meth:`fetch_daily_archive`. The noise matters:
+    a noise-free archive calibrates to σ ≈ 0 and produces degenerate
+    (zero-width) simulated bands, which breaks any coverage assertion on
+    hairline numeric differences.
     """
 
     def fetch_climate_normals(
@@ -109,6 +113,13 @@ class StubOpenMeteo:
         lookback_years: int = 10,
         end_year: int | None = None,
     ) -> DailyArchive:
+        import numpy as np
+
+        rng = np.random.default_rng(12345)  # deterministic across calls
+        phi, sigma = 0.7, 2.0
+        sigma_innov = sigma * math.sqrt(1.0 - phi * phi)
+        residual = 0.0
+
         dates: list[str] = []
         tmean: list[float] = []
         tmax: list[float] = []
@@ -119,10 +130,13 @@ class StubOpenMeteo:
         while d <= end:
             doy = d.timetuple().tm_yday - 1
             seasonal = 12.0 - 10.0 * math.cos(2 * math.pi * doy / 365.25)
+            residual = phi * residual + float(rng.standard_normal()) * sigma_innov
+            mean = seasonal + residual
+            half_amp = max(1.0, 5.0 + 0.3 * residual)
             dates.append(d.isoformat())
-            tmean.append(seasonal)
-            tmax.append(seasonal + 5.0)
-            tmin.append(seasonal - 5.0)
+            tmean.append(mean)
+            tmax.append(mean + half_amp)
+            tmin.append(mean - half_amp)
             d += dt.timedelta(days=1)
         return DailyArchive(
             latitude=latitude,

@@ -184,6 +184,64 @@ class ClimateProfileUpdate(BaseModel):
     lookback_window: dict | None = None
 
 
+class ClimateExtremesCheckResponse(BaseModel):
+    """
+    Backtest of a climate profile against the observed annual extremes.
+
+    Returned by ``GET /api/profiles/climate/{id}/extremes-check``. The
+    backend re-fetches the Open-Meteo daily archive at the profile's
+    coordinates, simulates the saved model over the same window length,
+    and compares the distribution of simulated annual extremes (hottest /
+    coldest hour of each year) with the observed ones. The UI renders the
+    observed points against the simulated p05–p95 band plus the verdict.
+
+    Attributes:
+        observed_years: Calendar years that entered the comparison.
+        observed_annual_tmax: Observed hottest daily T_max per year (°C).
+        observed_annual_tmin: Observed coldest daily T_min per year (°C).
+        sim_tmax_p05: 5th percentile of simulated annual maxima (°C).
+        sim_tmax_p50: Median of simulated annual maxima (°C).
+        sim_tmax_p95: 95th percentile of simulated annual maxima (°C).
+        sim_tmin_p05: 5th percentile of simulated annual minima (°C) —
+            the *colder* end of the band.
+        sim_tmin_p50: Median of simulated annual minima (°C).
+        sim_tmin_p95: 95th percentile of simulated annual minima (°C).
+        tmax_coverage: Fraction of observed maxima inside the simulated
+            p05–p95 band (≈ 0.9 when healthy).
+        tmin_coverage: Same for minima.
+        tmax_median_bias_c: Simulated-minus-observed median of the annual
+            maxima (°C); positive = the model runs hot on extremes.
+        tmin_median_bias_c: Same for minima.
+        n_paths: Simulation paths used.
+        n_years: Window length (years).
+        climate_trend_c_per_year: Trend baked into the saved profile,
+            shown so the user understands the forward extrapolation.
+        elevation_m: Elevation of the Open-Meteo gridcell — extremes
+            measured at valley stations can exceed the gridcell values;
+            surfacing the elevation explains "but the news said 41 °C".
+        verdict: Human-readable Italian verdict string.
+    """
+
+    observed_years: list[int]
+    observed_annual_tmax: list[float]
+    observed_annual_tmin: list[float]
+    sim_tmax_p05: float
+    sim_tmax_p50: float
+    sim_tmax_p95: float
+    sim_tmin_p05: float
+    sim_tmin_p50: float
+    sim_tmin_p95: float
+    tmax_coverage: float
+    tmin_coverage: float
+    tmax_median_bias_c: float
+    tmin_median_bias_c: float
+    n_paths: int
+    n_years: int
+    climate_trend_c_per_year: float
+    elevation_m: float | None = None
+    verdict: str
+
+
 class ClimateProfilePreviewResponse(BaseModel):
     """
     Fan-chart preview of the simulated temperature paths for a profile.

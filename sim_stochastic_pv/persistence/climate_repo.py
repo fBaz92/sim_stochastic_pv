@@ -86,6 +86,7 @@ def serialize_thermal_model(model: ThermalModel) -> dict[str, Any]:
                 "t_std_residual_c": float(p.t_std_residual_c),
                 "persistence_phi": float(p.persistence_phi),
                 "t_amplitude_c": float(p.t_amplitude_c),
+                "amp_slope_per_c": float(p.amp_slope_per_c),
                 "gpd_upper": serialize_gpd_tail(p.gpd_upper),
                 "gpd_lower": serialize_gpd_tail(p.gpd_lower),
             }
@@ -117,6 +118,9 @@ def deserialize_thermal_model(blob: dict[str, Any]) -> ThermalModel:
             t_amplitude_c=float(entry["t_amplitude_c"]),
             gpd_upper=deserialize_gpd_tail(entry.get("gpd_upper")),
             gpd_lower=deserialize_gpd_tail(entry.get("gpd_lower")),
+            # Legacy profiles predate the clear-sky coupling: 0 keeps the
+            # constant-amplitude behaviour bit-identical.
+            amp_slope_per_c=float(entry.get("amp_slope_per_c", 0.0)),
         )
         for entry in blob["monthly_params"]
     ]

@@ -29,8 +29,10 @@ from ...external import (
 from ...persistence import PersistenceService
 from ...persistence.climate_repo import deserialize_thermal_model
 from ...simulation.thermal import simulate_temperature_preview
+from ...simulation.thermal_validation import backtest_annual_extremes
 from .. import dependencies
 from ..schemas.external import (
+    ClimateExtremesCheckResponse,
     ClimateNormalsResponse,
     ClimateProfilePreviewResponse,
     ClimateProfileResponse,
@@ -274,4 +276,140 @@ def preview_climate_profile(
         monthly_p95_c=result.monthly_p95_c.tolist(),
         monthly_min_c=result.monthly_min_c.tolist(),
         monthly_max_c=result.monthly_max_c.tolist(),
+    )
+
+
+# Verdict thresholds for the extremes backtest. A p05–p95 band should
+# contain ~90% of the observations; we flag below 60% to leave room for
+# small-sample noise on 10-year windows. The median-bias gate catches a
+# systematically hot/cold model even when the band still covers.
+EXTREMES_MIN_COVERAGE = 0.6
+EXTREMES_MAX_MEDIAN_BIAS_C = 1.5
+
+
+def _extremes_verdict(result) -> str:
+    """Build the Italian verdict string for an extremes backtest."""
+    if len(result.observed_years) < 2:
+        return (
+            "Archivio osservato insufficiente per il confronto "
+            "(servono almeno 2 anni completi)."
+        )
+    issues: list[str] = []
+    if result.tmax_coverage < EXTREMES_MIN_COVERAGE:
+        issues.append(
+            f"i massimi osservati cadono nella banda simulata solo nel "
+            f"{result.tmax_coverage:.0%} degli anni"
+        )
+    if abs(result.tmax_median_bias_c) > EXTREMES_MAX_MEDIAN_BIAS_C:
+        direction = "caldo" if result.tmax_median_bias_c > 0 else "freddo"
+        issues.append(
+            f"il modello è sistematicamente {direction} sui massimi "
+            f"({result.tmax_median_bias_c:+.1f} °C sulla mediana)"
+        )
+    if result.tmin_coverage < EXTREMES_MIN_COVERAGE:
+        issues.append(
+            f"i minimi osservati cadono nella banda simulata solo nel "
+            f"{result.tmin_coverage:.0%} degli anni"
+        )
+    if abs(result.tmin_median_bias_c) > EXTREMES_MAX_MEDIAN_BIAS_C:
+        direction = "mite" if result.tmin_median_bias_c > 0 else "rigido"
+        issues.append(
+            f"il modello è sistematicamente {direction} sui minimi "
+            f"({result.tmin_median_bias_c:+.1f} °C sulla mediana)"
+        )
+    if not issues:
+        return (
+            "OK: il modello riproduce gli estremi annui osservati "
+            f"(copertura massimi {result.tmax_coverage:.0%}, "
+            f"minimi {result.tmin_coverage:.0%})."
+        )
+    return "ATTENZIONE: " + "; ".join(issues) + ". Valuta una ricalibrazione."
+
+
+@router.get(
+    "/profiles/climate/{profile_id}/extremes-check",
+    response_model=ClimateExtremesCheckResponse,
+)
+def check_climate_profile_extremes(
+    profile_id: int,
+    n_paths: int = Query(50, ge=10, le=200, description="MC paths"),
+    lookback_years: int = Query(
+        10, ge=3, le=30, description="Observed archive window (years)"
+    ),
+    seed: int = Query(42, description="Master RNG seed"),
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+    meteo: OpenMeteoClient = Depends(dependencies.get_openmeteo_client),
+) -> ClimateExtremesCheckResponse:
+    """
+    Backtest a saved climate profile against the observed annual extremes.
+
+    Re-fetches the Open-Meteo daily archive at the profile's coordinates
+    (so the comparison includes any years recorded *after* calibration),
+    simulates the saved model over the same window length with the epoch
+    re-anchored at the window start, and returns observed-vs-simulated
+    annual extremes plus a human-readable verdict.
+
+    Args:
+        profile_id: Primary key of the climate profile.
+        n_paths: Simulation paths (default 50, capped at 200 to keep the
+            response latency in the seconds range).
+        lookback_years: Length of the observed window to fetch.
+        seed: Master RNG seed for reproducible bands.
+        persistence: Persistence service.
+        meteo: Open-Meteo client (stubbed in tests).
+
+    Raises:
+        HTTPException 404: profile not found.
+        HTTPException 502: Open-Meteo archive unavailable.
+    """
+    record = persistence.climate.get_climate_profile_by_id(profile_id)
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Climate profile {profile_id} not found",
+        )
+
+    model = deserialize_thermal_model({
+        "harmonic": record.harmonic,
+        "monthly_params": record.monthly_params,
+        "climate_trend_c_per_year": record.climate_trend_c_per_year,
+    })
+
+    try:
+        archive = meteo.fetch_daily_archive(
+            latitude=record.latitude,
+            longitude=record.longitude,
+            lookback_years=lookback_years,
+        )
+    except ExternalAPIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    result = backtest_annual_extremes(
+        model,
+        dates=list(archive.dates),
+        t_max_c=list(archive.t_max_c),
+        t_min_c=list(archive.t_min_c),
+        n_paths=n_paths,
+        seed=seed,
+    )
+
+    return ClimateExtremesCheckResponse(
+        observed_years=result.observed_years,
+        observed_annual_tmax=result.observed_annual_tmax,
+        observed_annual_tmin=result.observed_annual_tmin,
+        sim_tmax_p05=result.sim_tmax_p05,
+        sim_tmax_p50=result.sim_tmax_p50,
+        sim_tmax_p95=result.sim_tmax_p95,
+        sim_tmin_p05=result.sim_tmin_p05,
+        sim_tmin_p50=result.sim_tmin_p50,
+        sim_tmin_p95=result.sim_tmin_p95,
+        tmax_coverage=result.tmax_coverage,
+        tmin_coverage=result.tmin_coverage,
+        tmax_median_bias_c=result.tmax_median_bias_c,
+        tmin_median_bias_c=result.tmin_median_bias_c,
+        n_paths=result.n_paths,
+        n_years=result.n_years,
+        climate_trend_c_per_year=record.climate_trend_c_per_year,
+        elevation_m=record.elevation_m,
+        verdict=_extremes_verdict(result),
     )
