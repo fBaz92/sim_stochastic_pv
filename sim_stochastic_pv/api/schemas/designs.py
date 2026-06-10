@@ -449,3 +449,33 @@ class ProductionPreviewResponse(BaseModel):
     hours_outside_mppt_per_year_mean: float
     hours_dc_overvoltage_per_year_mean: float
     n_paths: int
+
+
+# ---------------------------------------------------------------------------
+# Design comparison (POST /api/jobs/compare)
+# ---------------------------------------------------------------------------
+
+
+class DesignCompareRequest(BaseModel):
+    """
+    Inputs of the design comparison job.
+
+    Attributes:
+        design_ids: 2-4 plant-design ids; the first is the baseline.
+        load_profile_id: Shared consumption profile; ``None`` uses the
+            standard inline ARERA residential profile.
+        price_profile_id: Shared price profile; ``None`` uses the default
+            mildly-escalating stochastic price.
+        n_years: Shared horizon (years).
+        n_mc: Monte Carlo paths per design. The paired deltas (common
+            random numbers) converge much faster than absolute NPVs, so
+            50 paths already separate competing offers cleanly.
+        seed: Common master seed (the pairing key).
+    """
+
+    design_ids: Annotated[list[int], Field(min_length=2, max_length=4)]
+    load_profile_id: int | None = None
+    price_profile_id: int | None = None
+    n_years: Annotated[int, Field(ge=1, le=40)] = 20
+    n_mc: Annotated[int, Field(ge=10, le=200)] = 50
+    seed: int = 123

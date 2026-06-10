@@ -29,6 +29,14 @@
             </li>
             <li>
                 <a
+                    href="#/confronto"
+                    class:active={$currentRoute === "/confronto"}
+                    title="Confronta 2-4 impianti sugli stessi scenari stocastici (ΔNPV appaiato)"
+                    >Confronto</a
+                >
+            </li>
+            <li>
+                <a
                     href="#/scenario"
                     class:active={$currentRoute === "/scenario"}
                     title="Analizza UNA configurazione di impianto"

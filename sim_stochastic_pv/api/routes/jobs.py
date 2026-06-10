@@ -26,6 +26,7 @@ from ...application import SimulationApplication
 from ...jobs import JobHandle, get_default_store
 from .. import dependencies
 from ..schemas import simulation as sim_schemas
+from ..schemas.designs import DesignCompareRequest
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -99,6 +100,65 @@ def submit_optimization_job(
             handle.set_run_id(run_id)
 
     record = store.submit("optimization", worker)
+    return {"job_id": record.id, "kind": record.kind}
+
+
+@router.post("/compare")
+def submit_compare_job(
+    payload: DesignCompareRequest,
+    app_service: SimulationApplication = Depends(dependencies.get_application_service),
+) -> Dict[str, Any]:
+    """
+    Schedule a design comparison to run in the background.
+
+    Builds the shared scenario context (load, price, horizon) once and
+    runs it over every design with a common seed (paired Monte Carlo).
+    The result payload lands inline on the job record (``result`` field
+    of ``GET /api/jobs/{job_id}``) — no run record is persisted.
+
+    Returns:
+        ``{"job_id": "<uuid>", "kind": "comparison"}``
+    """
+    store = get_default_store()
+
+    base_scenario: Dict[str, Any] = {
+        "scenario_name": "confronto_design",
+        "energy": {"n_years": payload.n_years},
+        "economic": {"n_mc": payload.n_mc},
+    }
+    if payload.load_profile_id is not None:
+        base_scenario["load_profile_id"] = payload.load_profile_id
+    else:
+        # Standard Italian residential baseline, occupied all year — the
+        # same default the offer page uses.
+        base_scenario["load_profile"] = {
+            "kind": "home_away",
+            "home": {"type": "arera"},
+            "away": {"type": "arera"},
+        }
+    if payload.price_profile_id is not None:
+        base_scenario["price_profile_id"] = payload.price_profile_id
+    else:
+        base_scenario["price"] = {
+            "base_price_eur_per_kwh": 0.25,
+            "annual_escalation": 0.03,
+            "use_stochastic_escalation": True,
+        }
+
+    def worker(handle: JobHandle) -> None:
+        def cb(done: int, total: int, name: str) -> None:
+            handle.set_progress(done, total, message=f"Impianto {done}/{total} — {name}")
+
+        result = app_service.run_design_comparison(
+            design_ids=payload.design_ids,
+            base_scenario=base_scenario,
+            n_mc=payload.n_mc,
+            seed=payload.seed,
+            progress_callback=cb,
+        )
+        handle.set_result(result)
+
+    record = store.submit("comparison", worker)
     return {"job_id": record.id, "kind": record.kind}
 
 

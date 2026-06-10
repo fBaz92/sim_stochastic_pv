@@ -722,6 +722,171 @@ class SimulationApplication:
         summary["output_dir"] = str(output_dir) if output_dir else None
         return summary
 
+    def run_design_comparison(
+        self,
+        *,
+        design_ids: List[int],
+        base_scenario: Mapping[str, Any],
+        n_mc: int = 50,
+        seed: int = 123,
+        progress_callback: "Callable[[int, int, str], None] | None" = None,
+    ) -> Dict[str, Any]:
+        """
+        Compare 2+ plant designs under the same Monte Carlo context.
+
+        Runs the *same* scenario context (load, price, horizon) once per
+        design, with the **same seed**, so each path draws the same
+        weather, load and price trajectories across designs (common
+        random numbers). The per-path difference of the final cumulative
+        gain is then a *paired* delta: its distribution isolates the
+        design choice from the shared stochasticity, which is exactly
+        the question "is offer B better than offer A?" — two designs
+        differing only in price show a deterministic delta, equal to the
+        cost difference, on every path.
+
+        Args:
+            design_ids: 2–4 plant-design ids. The first is the baseline
+                every other design is compared against.
+            base_scenario: Scenario context shared by every run (load,
+                price, ``energy.n_years``...). Each run gets a copy with
+                ``plant_design_id`` injected; the design overwrites the
+                system + investment fields during hydration.
+            n_mc: Monte Carlo paths per design (kept moderate — the
+                paired deltas converge much faster than the absolute
+                NPVs).
+            seed: Common master seed (the heart of the CRN pairing).
+            progress_callback: Optional ``cb(done, total, name)`` called
+                after each design completes.
+
+        Returns:
+            Dict with:
+
+            - ``designs``: one entry per design (id, name, level, capex,
+              installed kWp, annual PV production, final-gain mean and
+              p05/p50/p95, prob_gain, IRR mean, break-even median);
+            - ``deltas``: one entry per non-baseline design (paired
+              ΔNPV mean/p05/p50/p95 vs the baseline and
+              ``prob_better`` = fraction of paths where the variant
+              beats the baseline);
+            - ``n_mc``, ``seed``, ``baseline_design_id``.
+
+        Raises:
+            ValueError: Fewer than 2 / more than 4 designs, unknown
+                design id, or a missing persistence service.
+
+        Notes:
+            - No run records are persisted: a comparison is an
+              exploration tool, not an analysis artifact.
+            - CRN pairing assumes the random-draw sequence is identical
+              across designs, which holds because the shared context
+              fixes every stochastic component (designs only change
+              deterministic system parameters).
+        """
+        if self.persistence is None:
+            raise ValueError("run_design_comparison requires a persistence service")
+        if not 2 <= len(design_ids) <= 4:
+            raise ValueError(
+                f"design_ids must contain 2 to 4 designs (got {len(design_ids)})"
+            )
+
+        designs_out: List[Dict[str, Any]] = []
+        final_gain_arrays: List[np.ndarray] = []
+
+        for idx, design_id in enumerate(design_ids):
+            design = self.persistence.designs.get_design_by_id(design_id)
+            if design is None:
+                raise ValueError(f"Plant design ID {design_id} not found")
+
+            payload = dict(base_scenario)
+            payload["plant_design_id"] = design_id
+            hydrated = self.persistence.hydrate_scenario_from_ids(payload)
+
+            load_profile = build_default_load_profile(hydrated)
+            solar_model = build_default_solar_model(hydrated, self.persistence)
+            energy_cfg = build_default_energy_config(hydrated, self.persistence)
+            price_model = build_default_price_model(scenario_data=hydrated)
+            econ_cfg = build_default_economic_config(
+                n_mc=n_mc, scenario_data=hydrated
+            )
+            market_provider = build_default_market_provider(
+                hydrated, self.persistence
+            )
+
+            energy_sim = EnergySystemSimulator(
+                config=energy_cfg,
+                solar_model=solar_model,
+                load_profile=load_profile,
+            )
+            mc = MonteCarloSimulator(
+                energy_simulator=energy_sim,
+                price_model=price_model,
+                economic_config=econ_cfg,
+                market_price_provider=market_provider,
+                value_export=bool(hydrated.get("dedicated_withdrawal", True)),
+                market_drives_purchase=bool(
+                    hydrated.get("market_drives_purchase", False)
+                ),
+            )
+            results = mc.run(seed=seed, show_progress=False)
+
+            # Final cumulative gain per path: the simulator does not expose
+            # the cumulative profit matrix, but it is by construction
+            # ``-investment + Σ monthly_savings`` (the tax bonus is already
+            # folded into the sparse monthly savings vector).
+            final_gain = (
+                -econ_cfg.investment_eur
+                + np.asarray(results.monthly_savings_eur_paths, dtype=float).sum(
+                    axis=1
+                )
+            )
+            final_gain_arrays.append(final_gain)
+
+            annual_pv_kwh = float(
+                results.df_energy["pv_prod_mean_kwh"].sum()
+                / max(1, energy_cfg.n_years)
+            )
+            designs_out.append({
+                "design_id": design.id,
+                "name": design.name,
+                "design_level": design.design_level,
+                "capex_eur": float((design.data or {}).get("total_cost_eur", 0.0)),
+                "p_dc_kwp": float(energy_cfg.pv_kwp),
+                "storage_kwh": float(energy_cfg.battery_specs.capacity_kwh)
+                * energy_cfg.n_batteries,
+                "annual_pv_kwh_mean": annual_pv_kwh,
+                "final_gain_mean_eur": float(final_gain.mean()),
+                "final_gain_p05_eur": float(np.percentile(final_gain, 5)),
+                "final_gain_p50_eur": float(np.percentile(final_gain, 50)),
+                "final_gain_p95_eur": float(np.percentile(final_gain, 95)),
+                "prob_gain": float((final_gain > 0).mean()),
+                "irr_mean": results.irr_mean,
+                "break_even_month_median": results.break_even_month_median,
+            })
+            if progress_callback is not None:
+                progress_callback(idx + 1, len(design_ids), design.name)
+
+        baseline = final_gain_arrays[0]
+        deltas_out: List[Dict[str, Any]] = []
+        for idx in range(1, len(design_ids)):
+            delta = final_gain_arrays[idx] - baseline
+            deltas_out.append({
+                "design_id": designs_out[idx]["design_id"],
+                "vs_design_id": designs_out[0]["design_id"],
+                "delta_final_gain_mean_eur": float(delta.mean()),
+                "delta_final_gain_p05_eur": float(np.percentile(delta, 5)),
+                "delta_final_gain_p50_eur": float(np.percentile(delta, 50)),
+                "delta_final_gain_p95_eur": float(np.percentile(delta, 95)),
+                "prob_better": float((delta > 0).mean()),
+            })
+
+        return {
+            "designs": designs_out,
+            "deltas": deltas_out,
+            "baseline_design_id": designs_out[0]["design_id"],
+            "n_mc": int(n_mc),
+            "seed": int(seed),
+        }
+
     def run_optimization(
         self,
         *,

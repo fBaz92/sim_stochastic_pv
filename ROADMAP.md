@@ -1787,10 +1787,45 @@ design serio); la 23 è la fondazione architetturale di tutto l'arco; la
 ### 🚧 In corso
 
 _Nessuna fase attualmente in corso._ Prossima della sequenza confermata
-(27 → 28 → 23 → 24 → 25 → 29 ∥ 26 → 32 → 30 → 31 → 33): **Fase 25**
-(comparatore di design).
+(27 → 28 → 23 → 24 → 25 → 29 ∥ 26 → 32 → 30 → 31 → 33): **Fase 29**
+(schede prodotto) in parallelo con la **Fase 26** (relazione PDF).
 
 ### ✅ Completate
+
+**Fase 25 — Comparatore di design** — chiusa 2026-06-10 (suite 682 test
+backend verde nel container; build frontend OK; verificata end-to-end nel
+browser: due offerte 6,6 kWp con/senza accumulo confrontate su 30 path
+appaiati).
+
+- **Backend**: `SimulationApplication.run_design_comparison` — lo stesso
+  contesto MC (carico, prezzo, orizzonte) eseguito su 2–4 PlantDesign con
+  **lo stesso seed** (common random numbers): il ΔNPV per path è un
+  confronto *appaiato* che isola la scelta progettuale dal caso comune.
+  Per design: capex, kWp, accumulo, produzione annua, guadagno finale
+  mean/p05/p50/p95, prob. guadagno, IRR, break-even; per variante:
+  Δguadagno mean/p05/p50/p95 vs baseline + `prob_better`. Nessun run
+  record persistito (strumento di esplorazione). Job kind `comparison`
+  con payload `result` inline sul job record (`JobRecord.result` +
+  `JobHandle.set_result`), route `POST /api/jobs/compare` (contesto
+  default = ARERA inline + prezzo stocastico, come la pagina Offerta).
+- **Test** (`tests/test_design_compare.py`, 5): la prova regina del CRN —
+  due design identici tranne il costo (Δ 2000 €) producono un delta
+  *deterministico* p05=p50=p95=−2000 su ogni path; design 2× più grande →
+  più energia; validazioni; job end-to-end col default a DB vuoto.
+- **Frontend**: pagina "Confronto" (`#/confronto`, navbar) — selezione
+  2–4 impianti (il primo è la baseline), contesto comune, progress del
+  job, tabella side-by-side (capex/kWp/accumulo/produzione/guadagno con
+  banda/prob./IRR/break-even) e card delta con verdetto a soglie di
+  `prob_better`. Nel Designer: colonna "Upgrade a ★" nella tabella cavi —
+  payback in anni dell'upgrade di sezione valutando le perdite evitate
+  sull'energia della preview MC (il confronto cavo-vs-cavo chiesto in
+  origine). Verifica visiva del CRN in pagina: produzione identica al kWh
+  fra i design confrontati.
+
+**Assi coperti**: offerte ricevute (ΔNPV, spostato qui dalla Fase 23),
+taglia/accumulo/inverter/pannello (qualunque coppia di design salvati),
+sezione cavo (payback nel Designer). Il confronto "duplica design e varia
+un campo" si fa salvando varianti dal Designer/Offerta e confrontandole.
 
 **Fase 24 — Designer elettrico di dettaglio** — chiusa 2026-06-10 (suite
 677 test backend verde nel container; build frontend OK; verificata
@@ -3241,7 +3276,7 @@ nelle fasi 23–33):
 
 - [x] Fase 23 — Entità "Impianto" (PlantDesign) + flusso "Analizza un'offerta" (✅ 2026-06-10)
 - [x] Fase 24 — Designer elettrico di dettaglio (stringhe, cavi, protezioni) (✅ 2026-06-10)
-- [ ] Fase 25 — Comparatore di design (delta con valutazione MC)
+- [x] Fase 25 — Comparatore di design (delta con valutazione MC) (✅ 2026-06-10)
 - [ ] Fase 26 — Relazione tecnica di progetto in PDF
 - [x] Fase 27 — Il sito come entità: LocationModel + robustezza PVGIS (✅ 2026-06-10)
 - [x] Fase 28 — Validazione del modello climatico sugli estremi osservati (✅ 2026-06-10)

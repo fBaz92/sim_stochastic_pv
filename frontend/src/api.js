@@ -357,6 +357,11 @@ export const api = {
     async submitOptimizationJob(payload) {
         return request('/jobs/optimization', { method: 'POST', body: JSON.stringify(payload) });
     },
+    // Paired Monte Carlo over 2-4 plant designs (common random numbers);
+    // the result lands inline on the job record (no run page).
+    async submitCompareJob(payload) {
+        return request('/jobs/compare', { method: 'POST', body: JSON.stringify(payload) });
+    },
     async getJob(jobId) {
         return request(`/jobs/${jobId}`);
     },

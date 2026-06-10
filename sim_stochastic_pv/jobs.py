@@ -38,7 +38,7 @@ from typing import Any, Callable, Dict, Literal, Optional
 logger = logging.getLogger(__name__)
 
 
-JobKind = Literal["analysis", "optimization"]
+JobKind = Literal["analysis", "optimization", "comparison"]
 JobStatus = Literal["pending", "running", "done", "failed"]
 
 
@@ -59,6 +59,10 @@ class JobRecord:
     progress_total: int = 0
     message: str = ""
     run_id: Optional[int] = None
+    # Inline result payload for job kinds that do not persist a run
+    # record (e.g. design comparisons): the client reads it from the
+    # final poll instead of redirecting to a run page.
+    result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     started_at: Optional[datetime] = None
@@ -78,6 +82,7 @@ class JobRecord:
             ),
             "message": self.message,
             "run_id": self.run_id,
+            "result": self.result,
             "error": self.error,
             "created_at": self.created_at.isoformat(),
             "started_at": self.started_at.isoformat() if self.started_at else None,
@@ -190,6 +195,10 @@ class JobHandle:
 
     def set_run_id(self, run_id: int) -> None:
         self.store.update(self.job_id, run_id=int(run_id))
+
+    def set_result(self, result: Dict[str, Any]) -> None:
+        """Attach the inline result payload (kinds without a run record)."""
+        self.store.update(self.job_id, result=dict(result))
 
 
 # Module-level singleton — small in-memory store, fine for the single-worker

@@ -350,6 +350,31 @@
 
     const fmt = (v, digits = 1) =>
         v == null || Number.isNaN(v) ? "—" : Number(v).toFixed(digits);
+
+    // Indicative energy value used for the cable-upgrade payback column
+    // (the full economics live in the Confronto/Analisi pages).
+    const PAYBACK_PRICE_EUR_PER_KWH = 0.25;
+
+    /**
+     * Years to repay the copper upgrade from `row` to the recommended ★
+     * section, valuing the avoided ohmic loss at the indicative price.
+     * Requires the MC preview (for the annual DC energy) and a priced
+     * catalogue; null hides the cell.
+     */
+    function upgradePaybackYears(row) {
+        if (!preview || !result?.cables?.recommended_section_mm2) return null;
+        const rec = result.cables.rows.find(
+            (r) => r.section_mm2 === result.cables.recommended_section_mm2,
+        );
+        if (!rec || row.section_mm2 >= rec.section_mm2) return null;
+        if (row.cost_total_eur == null || rec.cost_total_eur == null) return null;
+        const dCost = rec.cost_total_eur - row.cost_total_eur;
+        const dLossKwh =
+            (row.loss_fraction_of_dc - rec.loss_fraction_of_dc) *
+            preview.annual_dc_kwh_mean;
+        if (dCost <= 0 || dLossKwh <= 0) return null;
+        return dCost / (dLossKwh * PAYBACK_PRICE_EUR_PER_KWH);
+    }
 </script>
 
 <div class="page">
@@ -584,6 +609,7 @@
                         <th></th><th>Sezione</th><th>ΔV</th><th>Caduta</th>
                         <th>Perdita totale</th><th>% su DC</th><th>Costo rame</th>
                         <th>Iz</th><th>Esito</th>
+                        {#if preview}<th title="In quanti anni l'upgrade alla sezione ★ si ripaga con le perdite evitate (a {PAYBACK_PRICE_EUR_PER_KWH} €/kWh)">Upgrade a ★</th>{/if}
                     </tr>
                 </thead>
                 <tbody>
@@ -603,6 +629,10 @@
                             <td class:ok-text={row.loss_ok && row.iz_ok !== false} class:ko-text={!row.loss_ok || row.iz_ok === false}>
                                 {row.loss_ok && row.iz_ok !== false ? "OK" : (row.iz_ok === false ? "Iz insuff." : "Oltre soglia")}
                             </td>
+                            {#if preview}
+                                {@const pb = upgradePaybackYears(row)}
+                                <td>{pb != null ? fmt(pb, 1) + " anni" : "—"}</td>
+                            {/if}
                         </tr>
                     {/each}
                 </tbody>
