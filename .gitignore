@@ -12,8 +12,11 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Anchored to the repo root: these target Python build artifacts only.
+# A bare "lib/" would also swallow frontend/src/lib (it silently dropped
+# router.js/stores.js/marketCharts.js from version control).
+/lib/
+/lib64/
 parts/
 sdist/
 var/
