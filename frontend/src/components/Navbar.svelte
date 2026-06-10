@@ -13,6 +13,14 @@
             </li>
             <li>
                 <a
+                    href="#/offerta"
+                    class:active={$currentRoute === "/offerta"}
+                    title="Valuta un preventivo ricevuto: dati di targa, costo e incentivo"
+                    >Offerta</a
+                >
+            </li>
+            <li>
+                <a
                     href="#/scenario"
                     class:active={$currentRoute === "/scenario"}
                     title="Analizza UNA configurazione di impianto"

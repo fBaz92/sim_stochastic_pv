@@ -11,11 +11,119 @@ from sqlalchemy.orm import Session
 
 from ..db.models import (
     BatteryModel,
+    ClimateProfileModel,
     InverterModel,
     LoadProfileModel,
     PanelModel,
+    PlantDesignModel,
     PriceProfileModel,
+    SolarProfileModel,
 )
+
+
+def apply_plant_design(
+    scenario_data: Dict[str, Any],
+    session: Session,
+) -> Dict[str, Any]:
+    """
+    Expand a ``plant_design_id`` reference into the scenario fields it owns.
+
+    A plant design ("Impianto") is the source of truth for the *system*
+    and its *investment*: when a scenario references one, the design's
+    values overwrite any same-named field in the scenario, while
+    everything the design does not define (load, price, market coupling,
+    MC settings, horizon) stays untouched. Mapping for the ``essential``
+    level (a received offer):
+
+    - ``energy.pv_kwp`` / ``solar.pv_kwp`` ← ``p_dc_kwp`` (or ``p_ac_kw``
+      when the offer does not state a DC value);
+    - ``energy.inverter_p_ac_max_kw`` ← ``p_ac_kw``;
+    - ``energy.battery_specs.capacity_kwh`` ← ``storage_kwh`` (0/absent →
+      no battery, ``n_batteries`` set accordingly);
+    - ``economic.investment_eur`` ← ``total_cost_eur``;
+    - ``economic.tax_bonus`` ← the design's incentive block, when present;
+    - when the design is anchored to a location, the site's solar profile
+      (and climate profile, when present) is inherited:
+      ``solar.solar_profile_id`` / ``climate_profile_id``.
+
+    Args:
+        scenario_data: Scenario dict, possibly carrying ``plant_design_id``.
+        session: Active SQLAlchemy session.
+
+    Returns:
+        A new scenario dict with the design expanded. The input is
+        returned unchanged (same object) when no ``plant_design_id`` is
+        present.
+
+    Raises:
+        ValueError: Unknown design id, unsupported ``design_level``, or a
+            payload missing the required nameplate fields.
+    """
+    if "plant_design_id" not in scenario_data:
+        return scenario_data
+
+    design_id = scenario_data["plant_design_id"]
+    design = session.get(PlantDesignModel, design_id)
+    if design is None:
+        raise ValueError(f"Plant design ID {design_id} not found")
+    if design.design_level != "essential":
+        raise ValueError(
+            f"Plant design '{design.name}' has level '{design.design_level}', "
+            "which this resolver does not support yet (only 'essential')."
+        )
+
+    payload = design.data or {}
+    try:
+        p_ac_kw = float(payload["p_ac_kw"])
+        total_cost_eur = float(payload["total_cost_eur"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Plant design '{design.name}' is missing required nameplate "
+            f"fields (p_ac_kw, total_cost_eur): {payload!r}"
+        ) from exc
+    p_dc_kwp = float(payload.get("p_dc_kwp") or p_ac_kw)
+    storage_kwh = float(payload.get("storage_kwh") or 0.0)
+
+    hydrated = dict(scenario_data)
+
+    energy = dict(hydrated.get("energy") or {})
+    energy["pv_kwp"] = p_dc_kwp
+    energy["inverter_p_ac_max_kw"] = p_ac_kw
+    energy["battery_specs"] = {"capacity_kwh": storage_kwh, "cycles_life": 6000}
+    energy["n_batteries"] = 1 if storage_kwh > 0 else 0
+    hydrated["energy"] = energy
+
+    solar = dict(hydrated.get("solar") or {})
+    solar["pv_kwp"] = p_dc_kwp
+
+    economic = dict(hydrated.get("economic") or {})
+    economic["investment_eur"] = total_cost_eur
+    tax_bonus = payload.get("tax_bonus")
+    if tax_bonus:
+        economic["tax_bonus"] = dict(tax_bonus)
+    hydrated["economic"] = economic
+
+    # Site inheritance: the design's location decides where the plant is.
+    if design.location_id is not None:
+        solar_profile = (
+            session.query(SolarProfileModel)
+            .filter_by(location_id=design.location_id)
+            .order_by(SolarProfileModel.name)
+            .first()
+        )
+        if solar_profile is not None:
+            solar["solar_profile_id"] = solar_profile.id
+        climate_profile = (
+            session.query(ClimateProfileModel)
+            .filter_by(location_id=design.location_id)
+            .order_by(ClimateProfileModel.name)
+            .first()
+        )
+        if climate_profile is not None:
+            hydrated["climate_profile_id"] = climate_profile.id
+
+    hydrated["solar"] = solar
+    return hydrated
 
 
 def hydrate_scenario(
@@ -26,6 +134,9 @@ def hydrate_scenario(
     Hydrate a scenario configuration by replacing hardware/profile IDs with full specs.
 
     Handles single hardware selections:
+    - plant_design_id → system + investment fields (see
+      :func:`apply_plant_design`; runs first so a design-driven scenario
+      gets its energy/economic blocks before the other expansions)
     - inverter_id → inverter spec dict
     - panel_id → panel spec dict
     - battery_id → battery spec dict
@@ -42,6 +153,7 @@ def hydrate_scenario(
     Raises:
         ValueError: If a referenced ID is not found in the database.
     """
+    scenario_data = apply_plant_design(scenario_data, session)
     hydrated = dict(scenario_data)
 
     # Hydrate inverter

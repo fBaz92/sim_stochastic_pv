@@ -119,6 +119,17 @@ export const api = {
     deleteLocation: (id, { deleteProfiles = false } = {}) =>
         request(`/locations/${id}?delete_profiles=${deleteProfiles}`, { method: 'DELETE' }),
 
+    // ── Plant designs (Impianti) ─────────────────────────────────────────
+    // An "impianto" describes one specific system: a received offer
+    // (essential level) or a full electrical design (detailed level).
+    // Scenarios reference it via plant_design_id; the backend expands it
+    // into the simulator config during hydration.
+    listDesigns: () => request('/designs'),
+    upsertDesign: (data) => request('/designs', { method: 'POST', body: JSON.stringify(data) }),
+    updateDesign: (id, data) =>
+        request(`/designs/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteDesign: (id) => request(`/designs/${id}`, { method: 'DELETE' }),
+
     // Stochastic thermal profiles (ClimateProfileModel) management.
     async listClimateProfiles() {
         return request('/profiles/climate');

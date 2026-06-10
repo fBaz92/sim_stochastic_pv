@@ -8,10 +8,12 @@
     import SavedCampaignsManager from "../components/database/SavedCampaignsManager.svelte";
     import LocationsManager from "../components/database/LocationsManager.svelte";
     import MarketProfileManager from "../components/database/MarketProfileManager.svelte";
+    import PlantDesignManager from "../components/database/PlantDesignManager.svelte";
 
     const TABS = [
         { id: "scenarios", label: "Scenari" },
         { id: "campaigns", label: "Design" },
+        { id: "plants", label: "Impianti" },
         { id: "locations", label: "Posizioni" },
         { id: "inverters", label: "Inverter" },
         { id: "panels", label: "Pannelli" },
@@ -50,6 +52,8 @@
             <SavedScenariosManager />
         {:else if activeTab === "campaigns"}
             <SavedCampaignsManager />
+        {:else if activeTab === "plants"}
+            <PlantDesignManager />
         {:else if activeTab === "locations"}
             <LocationsManager />
         {:else if activeTab === "inverters"}

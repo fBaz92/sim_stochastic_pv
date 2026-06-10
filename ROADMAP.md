@@ -1326,11 +1326,13 @@ catalogo, e il design di dettaglio non ha dove vivere.
   definizione inline attuale (che resta valida — nessuna migrazione forzata).
 - Flusso UI "Analizza un'offerta": form a una pagina con i soli campi
   essenziali + contesto economico → crea PlantDesign essential + scenario →
-  run → dashboard. Più offerte ricevute = lista di PlantDesign confrontati
-  in una campagna (ΔNPV, Δprobabilità di break-even fra offerte).
+  run → dashboard.
 
 **Out of scope ora**: il designer di dettaglio (Fase 24); migrazione degli
-scenari esistenti (restano inline); rinomine di navigazione (Fase 33).
+scenari esistenti (restano inline); rinomine di navigazione (Fase 33);
+confronto di più offerte in un'unica campagna (ΔNPV fra offerte) —
+spostato nella Fase 25 (comparatore), dove vive il resto della logica
+design-vs-design.
 
 ---
 
@@ -1785,9 +1787,43 @@ design serio); la 23 è la fondazione architetturale di tutto l'arco; la
 ### 🚧 In corso
 
 _Nessuna fase attualmente in corso._ Prossima della sequenza confermata
-(27 → 28 → 23 → 24 → 25 → 29 ∥ 26 → 32 → 30 → 31 → 33): **Fase 23**.
+(27 → 28 → 23 → 24 → 25 → 29 ∥ 26 → 32 → 30 → 31 → 33): **Fase 24**
+(designer elettrico di dettaglio).
 
 ### ✅ Completate
+
+**Fase 23 — Entità "Impianto" (PlantDesign) + flusso "Analizza un'offerta"**
+— chiusa 2026-06-10 (suite 652 test backend verde nel container; build
+frontend OK; verificata end-to-end nel browser: offerta reale → design
+salvato → job MC → run in dashboard con bonus e sito ereditati dal design).
+
+- **Backend**: tabella `plant_designs` (`PlantDesignModel`: name uk,
+  `design_level` essential|detailed, `data` JSON, FK opzionali a
+  inverter/pannello/batteria/posizione), `PlantDesignRepository`
+  (upsert by name), router `/api/designs` (CRUD con validazione Pydantic
+  del payload essential: P_AC, P_DC opzionale con guardia anti-typo
+  < 0,5·P_AC, accumulo, costo, blocco detrazione). Resolver
+  `apply_plant_design` in `persistence/hydration.py`: il design è la
+  fonte di verità per impianto e investimento (sovrascrive
+  `energy.pv_kwp`, `inverter_p_ac_max_kw`, `battery_specs`,
+  `economic.investment_eur`, `tax_bonus`); con una posizione ancorata
+  eredita `solar.solar_profile_id` e `climate_profile_id` del sito;
+  tutto il resto (carico, prezzo, mercato, orizzonte, MC) resta dello
+  scenario. Trigger `plant_design_id` in `application.run_analysis`.
+- **Frontend**: pagina "Analizza un'offerta" (`#/offerta`, voce navbar):
+  form unico — dati di targa + costo + detrazione, posizione (solo siti
+  con profilo solare), profilo consumo (default ARERA inline, funziona
+  a DB vuoto), prezzo (profilo salvato o default stocastico), orizzonte
+  e n. simulazioni — con "Salva soltanto" e "Salva e analizza" (job in
+  background → dashboard); ricarica di offerte salvate. Scheda
+  "Impianti" nella sezione Database (`PlantDesignManager`: lista con
+  targa/costo/detrazione/sito, rinomina, elimina, link alla pagina
+  offerta).
+- **Test**: `tests/test_plant_designs.py` (15 test: repo CRUD/clash,
+  resolver — precedenze design-vs-scenario, default DC=AC, niente
+  accumulo, ereditarietà sito, livello detailed rifiutato per ora,
+  no-op senza riferimento —, endpoint CRUD/validazioni/409, analisi MC
+  end-to-end da design con verifica del bonus sul costo del design).
 
 **Fase 28 — Validazione del modello climatico sugli estremi osservati**
 — chiusa 2026-06-10 (suite 637 test backend verde nel container; build
@@ -3153,7 +3189,7 @@ Aggiunte 2026-06-10 — macro-arco pianificato dall'integrazione del foglio
 `Dimensionamento_FV.xlsx` e dal ripensamento dei flussi d'uso (dettagli
 nelle fasi 23–33):
 
-- [ ] Fase 23 — Entità "Impianto" (PlantDesign) + flusso "Analizza un'offerta"
+- [x] Fase 23 — Entità "Impianto" (PlantDesign) + flusso "Analizza un'offerta" (✅ 2026-06-10)
 - [ ] Fase 24 — Designer elettrico di dettaglio (stringhe, cavi, protezioni)
 - [ ] Fase 25 — Comparatore di design (delta con valutazione MC)
 - [ ] Fase 26 — Relazione tecnica di progetto in PDF

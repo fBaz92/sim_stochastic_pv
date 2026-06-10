@@ -520,6 +520,7 @@ class SimulationApplication:
         if self.persistence is not None and any(
             key in scenario_payload
             for key in (
+                "plant_design_id",
                 "load_profile_id",
                 "price_profile_id",
                 "inverter_id",

@@ -286,6 +286,89 @@ class LocationModel(Base, TimestampMixin):
     notes = Column(Text, nullable=True)
 
 
+class PlantDesignModel(Base, TimestampMixin):
+    """
+    Database model for a PV plant design ("Impianto").
+
+    A plant design is the first-class description of one specific system,
+    with two fidelity levels sharing the same table and the same economic
+    pipeline:
+
+    - ``design_level = "essential"`` — a received commercial offer,
+      described only by its nameplate data: AC power, DC power (defaults
+      to the AC power when the quote does not state it), optional storage
+      capacity, turn-key cost and tax incentive. Enough to answer "is
+      this offer worth it?" through the Monte Carlo analysis.
+    - ``design_level = "detailed"`` — a full electrical design produced
+      by the designer (string layout, cables, protections, loss chain).
+      The extra payload lives in ``data`` and is introduced by the
+      electrical-designer feature; the resolver maps both levels onto
+      the same simulator configuration.
+
+    Attributes:
+        id: Primary key (auto-increment).
+        name: Unique design identifier chosen by the user
+            (e.g. ``"Offerta Rossi 6kW"``). Upsert key.
+        design_level: ``"essential"`` or ``"detailed"``.
+        description: Optional free-text description.
+        data: JSON payload. For ``essential``:
+            ``{"p_ac_kw": float, "p_dc_kwp": float | null,
+            "storage_kwh": float | null, "total_cost_eur": float,
+            "tax_bonus": {"enabled", "fraction_of_investment",
+            "duration_years"} | null}``.
+            ``p_dc_kwp = null`` means "equal to ``p_ac_kw``";
+            ``storage_kwh`` null/0 means no battery.
+        inverter_id: Optional FK to a catalogue inverter (detailed designs
+            or offers that name the hardware).
+        panel_id: Optional FK to a catalogue panel.
+        battery_id: Optional FK to a catalogue battery.
+        location_id: Optional FK to the installation site. When set, the
+            scenario resolver inherits the site's solar profile (and
+            climate profile, when present) automatically.
+
+    Example:
+        ```python
+        design = PlantDesignModel(
+            name="Offerta Rossi 6kW",
+            design_level="essential",
+            data={
+                "p_ac_kw": 6.0,
+                "p_dc_kwp": 6.6,
+                "storage_kwh": 10.0,
+                "total_cost_eur": 14500.0,
+                "tax_bonus": {
+                    "enabled": True,
+                    "fraction_of_investment": 0.5,
+                    "duration_years": 10,
+                },
+            },
+            location_id=1,
+        )
+        ```
+
+    Notes:
+        - Scenarios reference a design via ``plant_design_id`` in their
+          config JSON (resolved during hydration); there is no FK from
+          ``scenarios`` so saved scenario snapshots stay self-contained.
+        - Deleting a design does not touch the runs already executed
+          from it (their config snapshot is frozen in the run record).
+    """
+
+    __tablename__ = "plant_designs"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), unique=True, nullable=False, index=True)
+    design_level = Column(String(32), nullable=False, default="essential")
+    description = Column(Text, nullable=True)
+
+    data = Column(JSON, nullable=False)
+
+    inverter_id = Column(Integer, ForeignKey("inverters.id"), nullable=True)
+    panel_id = Column(Integer, ForeignKey("panels.id"), nullable=True)
+    battery_id = Column(Integer, ForeignKey("batteries.id"), nullable=True)
+    location_id = Column(Integer, ForeignKey("locations.id"), nullable=True)
+
+
 class SolarProfileModel(Base, TimestampMixin):
     """
     Database model for solar irradiance profiles by geographic location.
