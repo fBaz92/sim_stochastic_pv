@@ -1,5 +1,5 @@
 """
-Tests for Phase 17-bis — discrete event-based appliances.
+Tests for discrete event-based appliances.
 
 Covers:
 
@@ -9,7 +9,7 @@ Covers:
 * per-appliance KPI breakdown and peak-simultaneous-kW concurrency;
 * scenario_builder hydration of presets + overrides;
 * validation enforcement of bad shapes / unknown presets;
-* end-to-end integration with Phase 17 stochastic + HVAC;
+* end-to-end integration with the stochastic load decorator + HVAC;
 * legacy byte-identity (no block / ``enabled=false`` → unchanged).
 
 All tests are deterministic via fixed seeds.

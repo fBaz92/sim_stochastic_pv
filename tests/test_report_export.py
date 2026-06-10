@@ -1,9 +1,9 @@
 """
-Phase 11 — Step 8/9 export endpoint tests.
+Report export endpoint tests (Excel + PDF).
 
-Verify the new endpoints serve a valid Excel workbook (and, in Step 9,
-a PDF) for a freshly executed analysis, and that legacy runs (without
-the Phase 11 ``cashflow_table`` payload) are rejected with HTTP 422.
+Verify the export endpoints serve a valid Excel workbook and a PDF for a
+freshly executed analysis, and that legacy runs (without the
+``cashflow_table`` payload) are rejected with HTTP 422.
 """
 
 from __future__ import annotations

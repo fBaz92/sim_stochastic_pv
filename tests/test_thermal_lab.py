@@ -1,10 +1,10 @@
 """
-Phase 19 — thermal-lab tests.
+Thermal-lab tests (setpoint schedules, comparison engine, API).
 
-Covers the three deliverables of the backend foundation slice:
+Covers:
 
-1. Time-of-day setpoint schedules in :class:`HvacController` (the seam
-   prepared in Phase 18): schedules change energy, validate length and the
+1. Time-of-day setpoint schedules in :class:`HvacController`:
+   schedules change energy, validate length and the
    per-hour dead-band invariant, and reduce *exactly* to the scalar when set
    to a constant.
 2. The :mod:`sim_stochastic_pv.simulation.thermal_lab` comparison engine:

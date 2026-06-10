@@ -1,7 +1,7 @@
 """
-Phase 11 — Step 5 payload tests.
+Analysis summary payload tests (tax bonus, inflation, cashflow table).
 
-Verify that the analysis summary now exposes:
+Verify that the analysis summary exposes:
 - ``tax_bonus_total_eur`` (always present, 0.0 by default).
 - ``plots_data["inflation"]`` (None in deterministic mode, dict with
   ``years``, ``mean_factor``, ``sample_paths`` in stochastic mode).

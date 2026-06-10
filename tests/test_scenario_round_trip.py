@@ -1,5 +1,5 @@
 """
-Phase 11 — JSON round-trip and validation tests for tax_bonus + inflation.
+Scenario JSON round-trip and validation tests for tax_bonus + inflation.
 
 Covers:
 - ``build_default_economic_config`` correctly hydrates the new sub-blocks.

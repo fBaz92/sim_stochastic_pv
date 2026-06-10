@@ -1,5 +1,5 @@
 """
-Tests for Phase 17 — stochastic load decorator + HVAC additive load.
+Tests for the stochastic load decorator + HVAC additive load.
 
 The two features are independent toggles. Together they cover most of the
 remaining realism gap of the deterministic baseline load profile:
