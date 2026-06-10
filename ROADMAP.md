@@ -1787,10 +1787,58 @@ design serio); la 23 è la fondazione architetturale di tutto l'arco; la
 ### 🚧 In corso
 
 _Nessuna fase attualmente in corso._ Prossima della sequenza confermata
-(27 → 28 → 23 → 24 → 25 → 29 ∥ 26 → 32 → 30 → 31 → 33): **Fase 29**
-(schede prodotto) in parallelo con la **Fase 26** (relazione PDF).
+(27 → 28 → 23 → 24 → 25 → 29 ∥ 26 → 32 → 30 → 31 → 33): **Fase 32**
+(carico a tre livelli).
 
 ### ✅ Completate
+
+**Fase 29 — Schede prodotto nel Database** — chiusa 2026-06-10 (suite 695
+test backend verde nel container; build frontend OK; verificata nel
+browser: curve I-V/P-V del TCL DR505, finestre di tensione dello ZCS).
+
+- **Curve pannello**: `simulation/panel_curves.py` — modello a singolo
+  diodo fittato una volta a STC e **scalato fisicamente** per condizione
+  (Iph ∝ G con α; Voc con β + shift logaritmico; Is in forma chiusa dalla
+  condizione di circuito aperto), valutazione Newton vettorizzata; due
+  famiglie standard (irraggiamenti a 25 °C, temperature a 1000 W/m²) con
+  MPP evidenziato. Endpoint `GET /api/panels/{id}/curves` (422 esplicito
+  coi campi datasheet mancanti). Validazione fisica nei test: STC esatto
+  (505,0 W), Isc ∝ G, comportamento in temperatura coerente col γ del
+  datasheet entro il 2 % *senza usare γ*.
+- **Fix di `pv_model.py`** (primo uso reale del modulo Fase 16-bis): il
+  fit a 3 punti era sottodeterminato e si bloccava sui bound con ~0,3 A
+  di errore sui moduli moderni — ora 5 condizioni (3 punti + dP/dV=0 al
+  MPP + pendenza −1/Rsh al cortocircuito) risolte in spazio
+  logaritmico; bound Iph adattivo (il cap fisso a 10 A rifiutava i
+  moduli half-cut da 15+ A).
+- **Schede UI** (pattern 📊 nei manager): pannello (2 grafici curve +
+  targa), inverter (bande orizzontali delle tre finestre di tensione DC
+  + limiti correnti), batteria (curva SoH col modello lineare identico
+  al simulatore, slider cicli/giorno). Nuove tab Database **Cavi** e
+  **Protezioni** con CRUD completo; scheda cavo con grafico perdite ∝ I²
+  a tre lunghezze fino alla portata Iz. 10 test nuovi.
+
+**Fase 26 — Relazione tecnica di progetto in PDF** — chiusa 2026-06-10
+(suite verde; PDF reale da 28 KB verificato su un design ancorato a
+Pavullo, sezione produzione MC inclusa).
+
+- `output/exporters/pdf_design_report.py` (Jinja2 + WeasyPrint):
+  relazione in italiano con riferimenti normativi nei ruoli corretti
+  (CEI EN 62548 per l'array, CEI 64-8, guida CEI 82-25; CEI 0-21 citata
+  come regola di *connessione*), componenti, parametri di progetto,
+  valori corretti in temperatura con formule, dimensionamento stringhe
+  con margini ed esiti, taglia impianto, verifiche correnti, margini di
+  temperatura, protezioni, tabella cavi con consigliata ★ e sezione
+  scelta, produzione attesa MC (quando il design è ancorato a un sito
+  con profilo solare) e ipotesi/limiti (l'equivalente del foglio Note).
+- `GET /api/designs/{id}/report.pdf` (router dedicato
+  `design_report.py`): **riesegue il motore** dagli input salvati nel
+  blocco `designer` (numeri sempre freschi e coerenti col codice
+  corrente), cataloga i cavi dal listino live; 422 esplicito per le
+  offerte essential. Il blocco `designer` salvato ora include i
+  `requirements` completi e la temperatura cavo.
+- UI: bottone 📄 nel manager Impianti (solo design di dettaglio) e link
+  "Scarica la relazione" dopo il salvataggio nel Designer. 3 test nuovi.
 
 **Fase 25 — Comparatore di design** — chiusa 2026-06-10 (suite 682 test
 backend verde nel container; build frontend OK; verificata end-to-end nel
@@ -3277,10 +3325,10 @@ nelle fasi 23–33):
 - [x] Fase 23 — Entità "Impianto" (PlantDesign) + flusso "Analizza un'offerta" (✅ 2026-06-10)
 - [x] Fase 24 — Designer elettrico di dettaglio (stringhe, cavi, protezioni) (✅ 2026-06-10)
 - [x] Fase 25 — Comparatore di design (delta con valutazione MC) (✅ 2026-06-10)
-- [ ] Fase 26 — Relazione tecnica di progetto in PDF
+- [x] Fase 26 — Relazione tecnica di progetto in PDF (✅ 2026-06-10)
 - [x] Fase 27 — Il sito come entità: LocationModel + robustezza PVGIS (✅ 2026-06-10)
 - [x] Fase 28 — Validazione del modello climatico sugli estremi osservati (✅ 2026-06-10)
-- [ ] Fase 29 — Schede prodotto nel Database (curve per componente)
+- [x] Fase 29 — Schede prodotto nel Database (curve per componente) (✅ 2026-06-10)
 - [ ] Fase 30 — Vettori energetici, sorgenti di calore, casa multi-zona
 - [ ] Fase 31 — Dispatch termico multi-sorgente + lab di ottimizzazione
 - [ ] Fase 32 — Carico: tre livelli di ingresso attorno al calendario di presenza

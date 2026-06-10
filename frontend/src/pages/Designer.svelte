@@ -82,6 +82,7 @@
     let storageKwh = 0;
     let saveMsg = "";
     let saveError = "";
+    let savedDesignId = null;
 
     function numbersOf(obj) {
         const out = {};
@@ -306,12 +307,22 @@
                         t_max_c: Number(tMax),
                         delta_t_cell_c: Number(deltaTCell),
                     },
+                    requirements: {
+                        p_ac_required_kw: Number(pAcRequired),
+                        target_dc_ac_ratio: Number(targetRatio),
+                        n_panels_per_string: Number(nPanelsPerString),
+                        safety_factor_isc: Number(safetyFactor),
+                        max_cable_loss_fraction: Number(maxLossPct) / 100,
+                        fuse_factor_min: Number(fuseMin),
+                        fuse_factor_max: Number(fuseMax),
+                    },
                     n_panels_per_string: Number(nPanelsPerString),
                     n_strings: result.plant.n_strings,
                     total_panels: result.plant.total_panels,
                     dc_ac_ratio: result.plant.dc_ac_ratio,
                     cable_section_mm2: chosenSection,
                     cable_length_one_way_m: Number(cableLength),
+                    cable_operating_temperature_c: Number(cableTemp),
                     recommended_fuse_a: result.protection.recommended_fuse_a,
                     all_checks_ok: result.all_checks_ok,
                 },
@@ -324,6 +335,7 @@
             };
             if (selectedLocationId) payload.location_id = Number(selectedLocationId);
             const record = await api.upsertDesign(payload);
+            savedDesignId = record.id;
             saveMsg = `Impianto "${record.name}" salvato: lo trovi in Database → Impianti e nella pagina Offerta per l'analisi economica.`;
         } catch (e) {
             saveError = e.message || "Errore nel salvataggio.";
@@ -691,7 +703,14 @@
                 </div>
                 <button class="btn btn-primary" on:click={saveDesign}>Salva impianto (dettagliato)</button>
                 {#if saveError}<p class="error">{saveError}</p>{/if}
-                {#if saveMsg}<p class="success">{saveMsg}</p>{/if}
+                {#if saveMsg}
+                    <p class="success">{saveMsg}</p>
+                    {#if savedDesignId}
+                        <a class="btn btn-ghost" href={api.designReportUrl(savedDesignId)}>
+                            📄 Scarica la relazione tecnica (PDF)
+                        </a>
+                    {/if}
+                {/if}
             </div>
         </div>
     {/if}

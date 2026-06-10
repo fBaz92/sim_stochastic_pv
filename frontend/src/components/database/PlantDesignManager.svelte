@@ -148,6 +148,10 @@
                             <button class="btn btn-sm btn-ghost"
                                 on:click={() => (deleteConfirmId = null)}>No</button>
                         {:else if renamingId !== item.id}
+                            {#if item.data.designer}
+                                <a class="btn btn-sm btn-ghost" title="Relazione tecnica PDF"
+                                    href={api.designReportUrl(item.id)}>📄</a>
+                            {/if}
                             <button class="btn btn-sm btn-ghost" title="Rinomina"
                                 on:click={() => startRename(item)}>✏️</button>
                             <button class="btn btn-sm btn-ghost btn-del" title="Elimina"

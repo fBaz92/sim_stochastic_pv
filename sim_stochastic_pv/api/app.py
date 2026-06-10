@@ -4,6 +4,7 @@ from fastapi import FastAPI
 
 from .routes import (
     configurations_router,
+    design_report_router,
     designs_router,
     execution_router,
     external_router,
@@ -64,6 +65,7 @@ def create_app() -> FastAPI:
     app.include_router(profiles_router)
     app.include_router(configurations_router)
     app.include_router(designs_router)
+    app.include_router(design_report_router)
     app.include_router(execution_router)
     app.include_router(external_router)
     app.include_router(locations_router)
