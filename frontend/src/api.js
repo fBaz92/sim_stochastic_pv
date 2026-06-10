@@ -139,7 +139,22 @@ export const api = {
 
     // Designer catalogues.
     listCables: () => request('/cables'),
+    createCable: (data) => request('/cables', { method: 'POST', body: JSON.stringify(data) }),
+    updateCable: (id, data) => request(`/cables/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteCable: (id) => request(`/cables/${id}`, { method: 'DELETE' }),
     listProtections: () => request('/protections'),
+    createProtection: (data) => request('/protections', { method: 'POST', body: JSON.stringify(data) }),
+    updateProtection: (id, data) => request(`/protections/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteProtection: (id) => request(`/protections/${id}`, { method: 'DELETE' }),
+
+    // Panel product sheet: I-V / P-V curve families from the
+    // single-diode model fitted on the datasheet specs.
+    getPanelCurves: (id) => request(`/panels/${id}/curves`),
+
+    // Technical report PDF of a detailed plant design (direct download).
+    designReportUrl(designId) {
+        return `${API_BASE}/designs/${designId}/report.pdf`;
+    },
 
     // Stochastic thermal profiles (ClimateProfileModel) management.
     async listClimateProfiles() {

@@ -584,3 +584,71 @@ def delete_protection(
         raise HTTPException(
             status_code=404, detail=f"Protection {protection_id} not found"
         )
+
+
+@router.get("/panels/{panel_id}/curves", response_model=hw_schemas.PanelCurvesResponse)
+def panel_curves(
+    panel_id: int,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> hw_schemas.PanelCurvesResponse:
+    """
+    I-V / P-V curve families of a catalogue panel (product sheet).
+
+    Fits the single-diode model on the panel's datasheet specs and
+    returns the two standard families: irradiance sweep
+    (200..1000 W/m2 at 25 degC cell) and cell-temperature sweep
+    (-10..70 degC at full sun), each with the MPP highlighted.
+
+    Raises:
+        HTTPException 404: panel not found.
+        HTTPException 422: the panel specs lack the electrical datasheet
+            fields needed by the model (the message names them).
+    """
+    from ...simulation.panel_curves import compute_panel_curve_families
+
+    panel = next(
+        (p for p in persistence.hardware.list_panels() if p.id == panel_id), None
+    )
+    if panel is None:
+        raise HTTPException(status_code=404, detail=f"Panel {panel_id} not found")
+
+    specs = panel.specs or {}
+    required = (
+        "i_sc_stc_a", "v_oc_stc_v", "i_mpp_stc_a", "v_mpp_stc_v",
+        "n_cells_series", "alpha_isc_pct_per_c", "beta_voc_pct_per_c",
+    )
+    missing = [k for k in required if specs.get(k) in (None, "")]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Il pannello '{panel.name}' non ha il datasheet elettrico "
+                f"completo per le curve: campi mancanti {', '.join(missing)}."
+            ),
+        )
+
+    try:
+        irr, temp = compute_panel_curve_families(
+            isc_stc=float(specs["i_sc_stc_a"]),
+            voc_stc=float(specs["v_oc_stc_v"]),
+            imp_stc=float(specs["i_mpp_stc_a"]),
+            vmp_stc=float(specs["v_mpp_stc_v"]),
+            n_cells_series=int(specs["n_cells_series"]),
+            alpha_isc_pct_per_c=float(specs["alpha_isc_pct_per_c"]),
+            beta_voc_pct_per_c=float(specs["beta_voc_pct_per_c"]),
+        )
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    from dataclasses import asdict
+
+    return hw_schemas.PanelCurvesResponse(
+        panel_id=panel.id,
+        name=panel.name,
+        irradiance_family=[
+            hw_schemas.PanelCurvePoint(**asdict(c)) for c in irr
+        ],
+        temperature_family=[
+            hw_schemas.PanelCurvePoint(**asdict(c)) for c in temp
+        ],
+    )

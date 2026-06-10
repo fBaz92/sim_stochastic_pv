@@ -1,6 +1,7 @@
 <script>
     import { onMount } from 'svelte';
     import { api } from '../../api';
+    import InverterDetail from './InverterDetail.svelte';
 
     let inverters = [];
     let loading = false;
@@ -11,6 +12,8 @@
 
     /** ID dell'inverter con conferma eliminazione in attesa; null = nessuna. */
     let deleteConfirmId = null;
+    // Product sheet toggled per item.
+    let detailItem = null;
 
     /** Stato vuoto del form — usato anche per il reset. */
     const emptyForm = () => ({
@@ -245,6 +248,8 @@
                             <button class="btn btn-sm btn-ghost"
                                     on:click={() => deleteConfirmId = null}>No</button>
                         {:else}
+                            <button class="btn btn-sm btn-ghost" title="Scheda con finestre di tensione"
+                                    on:click={() => detailItem = detailItem?.id === item.id ? null : item}>📊</button>
                             <button class="btn btn-sm btn-ghost"
                                     title="Modifica"
                                     on:click={() => startEdit(item)}>✏️</button>
@@ -256,6 +261,11 @@
                 </div>
             {/each}
         </div>
+        {#if detailItem}
+            {#key detailItem.id}
+                <InverterDetail inverter={detailItem} />
+            {/key}
+        {/if}
     {/if}
 </div>
 

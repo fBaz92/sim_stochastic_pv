@@ -1,12 +1,15 @@
 <script>
     import { onMount } from 'svelte';
     import { api } from '../../api';
+    import PanelDetail from './PanelDetail.svelte';
 
     let items = [];
     let loading = false;
     let showForm = false;
     let editingId = null;
     let deleteConfirmId = null;
+    // Product sheet (I-V / P-V curves) toggled per panel.
+    let detailItem = null;
 
     const emptyForm = () => ({
         name: '',
@@ -256,6 +259,8 @@
                             <button class="btn btn-sm btn-ghost"
                                     on:click={() => deleteConfirmId = null}>No</button>
                         {:else}
+                            <button class="btn btn-sm btn-ghost" title="Scheda con curve I-V / P-V"
+                                    on:click={() => detailItem = detailItem?.id === item.id ? null : item}>📊</button>
                             <button class="btn btn-sm btn-ghost" title="Modifica"
                                     on:click={() => startEdit(item)}>✏️</button>
                             <button class="btn btn-sm btn-ghost btn-del" title="Elimina"
@@ -265,6 +270,11 @@
                 </div>
             {/each}
         </div>
+        {#if detailItem}
+            {#key detailItem.id}
+                <PanelDetail panel={detailItem} />
+            {/key}
+        {/if}
     {/if}
 </div>
 

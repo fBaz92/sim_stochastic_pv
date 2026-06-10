@@ -9,6 +9,8 @@
     import LocationsManager from "../components/database/LocationsManager.svelte";
     import MarketProfileManager from "../components/database/MarketProfileManager.svelte";
     import PlantDesignManager from "../components/database/PlantDesignManager.svelte";
+    import CableManager from "../components/database/CableManager.svelte";
+    import ProtectionManager from "../components/database/ProtectionManager.svelte";
 
     const TABS = [
         { id: "scenarios", label: "Scenari" },
@@ -18,6 +20,8 @@
         { id: "inverters", label: "Inverter" },
         { id: "panels", label: "Pannelli" },
         { id: "batteries", label: "Batterie" },
+        { id: "cables", label: "Cavi" },
+        { id: "protections", label: "Protezioni" },
         { id: "loads", label: "Profili di carico" },
         { id: "prices", label: "Profili di prezzo" },
         { id: "markets", label: "Profili di mercato" },
@@ -62,6 +66,10 @@
             <PanelManager />
         {:else if activeTab === "batteries"}
             <BatteryManager />
+        {:else if activeTab === "cables"}
+            <CableManager />
+        {:else if activeTab === "protections"}
+            <ProtectionManager />
         {:else if activeTab === "loads"}
             <LoadProfileManager />
         {:else if activeTab === "prices"}
