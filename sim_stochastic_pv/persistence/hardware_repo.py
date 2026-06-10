@@ -9,8 +9,26 @@ from typing import Any, Mapping
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..db.models import BatteryModel, InverterModel, PanelModel
+from ..db.models import (
+    BatteryModel,
+    CableModel,
+    InverterModel,
+    PanelModel,
+    ProtectionModel,
+)
 from ._utils import asdict_safe
+
+
+# Columns writable through the cable/protection CRUD (everything except
+# the primary key and the timestamp mixin).
+_CABLE_FIELDS = (
+    "name", "manufacturer", "section_mm2", "material",
+    "price_eur_per_m", "iz_a", "notes",
+)
+_PROTECTION_FIELDS = (
+    "name", "manufacturer", "kind", "rated_current_a",
+    "rated_voltage_v", "price_eur", "specs", "notes",
+)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -347,3 +365,160 @@ class HardwareRepository:
         with self._session_factory() as session:
             stmt = select(BatteryModel).order_by(BatteryModel.name)
             return list(session.execute(stmt).scalars().all())
+
+    # ── DC cables (electrical-designer catalogue) ─────────────────────────
+
+    def upsert_cable(self, cable_data: Mapping[str, Any]) -> CableModel:
+        """
+        Insert or update a cable catalogue row by unique ``name``.
+
+        Args:
+            cable_data: Mapping with :data:`_CABLE_FIELDS` keys. Must
+                include ``name`` and ``section_mm2``.
+
+        Returns:
+            The persisted :class:`CableModel` (refreshed, detached).
+        """
+        payload = {k: cable_data.get(k) for k in _CABLE_FIELDS if k in cable_data}
+        with self._session_factory() as session:
+            record = session.execute(
+                select(CableModel).where(CableModel.name == payload.get("name"))
+            ).scalar_one_or_none()
+            if record is None:
+                record = CableModel(**payload)
+                session.add(record)
+            else:
+                for key, value in payload.items():
+                    setattr(record, key, value)
+            session.commit()
+            session.refresh(record)
+            return record
+
+    def list_cables(self) -> list[CableModel]:
+        """List all cables ordered by cross-section, then name."""
+        with self._session_factory() as session:
+            stmt = select(CableModel).order_by(CableModel.section_mm2, CableModel.name)
+            return list(session.execute(stmt).scalars().all())
+
+    def update_cable(
+        self, cable_id: int, cable_data: Mapping[str, Any]
+    ) -> CableModel | None:
+        """
+        Update a cable by primary key (partial — allows rename).
+
+        Args:
+            cable_id: Primary key of the cable to update.
+            cable_data: New field values (subset of :data:`_CABLE_FIELDS`).
+
+        Returns:
+            Updated record, or ``None`` when the ID does not exist.
+
+        Raises:
+            ValueError: New ``name`` already used by another cable.
+        """
+        with self._session_factory() as session:
+            record = session.get(CableModel, cable_id)
+            if record is None:
+                return None
+            new_name = cable_data.get("name")
+            if new_name and new_name != record.name:
+                clash = session.execute(
+                    select(CableModel).where(CableModel.name == new_name)
+                ).scalar_one_or_none()
+                if clash is not None and clash.id != cable_id:
+                    raise ValueError(
+                        f"Cable name '{new_name}' is already used by id={clash.id}"
+                    )
+            for key in _CABLE_FIELDS:
+                if key in cable_data:
+                    setattr(record, key, cable_data[key])
+            session.commit()
+            session.refresh(record)
+            return record
+
+    def delete_cable(self, cable_id: int) -> bool:
+        """Delete a cable by ID. Returns True if deleted, False if missing."""
+        return _delete_by_id(self._session_factory, CableModel, cable_id)
+
+    # ── DC protections (electrical-designer catalogue) ────────────────────
+
+    def upsert_protection(self, protection_data: Mapping[str, Any]) -> ProtectionModel:
+        """
+        Insert or update a protection catalogue row by unique ``name``.
+
+        Args:
+            protection_data: Mapping with :data:`_PROTECTION_FIELDS` keys.
+                Must include ``name``.
+
+        Returns:
+            The persisted :class:`ProtectionModel`.
+        """
+        payload = {
+            k: protection_data.get(k) for k in _PROTECTION_FIELDS if k in protection_data
+        }
+        with self._session_factory() as session:
+            record = session.execute(
+                select(ProtectionModel).where(
+                    ProtectionModel.name == payload.get("name")
+                )
+            ).scalar_one_or_none()
+            if record is None:
+                record = ProtectionModel(**payload)
+                session.add(record)
+            else:
+                for key, value in payload.items():
+                    setattr(record, key, value)
+            session.commit()
+            session.refresh(record)
+            return record
+
+    def list_protections(self) -> list[ProtectionModel]:
+        """List all protections ordered by kind, rated current, name."""
+        with self._session_factory() as session:
+            stmt = select(ProtectionModel).order_by(
+                ProtectionModel.kind,
+                ProtectionModel.rated_current_a,
+                ProtectionModel.name,
+            )
+            return list(session.execute(stmt).scalars().all())
+
+    def update_protection(
+        self, protection_id: int, protection_data: Mapping[str, Any]
+    ) -> ProtectionModel | None:
+        """
+        Update a protection by primary key (partial — allows rename).
+
+        Args:
+            protection_id: Primary key of the protection to update.
+            protection_data: New field values (subset of
+                :data:`_PROTECTION_FIELDS`).
+
+        Returns:
+            Updated record, or ``None`` when the ID does not exist.
+
+        Raises:
+            ValueError: New ``name`` already used by another protection.
+        """
+        with self._session_factory() as session:
+            record = session.get(ProtectionModel, protection_id)
+            if record is None:
+                return None
+            new_name = protection_data.get("name")
+            if new_name and new_name != record.name:
+                clash = session.execute(
+                    select(ProtectionModel).where(ProtectionModel.name == new_name)
+                ).scalar_one_or_none()
+                if clash is not None and clash.id != protection_id:
+                    raise ValueError(
+                        f"Protection name '{new_name}' is already used by id={clash.id}"
+                    )
+            for key in _PROTECTION_FIELDS:
+                if key in protection_data:
+                    setattr(record, key, protection_data[key])
+            session.commit()
+            session.refresh(record)
+            return record
+
+    def delete_protection(self, protection_id: int) -> bool:
+        """Delete a protection by ID. Returns True if deleted, False if missing."""
+        return _delete_by_id(self._session_factory, ProtectionModel, protection_id)

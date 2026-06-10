@@ -135,6 +135,16 @@ class PanelElectricalSpecs:
         noct_c: Nominal Operating Cell Temperature (°C) at 800 W/m²,
             20°C ambient, 1 m/s wind (typical 42–48 °C for residential
             roof-mounted modules).
+        alpha_isc_pct_per_c: Temperature coefficient of I_sc, percent
+            per °C (positive, typical +0.04 to +0.06). Used by the
+            electrical *designer* to size cables and check per-MPPT
+            currents at the hot-cell corner; unused by the MC model.
+        v_system_max_v: Maximum system voltage of the module (V),
+            typically 1000 or 1500 (IEC). The string voltage limit is
+            ``min(v_system_max_v, inverter v_dc_max_v)``. Designer-only.
+        max_series_fuse_a: Maximum series fuse rating from the module
+            datasheet (A, IEC 61730-2). Upper bound for the string-fuse
+            selection. Designer-only.
 
     Example:
         ```python
@@ -162,6 +172,10 @@ class PanelElectricalSpecs:
     beta_voc_pct_per_c: float | None = None
     gamma_pmax_pct_per_c: float | None = None
     noct_c: float | None = None
+    # Designer-only fields (string sizing / cable / protection checks).
+    alpha_isc_pct_per_c: float | None = None
+    v_system_max_v: float | None = None
+    max_series_fuse_a: float | None = None
 
 
 @dataclass(frozen=True)
@@ -187,9 +201,23 @@ class InverterElectricalSpecs:
             tracker is similarly off-MPP and power is derated.
         n_mppt_trackers: Number of independent MPPT inputs (>= 1). Each
             tracker sees its own ``pv_string`` block.
-        i_dc_max_per_mppt_a: Maximum DC current per MPPT tracker (A).
-            Documented for completeness; not enforced by the current
-            derating logic.
+        i_dc_max_per_mppt_a: Maximum DC *operating* current per MPPT
+            tracker (A). Enforced by the electrical designer's current
+            checks; not enforced by the MC derating logic.
+        i_sc_max_per_mppt_a: Maximum short-circuit current per MPPT (A)
+            as stated by the inverter datasheet. Designer-only.
+        max_strings_per_mppt: Number of physical string inputs per MPPT
+            tracker. Designer-only.
+        v_mppt_full_load_min_v: Lower bound of the MPPT range at *full
+            load* (V) — the stricter window some datasheets publish for
+            nominal-power operation. The designer sizes strings against
+            this window (falling back to ``v_mppt_min_v``/``max`` when
+            absent); the MC derating keeps using the wide window.
+        v_mppt_full_load_max_v: Upper bound of the full-load MPPT range.
+        p_ac_nom_kw: AC nameplate power (kW). Designer-only convenience
+            so the design payload is self-contained.
+        efficiency_max: Peak (or EU-weighted) efficiency, 0–1.
+            Designer-only.
     """
 
     v_dc_min_v: float | None = None
@@ -198,6 +226,13 @@ class InverterElectricalSpecs:
     v_mppt_max_v: float | None = None
     n_mppt_trackers: int = 1
     i_dc_max_per_mppt_a: float | None = None
+    # Designer-only fields (string sizing / current checks).
+    i_sc_max_per_mppt_a: float | None = None
+    max_strings_per_mppt: int | None = None
+    v_mppt_full_load_min_v: float | None = None
+    v_mppt_full_load_max_v: float | None = None
+    p_ac_nom_kw: float | None = None
+    efficiency_max: float | None = None
 
 
 @dataclass(frozen=True)

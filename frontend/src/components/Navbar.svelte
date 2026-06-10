@@ -21,6 +21,14 @@
             </li>
             <li>
                 <a
+                    href="#/progettazione"
+                    class:active={$currentRoute === "/progettazione"}
+                    title="Dimensionamento elettrico di dettaglio: stringhe, verifiche, cavi e protezioni"
+                    >Progettazione</a
+                >
+            </li>
+            <li>
+                <a
                     href="#/scenario"
                     class:active={$currentRoute === "/scenario"}
                     title="Analizza UNA configurazione di impianto"

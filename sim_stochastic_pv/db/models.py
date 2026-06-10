@@ -286,6 +286,83 @@ class LocationModel(Base, TimestampMixin):
     notes = Column(Text, nullable=True)
 
 
+class CableModel(Base, TimestampMixin):
+    """
+    Database model for DC cable catalogue entries.
+
+    One row per (product, cross-section): the electrical designer reads
+    the price per metre to cost a cable run and the thermal rating Iz to
+    gate the recommended section (a cheap thin cable that passes the
+    ohmic-loss check may still be unable to carry the design short-
+    circuit current).
+
+    Attributes:
+        id: Primary key.
+        name: Unique catalogue identifier
+            (e.g. ``"Solar H1Z2Z2-K 6mm2"``). Upsert key.
+        manufacturer: Brand, optional.
+        section_mm2: Conductor cross-section (mm²).
+        material: Conductor material (``"copper"`` default;
+            ``"aluminium"`` possible for AC runs later).
+        price_eur_per_m: List price per metre (€), optional.
+        iz_a: Thermal current rating in free air per the manufacturer
+            datasheet / CEI-UNEL tables (A), optional.
+        notes: Free text (insulation class, standard, source).
+
+    Notes:
+        - Seeded on first run from ``seed_data/cables/`` with a generic
+          solar-cable price list; the user edits/extends from the
+          Database section.
+    """
+
+    __tablename__ = "cables"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), unique=True, nullable=False, index=True)
+    manufacturer = Column(String(255), nullable=True)
+    section_mm2 = Column(Float, nullable=False)
+    material = Column(String(32), nullable=False, default="copper")
+    price_eur_per_m = Column(Float, nullable=True)
+    iz_a = Column(Float, nullable=True)
+    notes = Column(Text, nullable=True)
+
+
+class ProtectionModel(Base, TimestampMixin):
+    """
+    Database model for DC protection devices (fuses, breakers, SPDs).
+
+    The designer's fuse recommendation maps to a concrete purchasable
+    part through this catalogue; the comparison table costs the
+    protection bill of materials from ``price_eur``.
+
+    Attributes:
+        id: Primary key.
+        name: Unique catalogue identifier
+            (e.g. ``"Fusibile gPV 10x38 25A"``). Upsert key.
+        manufacturer: Brand, optional.
+        kind: Device family — ``"fuse"``, ``"breaker"``,
+            ``"disconnector"`` or ``"spd"``.
+        rated_current_a: Nominal current I_n (A); ``None`` for SPDs.
+        rated_voltage_v: Rated DC voltage (V).
+        price_eur: List price (€), optional.
+        specs: Optional JSON blob for family-specific data
+            (breaking capacity, curve, poles...).
+        notes: Free text.
+    """
+
+    __tablename__ = "protections"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), unique=True, nullable=False, index=True)
+    manufacturer = Column(String(255), nullable=True)
+    kind = Column(String(32), nullable=False, default="fuse")
+    rated_current_a = Column(Float, nullable=True)
+    rated_voltage_v = Column(Float, nullable=True)
+    price_eur = Column(Float, nullable=True)
+    specs = Column(JSON, nullable=True)
+    notes = Column(Text, nullable=True)
+
+
 class PlantDesignModel(Base, TimestampMixin):
     """
     Database model for a PV plant design ("Impianto").

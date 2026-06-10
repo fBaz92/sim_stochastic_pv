@@ -13,7 +13,13 @@ from typing import Dict
 
 from sqlalchemy.orm import Session
 
-from .models import InverterModel, PanelModel, SolarProfileModel
+from .models import (
+    CableModel,
+    InverterModel,
+    PanelModel,
+    ProtectionModel,
+    SolarProfileModel,
+)
 
 
 def seed_solar_profiles(session: Session, seed_dir: Path) -> int:
@@ -344,6 +350,152 @@ def seed_market_profiles(session: Session) -> int:
     return 1
 
 
+def seed_cables(session: Session, seed_dir: Path) -> int:
+    """
+    Seed the DC cable catalogue from ``seed_data/cables/*.json``.
+
+    Each JSON file carries a ``cables`` list of catalogue rows (name,
+    section, €/m, Iz). Existing names are skipped, so the function is
+    idempotent and safe to run on every startup.
+
+    Args:
+        session: Active SQLAlchemy session.
+        seed_dir: Root directory containing the ``cables/`` subfolder.
+
+    Returns:
+        Number of new cable records inserted.
+    """
+    cables_dir = seed_dir / "cables"
+    if not cables_dir.exists():
+        return 0
+    count = 0
+    for json_file in cables_dir.glob("*.json"):
+        try:
+            with open(json_file, encoding="utf-8") as f:
+                payload = json.load(f)
+            for data in payload.get("cables", []):
+                existing = (
+                    session.query(CableModel).filter_by(name=data.get("name")).first()
+                )
+                if existing:
+                    continue
+                session.add(CableModel(
+                    name=data["name"],
+                    manufacturer=data.get("manufacturer"),
+                    section_mm2=float(data["section_mm2"]),
+                    material=data.get("material", "copper"),
+                    price_eur_per_m=data.get("price_eur_per_m"),
+                    iz_a=data.get("iz_a"),
+                    notes=data.get("notes"),
+                ))
+                count += 1
+        except Exception as exc:
+            print(f"Warning: Failed to load cables from {json_file.name}: {exc}")
+            continue
+    session.commit()
+    return count
+
+
+def seed_protections(session: Session, seed_dir: Path) -> int:
+    """
+    Seed the DC protection catalogue from ``seed_data/protections/*.json``.
+
+    Same contract as :func:`seed_cables` (idempotent, name-keyed skip).
+
+    Args:
+        session: Active SQLAlchemy session.
+        seed_dir: Root directory containing the ``protections/`` subfolder.
+
+    Returns:
+        Number of new protection records inserted.
+    """
+    protections_dir = seed_dir / "protections"
+    if not protections_dir.exists():
+        return 0
+    count = 0
+    for json_file in protections_dir.glob("*.json"):
+        try:
+            with open(json_file, encoding="utf-8") as f:
+                payload = json.load(f)
+            for data in payload.get("protections", []):
+                existing = (
+                    session.query(ProtectionModel)
+                    .filter_by(name=data.get("name"))
+                    .first()
+                )
+                if existing:
+                    continue
+                session.add(ProtectionModel(
+                    name=data["name"],
+                    manufacturer=data.get("manufacturer"),
+                    kind=data.get("kind", "fuse"),
+                    rated_current_a=data.get("rated_current_a"),
+                    rated_voltage_v=data.get("rated_voltage_v"),
+                    price_eur=data.get("price_eur"),
+                    specs=data.get("specs"),
+                    notes=data.get("notes"),
+                ))
+                count += 1
+        except Exception as exc:
+            print(f"Warning: Failed to load protections from {json_file.name}: {exc}")
+            continue
+    session.commit()
+    return count
+
+
+def backfill_hardware_designer_specs(
+    session: Session, seed_dir: Path | None = None
+) -> int:
+    """
+    Merge the designer-only datasheet fields into existing hardware rows.
+
+    Databases created before the electrical designer carry panels and
+    inverters without the sizing fields (α coefficient, system voltage,
+    max series fuse; per-MPPT current limits, full-load MPPT window).
+    For every shipped seed component that already exists in the DB by
+    name, this backfill copies into its ``specs`` blob **only the keys
+    that are missing** — user edits are never overwritten.
+
+    Args:
+        session: Active SQLAlchemy session.
+        seed_dir: Optional seed-data root (defaults to the packaged one).
+
+    Returns:
+        Number of hardware rows that received at least one new key.
+    """
+    if seed_dir is None:
+        seed_dir = Path(__file__).parent.parent / "seed_data"
+
+    touched = 0
+    for folder, model in (("panels", PanelModel), ("inverters", InverterModel)):
+        directory = seed_dir / folder
+        if not directory.exists():
+            continue
+        for json_file in directory.glob("*.json"):
+            try:
+                with open(json_file, encoding="utf-8") as f:
+                    data = json.load(f)
+                record = (
+                    session.query(model).filter_by(name=data.get("name")).first()
+                )
+                if record is None:
+                    continue
+                seed_specs = data.get("specs", {})
+                specs = dict(record.specs or {})
+                missing = {k: v for k, v in seed_specs.items() if k not in specs}
+                if missing:
+                    specs.update(missing)
+                    record.specs = specs
+                    touched += 1
+            except Exception as exc:
+                print(
+                    f"Warning: designer-spec backfill failed for {json_file.name}: {exc}"
+                )
+                continue
+    session.commit()
+    return touched
+
+
 def seed_database(session: Session, seed_dir: Path | None = None) -> Dict[str, int]:
     """
     Seed all database tables from JSON seed files.
@@ -391,6 +543,9 @@ def seed_database(session: Session, seed_dir: Path | None = None) -> Dict[str, i
         # Ship a default electricity-market profile so the dedicated-withdrawal
         # export valuation is available out of the box.
         "market_profiles": seed_market_profiles(session),
+        # Electrical-designer catalogues: DC cables and protections.
+        "cables": seed_cables(session, seed_dir),
+        "protections": seed_protections(session, seed_dir),
         # Future expansion:
         # "batteries": seed_hardware_batteries(session, seed_dir),
     }

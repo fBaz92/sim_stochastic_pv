@@ -1787,10 +1787,60 @@ design serio); la 23 è la fondazione architetturale di tutto l'arco; la
 ### 🚧 In corso
 
 _Nessuna fase attualmente in corso._ Prossima della sequenza confermata
-(27 → 28 → 23 → 24 → 25 → 29 ∥ 26 → 32 → 30 → 31 → 33): **Fase 24**
-(designer elettrico di dettaglio).
+(27 → 28 → 23 → 24 → 25 → 29 ∥ 26 → 32 → 30 → 31 → 33): **Fase 25**
+(comparatore di design).
 
 ### ✅ Completate
+
+**Fase 24 — Designer elettrico di dettaglio** — chiusa 2026-06-10 (suite
+677 test backend verde nel container; build frontend OK; verificata
+end-to-end nel browser su Pavullo: componenti dal catalogo, Tmin/Tmax dal
+clima stocastico, produzione attesa MC, salvataggio design dettagliato).
+
+- **24a — Motore** `simulation/electrical_design/` (inputs, sizing,
+  currents, cables, protections, evaluate, production): correzioni in
+  temperatura (Voc/Vmp/Isc ai due angoli di progetto), range ammissibile
+  moduli/stringa (vincoli Vdc,max, V sistema, finestra MPPT a pieno
+  carico), verifiche tensioni con margini, taglia impianto, verifiche
+  correnti per MPPT (operativa + cortocircuito, ingressi fisici), margini
+  di temperatura invertendo il modello lineare, fusibile di stringa CEI
+  EN 62548 (finestra 1,5–2,4 × Isc STC, taglie gPV standard, vincolo
+  modulo), tabella cavi per sezione (resistività a T operativa, caduta,
+  perdita, costo rame, gate Iz ≥ Isc di progetto). Funzioni pure su
+  `PanelElectricalSpecs`/`InverterElectricalSpecs` (Fase 16) estese con i
+  campi designer (α, V sistema, max fusibile; correnti per MPPT, finestra
+  pieno carico, stringhe/MPPT, P AC, rendimento).
+- **24a-test**: `tests/test_electrical_design.py` (25 test) valida ogni
+  blocco contro i valori cella-per-cella del foglio di riferimento,
+  inclusi i due fallimenti voluti delle correnti del caso d'esempio
+  (margini −3,24 A operativa, −1,24 A cortocircuito) e il caso "questo
+  inverter non regge moduli da 15 A qualunque sia il layout".
+- **24b — Cataloghi DB**: tabelle `cables` (sezione, €/m, Iz) e
+  `protections` (fusibili gPV, sezionatori, SPD) con CRUD completo
+  (`/api/cables`, `/api/protections`), seed `seed_data/cables` +
+  `protections`; componenti dell'Excel seedati (TCL HSM-ND54-DR505, ZCS
+  1PH 3000-TLM-V3) e specs designer aggiunte ai 4 pannelli + 4 inverter
+  esistenti; backfill idempotente in `init_db` che integra le chiavi
+  mancanti senza toccare le modifiche dell'utente.
+- **24c — `POST /api/designs/evaluate`**: valutazione stateless completa
+  (tutti i derivati + margini), motore della UI reattiva; 422 con il nome
+  del campo datasheet mancante.
+- **24d — Pagina "Progettazione"** (`#/progettazione`, navbar): foglio
+  reattivo con debounce — selettori pannello/inverter dal catalogo con
+  datasheet editabile, sito con Tmin/Tmax proposti dagli estremi del
+  clima stocastico calibrato, tendina "moduli per stringa" vincolata al
+  range calcolato, semaforo complessivo + verifiche puntuali con margini,
+  tabella cavi con consigliata ★ e selezione per radio, fusibile
+  consigliato. Salvataggio come PlantDesign **detailed** (nameplate +
+  blocco `designer` pass-through; il resolver economico ora accetta
+  entrambi i livelli sugli stessi campi di targa).
+- **24e — `POST /api/designs/production-preview`**: MC orario di un anno
+  meteo (30 path) con catena perdite in ordine fisico — derating
+  MPPT/temperatura (clima calibrato), perdite cavo ∝ I², clipping all'AC
+  nominale, rendimento — e bande p05/p95. Su Pavullo, riferimento 6,06
+  kWp / 3 kW: 5 225 kWh/anno [4 909–5 522], clipping 6,7 %, cavi 0,35 %
+  (10 mm²), derating elettrico 89 kWh.
+- **Test totali fase**: 40 nuovi (engine 25 + endpoint/CRUD 15).
 
 **Fase 23 — Entità "Impianto" (PlantDesign) + flusso "Analizza un'offerta"**
 — chiusa 2026-06-10 (suite 652 test backend verde nel container; build
@@ -3190,7 +3240,7 @@ Aggiunte 2026-06-10 — macro-arco pianificato dall'integrazione del foglio
 nelle fasi 23–33):
 
 - [x] Fase 23 — Entità "Impianto" (PlantDesign) + flusso "Analizza un'offerta" (✅ 2026-06-10)
-- [ ] Fase 24 — Designer elettrico di dettaglio (stringhe, cavi, protezioni)
+- [x] Fase 24 — Designer elettrico di dettaglio (stringhe, cavi, protezioni) (✅ 2026-06-10)
 - [ ] Fase 25 — Comparatore di design (delta con valutazione MC)
 - [ ] Fase 26 — Relazione tecnica di progetto in PDF
 - [x] Fase 27 — Il sito come entità: LocationModel + robustezza PVGIS (✅ 2026-06-10)

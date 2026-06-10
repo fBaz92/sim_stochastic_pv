@@ -1,0 +1,18 @@
+{
+  "_comment": "Standard gPV fuses (10x38 up to 32 A, 14x51 above) + DC disconnector and SPD. Indicative 2026 retail prices; edit from Database -> Protezioni.",
+  "protections": [
+    { "name": "Fusibile gPV 10x38 10A 1000V", "kind": "fuse", "rated_current_a": 10.0, "rated_voltage_v": 1000.0, "price_eur": 2.5 },
+    { "name": "Fusibile gPV 10x38 12A 1000V", "kind": "fuse", "rated_current_a": 12.0, "rated_voltage_v": 1000.0, "price_eur": 2.5 },
+    { "name": "Fusibile gPV 10x38 15A 1000V", "kind": "fuse", "rated_current_a": 15.0, "rated_voltage_v": 1000.0, "price_eur": 2.8 },
+    { "name": "Fusibile gPV 10x38 16A 1000V", "kind": "fuse", "rated_current_a": 16.0, "rated_voltage_v": 1000.0, "price_eur": 2.8 },
+    { "name": "Fusibile gPV 10x38 20A 1000V", "kind": "fuse", "rated_current_a": 20.0, "rated_voltage_v": 1000.0, "price_eur": 3.2 },
+    { "name": "Fusibile gPV 10x38 25A 1000V", "kind": "fuse", "rated_current_a": 25.0, "rated_voltage_v": 1000.0, "price_eur": 3.6 },
+    { "name": "Fusibile gPV 10x38 30A 1000V", "kind": "fuse", "rated_current_a": 30.0, "rated_voltage_v": 1000.0, "price_eur": 4.0 },
+    { "name": "Fusibile gPV 10x38 32A 1000V", "kind": "fuse", "rated_current_a": 32.0, "rated_voltage_v": 1000.0, "price_eur": 4.2 },
+    { "name": "Fusibile gPV 14x51 40A 1100V", "kind": "fuse", "rated_current_a": 40.0, "rated_voltage_v": 1100.0, "price_eur": 7.5 },
+    { "name": "Fusibile gPV 14x51 50A 1100V", "kind": "fuse", "rated_current_a": 50.0, "rated_voltage_v": 1100.0, "price_eur": 8.0 },
+    { "name": "Fusibile gPV 14x51 63A 1100V", "kind": "fuse", "rated_current_a": 63.0, "rated_voltage_v": 1100.0, "price_eur": 9.0 },
+    { "name": "Sezionatore DC 32A 1000V 2P", "kind": "disconnector", "rated_current_a": 32.0, "rated_voltage_v": 1000.0, "price_eur": 35.0 },
+    { "name": "Scaricatore SPD DC Tipo 2 1000V", "kind": "spd", "rated_current_a": null, "rated_voltage_v": 1000.0, "price_eur": 55.0 }
+  ]
+}

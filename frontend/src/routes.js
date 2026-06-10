@@ -5,6 +5,7 @@ import Database from './pages/Database.svelte';
 import ThermalLab from './pages/ThermalLab.svelte';
 import ElectricityMarket from './pages/ElectricityMarket.svelte';
 import OfferAnalysis from './pages/OfferAnalysis.svelte';
+import Designer from './pages/Designer.svelte';
 
 // Phase 11 — "Campagna" is now branded "Design" in the UI. The route
 // path moved from /campaign to /design, but the imported component
@@ -15,6 +16,8 @@ export default {
     // Evaluate a received commercial offer: nameplate data → essential
     // plant design → Monte Carlo verdict.
     '/offerta': OfferAnalysis,
+    // Electrical designer: string sizing, checks, cables, protections.
+    '/progettazione': Designer,
     '/scenario': ScenarioBuilder,
     '/design': CampaignBuilder,
     // Legacy alias so existing bookmarks / saved URLs keep working.

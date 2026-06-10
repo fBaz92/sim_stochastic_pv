@@ -15,8 +15,15 @@
     "beta_voc_pct_per_c": -0.26,
     "gamma_pmax_pct_per_c": -0.34,
     "noct_c": 42.0,
-    "dimensions_mm": [1722, 1134, 30],
+    "dimensions_mm": [
+      1722,
+      1134,
+      30
+    ],
     "warranty_years": 25,
-    "datasheet_note": "HiKu6 Mono PERC 108-cell"
+    "datasheet_note": "HiKu6 Mono PERC 108-cell",
+    "alpha_isc_pct_per_c": 0.05,
+    "v_system_max_v": 1500.0,
+    "max_series_fuse_a": 25.0
   }
 }

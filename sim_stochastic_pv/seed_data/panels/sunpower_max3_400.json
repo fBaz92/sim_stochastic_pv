@@ -15,8 +15,15 @@
     "beta_voc_pct_per_c": -0.235,
     "gamma_pmax_pct_per_c": -0.29,
     "noct_c": 41.5,
-    "dimensions_mm": [1690, 1046, 40],
+    "dimensions_mm": [
+      1690,
+      1046,
+      40
+    ],
     "warranty_years": 40,
-    "datasheet_note": "IBC monocrystalline, premium efficiency tier"
+    "datasheet_note": "IBC monocrystalline, premium efficiency tier",
+    "alpha_isc_pct_per_c": 0.05,
+    "v_system_max_v": 1000.0,
+    "max_series_fuse_a": 20.0
   }
 }

@@ -16,6 +16,10 @@
     "i_dc_max_per_mppt_a": 14.0,
     "efficiency_max": 0.99,
     "warranty_years": 12,
-    "datasheet_note": "HD-Wave technology, mandatory pairing with power optimizers"
+    "datasheet_note": "HD-Wave technology, mandatory pairing with power optimizers",
+    "i_sc_max_per_mppt_a": 13.5,
+    "max_strings_per_mppt": 1,
+    "v_mppt_full_load_min_v": 350.0,
+    "v_mppt_full_load_max_v": 400.0
   }
 }

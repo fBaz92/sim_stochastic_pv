@@ -113,6 +113,40 @@ def init_db() -> None:
         except Exception as e:  # pragma: no cover - defensive: don't break startup
             print(f"⚠️  Warning: market profile seeding failed: {e}")
 
+    # Electrical-designer catalogues + datasheet backfill. Like the market
+    # profile above, these must also reach databases created before the
+    # feature existed: cable/protection seeding is name-idempotent, and the
+    # backfill only adds specs keys that are missing (user edits preserved).
+    with SessionLocal() as session:
+        try:
+            from pathlib import Path
+
+            from .seeding import (
+                backfill_hardware_designer_specs,
+                seed_cables,
+                seed_inverters,
+                seed_panels,
+                seed_protections,
+            )
+
+            seed_dir = Path(__file__).resolve().parent.parent / "seed_data"
+            n_cables = seed_cables(session, seed_dir)
+            n_prot = seed_protections(session, seed_dir)
+            # Hardware seeding is name-idempotent: on an existing DB this
+            # only adds newly-shipped components (e.g. the designer's
+            # reference TCL module + ZCS inverter), never touches edits.
+            n_hw = seed_panels(session, seed_dir) + seed_inverters(session, seed_dir)
+            n_backfill = backfill_hardware_designer_specs(session, seed_dir)
+            if n_cables or n_prot or n_hw:
+                print(
+                    f"✅ Seeded designer catalogues: {n_cables} cables, "
+                    f"{n_prot} protections, {n_hw} hardware components"
+                )
+            if n_backfill:
+                print(f"✅ Backfilled designer specs on {n_backfill} hardware record(s)")
+        except Exception as e:  # pragma: no cover - defensive: don't break startup
+            print(f"⚠️  Warning: designer catalogue seeding failed: {e}")
+
 
 def _apply_lightweight_migrations() -> None:
     """

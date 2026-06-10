@@ -129,6 +129,17 @@ export const api = {
     updateDesign: (id, data) =>
         request(`/designs/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     deleteDesign: (id) => request(`/designs/${id}`, { method: 'DELETE' }),
+    // Stateless spreadsheet engine of the Progettazione page: full design
+    // in → every derived cell + check margins out.
+    evaluateDesign: (payload) =>
+        request('/designs/evaluate', { method: 'POST', body: JSON.stringify(payload) }),
+    // Hourly MC production preview (clipping, cable losses, MPPT derating).
+    productionPreview: (payload) =>
+        request('/designs/production-preview', { method: 'POST', body: JSON.stringify(payload) }),
+
+    // Designer catalogues.
+    listCables: () => request('/cables'),
+    listProtections: () => request('/protections'),
 
     // Stochastic thermal profiles (ClimateProfileModel) management.
     async listClimateProfiles() {

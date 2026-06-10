@@ -16,6 +16,10 @@
     "i_dc_max_per_mppt_a": 12.5,
     "efficiency_max": 0.982,
     "warranty_years": 10,
-    "datasheet_note": "Single-phase hybrid-ready inverter with battery interface"
+    "datasheet_note": "Single-phase hybrid-ready inverter with battery interface",
+    "i_sc_max_per_mppt_a": 15.0,
+    "max_strings_per_mppt": 1,
+    "v_mppt_full_load_min_v": 240.0,
+    "v_mppt_full_load_max_v": 480.0
   }
 }

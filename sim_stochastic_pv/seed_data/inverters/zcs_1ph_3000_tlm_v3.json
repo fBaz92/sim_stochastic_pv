@@ -1,0 +1,23 @@
+{
+  "name": "ZCS 1PH 3000-TLM-V3",
+  "manufacturer": "Zucchetti",
+  "model_number": "1PH 3000-TLM-V3",
+  "nominal_power_kw": 3.0,
+  "specs": {
+    "p_ac_max_kw": 3.0,
+    "p_dc_max_kw": 4.5,
+    "price_eur": 750.0,
+    "efficiency_max": 0.972,
+    "v_dc_min_v": 90.0,
+    "v_dc_max_v": 600.0,
+    "v_mppt_min_v": 90.0,
+    "v_mppt_max_v": 580.0,
+    "v_mppt_full_load_min_v": 160.0,
+    "v_mppt_full_load_max_v": 520.0,
+    "n_mppt_trackers": 2,
+    "i_dc_max_per_mppt_a": 12.0,
+    "i_sc_max_per_mppt_a": 15.0,
+    "max_strings_per_mppt": 1,
+    "datasheet_note": "Single-phase dual-MPPT, reference inverter of the sizing spreadsheet"
+  }
+}

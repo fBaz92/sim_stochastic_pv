@@ -462,3 +462,125 @@ def delete_battery(
     if not persistence.delete_battery(battery_id):
         raise HTTPException(status_code=404, detail=f"Battery id={battery_id} not found")
     return {"ok": True, "id": battery_id}
+
+
+# ---------------------------------------------------------------------------
+# DC cables (electrical-designer catalogue)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/cables", response_model=list[hw_schemas.CableResponse])
+def list_cables(
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> list[hw_schemas.CableResponse]:
+    """List the DC cable catalogue ordered by cross-section."""
+    return [
+        hw_schemas.CableResponse.model_validate(r)
+        for r in persistence.hardware.list_cables()
+    ]
+
+
+@router.post("/cables", response_model=hw_schemas.CableResponse)
+def upsert_cable(
+    payload: hw_schemas.CableCreate,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> hw_schemas.CableResponse:
+    """Create a cable, or update it when the name already exists."""
+    record = persistence.hardware.upsert_cable(payload.model_dump())
+    return hw_schemas.CableResponse.model_validate(record)
+
+
+@router.put("/cables/{cable_id}", response_model=hw_schemas.CableResponse)
+def update_cable(
+    cable_id: int,
+    payload: hw_schemas.CableCreate,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> hw_schemas.CableResponse:
+    """
+    Update a cable by primary key (allows rename).
+
+    Raises:
+        HTTPException 404: cable not found.
+        HTTPException 409: new name already used by another cable.
+    """
+    try:
+        record = persistence.hardware.update_cable(cable_id, payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Cable {cable_id} not found")
+    return hw_schemas.CableResponse.model_validate(record)
+
+
+@router.delete("/cables/{cable_id}", status_code=204)
+def delete_cable(
+    cable_id: int,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> None:
+    """Delete a cable. Raises 404 when missing."""
+    if not persistence.hardware.delete_cable(cable_id):
+        raise HTTPException(status_code=404, detail=f"Cable {cable_id} not found")
+
+
+# ---------------------------------------------------------------------------
+# DC protections (electrical-designer catalogue)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/protections", response_model=list[hw_schemas.ProtectionResponse])
+def list_protections(
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> list[hw_schemas.ProtectionResponse]:
+    """List the DC protection catalogue ordered by kind and rating."""
+    return [
+        hw_schemas.ProtectionResponse.model_validate(r)
+        for r in persistence.hardware.list_protections()
+    ]
+
+
+@router.post("/protections", response_model=hw_schemas.ProtectionResponse)
+def upsert_protection(
+    payload: hw_schemas.ProtectionCreate,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> hw_schemas.ProtectionResponse:
+    """Create a protection, or update it when the name already exists."""
+    record = persistence.hardware.upsert_protection(payload.model_dump())
+    return hw_schemas.ProtectionResponse.model_validate(record)
+
+
+@router.put("/protections/{protection_id}", response_model=hw_schemas.ProtectionResponse)
+def update_protection(
+    protection_id: int,
+    payload: hw_schemas.ProtectionCreate,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> hw_schemas.ProtectionResponse:
+    """
+    Update a protection by primary key (allows rename).
+
+    Raises:
+        HTTPException 404: protection not found.
+        HTTPException 409: new name already used by another protection.
+    """
+    try:
+        record = persistence.hardware.update_protection(
+            protection_id, payload.model_dump()
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if record is None:
+        raise HTTPException(
+            status_code=404, detail=f"Protection {protection_id} not found"
+        )
+    return hw_schemas.ProtectionResponse.model_validate(record)
+
+
+@router.delete("/protections/{protection_id}", status_code=204)
+def delete_protection(
+    protection_id: int,
+    persistence: PersistenceService = Depends(dependencies.get_persistence_service),
+) -> None:
+    """Delete a protection. Raises 404 when missing."""
+    if not persistence.hardware.delete_protection(protection_id):
+        raise HTTPException(
+            status_code=404, detail=f"Protection {protection_id} not found"
+        )

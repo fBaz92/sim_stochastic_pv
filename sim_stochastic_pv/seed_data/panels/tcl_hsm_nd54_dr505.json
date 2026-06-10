@@ -1,0 +1,25 @@
+{
+  "name": "TCL HSM-ND54-DR505",
+  "manufacturer": "TCL",
+  "model_number": "HSM-ND54-DR505",
+  "power_w": 505.0,
+  "specs": {
+    "power_w": 505.0,
+    "price_eur": 120.0,
+    "efficiency": 0.226,
+    "v_oc_stc_v": 40.14,
+    "v_mpp_stc_v": 33.9,
+    "i_sc_stc_a": 15.88,
+    "i_mpp_stc_a": 14.9,
+    "n_cells_series": 108,
+    "beta_voc_pct_per_c": -0.25,
+    "gamma_pmax_pct_per_c": -0.29,
+    "alpha_isc_pct_per_c": 0.045,
+    "noct_c": 45.0,
+    "v_system_max_v": 1500.0,
+    "max_series_fuse_a": 30.0,
+    "first_year_degradation": 0.01,
+    "annual_degradation": 0.004,
+    "datasheet_note": "N-type 54-cell, reference module of the sizing spreadsheet"
+  }
+}

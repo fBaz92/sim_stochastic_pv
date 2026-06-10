@@ -66,12 +66,16 @@ def apply_plant_design(
     design = session.get(PlantDesignModel, design_id)
     if design is None:
         raise ValueError(f"Plant design ID {design_id} not found")
-    if design.design_level != "essential":
+    if design.design_level not in ("essential", "detailed"):
         raise ValueError(
-            f"Plant design '{design.name}' has level '{design.design_level}', "
-            "which this resolver does not support yet (only 'essential')."
+            f"Plant design '{design.name}' has unknown level "
+            f"'{design.design_level}' (expected 'essential' or 'detailed')."
         )
 
+    # Both levels expose the same nameplate summary keys; a detailed
+    # design carries extra blocks (string layout, cables, checks) that the
+    # economic resolver does not need — the designer's production preview
+    # consumes them directly.
     payload = design.data or {}
     try:
         p_ac_kw = float(payload["p_ac_kw"])

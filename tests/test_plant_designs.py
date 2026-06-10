@@ -202,16 +202,34 @@ class TestApplyPlantDesign:
             with pytest.raises(ValueError, match="not found"):
                 apply_plant_design({"plant_design_id": 999999}, session)
 
-    def test_detailed_level_rejected_for_now(
+    def test_detailed_level_resolves_via_same_nameplate(
         self, persistence: PersistenceService
     ) -> None:
+        """A detailed design carries the same nameplate summary plus
+        extra designer blocks the resolver ignores."""
         record = persistence.designs.upsert_design({
             "name": "Detailed",
             "design_level": "detailed",
+            "data": {
+                "p_ac_kw": 3.0,
+                "p_dc_kwp": 6.06,
+                "total_cost_eur": 9000.0,
+                "designer": {"n_panels_per_string": 6, "n_strings": 2},
+            },
+        })
+        with persistence.session() as session:
+            out = apply_plant_design({"plant_design_id": record.id}, session)
+        assert out["energy"]["pv_kwp"] == 6.06
+        assert out["economic"]["investment_eur"] == 9000.0
+
+    def test_unknown_level_rejected(self, persistence: PersistenceService) -> None:
+        record = persistence.designs.upsert_design({
+            "name": "Garbage level",
+            "design_level": "fancy",
             "data": {"p_ac_kw": 3.0, "total_cost_eur": 1.0},
         })
         with persistence.session() as session:
-            with pytest.raises(ValueError, match="detailed"):
+            with pytest.raises(ValueError, match="unknown level"):
                 apply_plant_design({"plant_design_id": record.id}, session)
 
     def test_noop_without_reference(self, persistence: PersistenceService) -> None:

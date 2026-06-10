@@ -16,6 +16,10 @@
     "i_dc_max_per_mppt_a": 18.0,
     "efficiency_max": 0.976,
     "warranty_years": 10,
-    "datasheet_note": "Single-phase transformerless residential inverter"
+    "datasheet_note": "Single-phase transformerless residential inverter",
+    "i_sc_max_per_mppt_a": 27.0,
+    "max_strings_per_mppt": 2,
+    "v_mppt_full_load_min_v": 240.0,
+    "v_mppt_full_load_max_v": 800.0
   }
 }

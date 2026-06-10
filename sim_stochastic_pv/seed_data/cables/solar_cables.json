@@ -1,0 +1,12 @@
+{
+  "_comment": "Generic H1Z2Z2-K solar cable price list (copper, free-air Iz from typical manufacturer datasheets). Indicative 2026 retail prices; edit from Database -> Cavi.",
+  "cables": [
+    { "name": "Cavo solare H1Z2Z2-K 2.5mm2", "manufacturer": "Generico", "section_mm2": 2.5, "material": "copper", "price_eur_per_m": 0.55, "iz_a": 41.0 },
+    { "name": "Cavo solare H1Z2Z2-K 4mm2",   "manufacturer": "Generico", "section_mm2": 4.0, "material": "copper", "price_eur_per_m": 0.75, "iz_a": 55.0 },
+    { "name": "Cavo solare H1Z2Z2-K 6mm2",   "manufacturer": "Generico", "section_mm2": 6.0, "material": "copper", "price_eur_per_m": 1.05, "iz_a": 70.0 },
+    { "name": "Cavo solare H1Z2Z2-K 10mm2",  "manufacturer": "Generico", "section_mm2": 10.0, "material": "copper", "price_eur_per_m": 1.70, "iz_a": 98.0 },
+    { "name": "Cavo solare H1Z2Z2-K 16mm2",  "manufacturer": "Generico", "section_mm2": 16.0, "material": "copper", "price_eur_per_m": 2.60, "iz_a": 132.0 },
+    { "name": "Cavo solare H1Z2Z2-K 25mm2",  "manufacturer": "Generico", "section_mm2": 25.0, "material": "copper", "price_eur_per_m": 3.90, "iz_a": 176.0 },
+    { "name": "Cavo solare H1Z2Z2-K 35mm2",  "manufacturer": "Generico", "section_mm2": 35.0, "material": "copper", "price_eur_per_m": 5.40, "iz_a": 218.0 }
+  ]
+}

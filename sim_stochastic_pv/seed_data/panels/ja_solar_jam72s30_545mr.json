@@ -13,10 +13,17 @@
     "i_mpp_stc_a": 13.02,
     "n_cells_series": 144,
     "beta_voc_pct_per_c": -0.272,
-    "gamma_pmax_pct_per_c": -0.350,
+    "gamma_pmax_pct_per_c": -0.35,
     "noct_c": 45.0,
-    "dimensions_mm": [2278, 1134, 35],
+    "dimensions_mm": [
+      2278,
+      1134,
+      35
+    ],
     "warranty_years": 25,
-    "datasheet_note": "DeepBlue 3.0 MBB half-cell PERC"
+    "datasheet_note": "DeepBlue 3.0 MBB half-cell PERC",
+    "alpha_isc_pct_per_c": 0.045,
+    "v_system_max_v": 1500.0,
+    "max_series_fuse_a": 25.0
   }
 }

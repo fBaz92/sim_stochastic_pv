@@ -15,8 +15,15 @@
     "beta_voc_pct_per_c": -0.27,
     "gamma_pmax_pct_per_c": -0.34,
     "noct_c": 45.0,
-    "dimensions_mm": [2256, 1133, 35],
+    "dimensions_mm": [
+      2256,
+      1133,
+      35
+    ],
     "warranty_years": 25,
-    "datasheet_note": "Hi-MO 5m monofacial, 144 half-cells M10 monocrystalline PERC"
+    "datasheet_note": "Hi-MO 5m monofacial, 144 half-cells M10 monocrystalline PERC",
+    "alpha_isc_pct_per_c": 0.048,
+    "v_system_max_v": 1500.0,
+    "max_series_fuse_a": 30.0
   }
 }

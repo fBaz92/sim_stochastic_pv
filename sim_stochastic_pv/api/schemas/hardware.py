@@ -530,3 +530,93 @@ class BatteryCreate(BaseModel):
     price_eur: Optional[float] = Field(None, ge=0, description="Purchase price in EUR (must be >= 0)")
     datasheet: Optional[str | Dict[str, Any]] = Field(None, description="Datasheet URL or metadata")
     specs: Optional[Dict[str, Any]] = Field(None, description="Additional specifications (JSON)")
+
+
+class CableResponse(BaseModel):
+    """
+    DC cable catalogue row (electrical-designer catalogue).
+
+    Attributes:
+        id: Primary key.
+        name: Unique catalogue identifier (e.g. "Cavo solare H1Z2Z2-K 6mm2").
+        manufacturer: Brand, optional.
+        section_mm2: Conductor cross-section (mm²).
+        material: Conductor material ("copper" default).
+        price_eur_per_m: List price per metre (EUR), optional.
+        iz_a: Thermal current rating in free air (A), optional — gates the
+            designer's recommended-section pick.
+        notes: Free text.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    manufacturer: Optional[str] = None
+    section_mm2: float
+    material: str = "copper"
+    price_eur_per_m: Optional[float] = None
+    iz_a: Optional[float] = None
+    notes: Optional[str] = None
+
+
+class CableCreate(BaseModel):
+    """
+    Create/upsert payload for a DC cable catalogue row.
+
+    POST /api/cables upserts by unique ``name``.
+    """
+
+    name: str = Field(..., min_length=1, description="Unique cable name (upsert key)")
+    manufacturer: Optional[str] = Field(None, description="Brand")
+    section_mm2: float = Field(..., gt=0, description="Conductor cross-section (mm²)")
+    material: str = Field("copper", description="Conductor material")
+    price_eur_per_m: Optional[float] = Field(None, ge=0, description="Price per metre (EUR)")
+    iz_a: Optional[float] = Field(None, gt=0, description="Thermal current rating Iz (A)")
+    notes: Optional[str] = Field(None, description="Free text")
+
+
+class ProtectionResponse(BaseModel):
+    """
+    DC protection catalogue row (fuse / breaker / disconnector / SPD).
+
+    Attributes:
+        id: Primary key.
+        name: Unique catalogue identifier.
+        manufacturer: Brand, optional.
+        kind: Device family ("fuse", "breaker", "disconnector", "spd").
+        rated_current_a: Nominal current I_n (A); None for SPDs.
+        rated_voltage_v: Rated DC voltage (V).
+        price_eur: List price (EUR), optional.
+        specs: Family-specific JSON blob, optional.
+        notes: Free text.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    manufacturer: Optional[str] = None
+    kind: str = "fuse"
+    rated_current_a: Optional[float] = None
+    rated_voltage_v: Optional[float] = None
+    price_eur: Optional[float] = None
+    specs: Optional[Dict[str, Any]] = None
+    notes: Optional[str] = None
+
+
+class ProtectionCreate(BaseModel):
+    """
+    Create/upsert payload for a DC protection catalogue row.
+
+    POST /api/protections upserts by unique ``name``.
+    """
+
+    name: str = Field(..., min_length=1, description="Unique protection name (upsert key)")
+    manufacturer: Optional[str] = Field(None, description="Brand")
+    kind: str = Field("fuse", description="fuse | breaker | disconnector | spd")
+    rated_current_a: Optional[float] = Field(None, gt=0, description="Nominal current (A)")
+    rated_voltage_v: Optional[float] = Field(None, gt=0, description="Rated DC voltage (V)")
+    price_eur: Optional[float] = Field(None, ge=0, description="List price (EUR)")
+    specs: Optional[Dict[str, Any]] = Field(None, description="Family-specific data (JSON)")
+    notes: Optional[str] = Field(None, description="Free text")
