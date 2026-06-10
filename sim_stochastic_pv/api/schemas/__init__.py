@@ -30,12 +30,18 @@ from .configurations import (
 )
 from .external import (
     ClimateNormalsResponse,
-    ClimateProfileFromLocationRequest,
     ClimateProfilePreviewResponse,
     ClimateProfileResponse,
     GeocodeRequest,
     GeocodeResultResponse,
-    SolarProfileFromLocationRequest,
+)
+from .locations import (
+    ClimateProfileSummary,
+    LocationImportRequest,
+    LocationImportResponse,
+    LocationResponse,
+    LocationUpdate,
+    SolarProfileSummary,
 )
 from .hardware import (
     BatteryCreate,
@@ -96,11 +102,16 @@ __all__ = [
     "ClimateNormalsResponse",
     "GeocodeRequest",
     "GeocodeResultResponse",
-    "SolarProfileFromLocationRequest",
     # Climate profile schemas (Phase 15)
-    "ClimateProfileFromLocationRequest",
     "ClimateProfilePreviewResponse",
     "ClimateProfileResponse",
+    # Installation sites (locations + unified import flow)
+    "ClimateProfileSummary",
+    "LocationImportRequest",
+    "LocationImportResponse",
+    "LocationResponse",
+    "LocationUpdate",
+    "SolarProfileSummary",
     # Thermal-lab schemas (Phase 19)
     "ThermalLabCompareRequest",
     "ThermalLabCompareResponse",

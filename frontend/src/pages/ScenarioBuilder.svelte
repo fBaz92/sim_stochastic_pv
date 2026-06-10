@@ -165,70 +165,59 @@
         importing = true;
         thermalPreview = null;
         thermalPreviewError = null;
+        if (alsoCalibrateThermal) thermalPreviewLoading = true;
 
         const locationLabel = pickedDisplayName
             || `${pickedLat.toFixed(3)}°, ${pickedLon.toFixed(3)}°`;
 
         try {
-            // Step 1: PVGIS solar profile.
-            const record = await api.createSolarProfileFromLocation({
+            // One transactional call: saves the location (address) and
+            // downloads solar + climate together. Re-importing the same
+            // name refreshes the existing records instead of failing.
+            const res = await api.importLocation({
                 name: effectiveName,
-                location_name: locationLabel,
+                display_name: locationLabel,
                 latitude: pickedLat,
                 longitude: pickedLon,
+                include_solar: true,
+                include_climate: alsoCalibrateThermal,
                 tilt_degrees: importTilt,
                 azimuth_degrees: importAzimuth,
                 loss_pct: importLossPct,
                 lookback_years: importLookbackYears,
-                overwrite: false,
+                climate_trend_c_per_year: 0.0,
             });
-            // Reload list + auto-select the new record.
-            solarProfiles = await api.listSolarProfiles();
-            selectedSolarProfileId = String(record.id);
 
-            // Step 2 (Phase 15, opt-in): also calibrate the stochastic
-            // thermal model and show the fan-chart preview. We do this
-            // AFTER the solar profile is saved so the user sees the
-            // solar import as immediately successful even if the
-            // thermal calibration fails (e.g. very short archive).
+            if (res.solar_profile) {
+                // Reload list + auto-select the new record.
+                solarProfiles = await api.listSolarProfiles();
+                selectedSolarProfileId = String(res.solar_profile.id);
+            }
+            importError = res.solar_error;
+
             if (alsoCalibrateThermal) {
-                await calibrateAndPreviewThermal(effectiveName, locationLabel);
-            } else {
+                if (res.climate_profile) {
+                    // Keep the climate profile id for the electrical
+                    // accordion and refresh the cached list so the
+                    // auto-match reactive statement picks it up.
+                    climateProfileId = res.climate_profile.id;
+                    climateProfiles = await api.listClimateProfiles()
+                        .catch(() => climateProfiles);
+                    thermalPreview = await api.previewClimateProfileById(
+                        res.climate_profile.id,
+                        { n_paths: 50, n_years: 1, seed: 42 },
+                    );
+                } else {
+                    thermalPreviewError = res.climate_error
+                        || "Errore durante la calibrazione termica.";
+                }
+            } else if (!res.solar_error) {
                 showLocationFinder = false;
             }
         } catch (err) {
             importError = err.message || "Errore durante l'import PVGIS.";
         } finally {
             importing = false;
-        }
-    }
-
-    async function calibrateAndPreviewThermal(name, locationLabel) {
-        thermalPreviewLoading = true;
-        thermalPreviewError = null;
-        try {
-            const climateRecord = await api.createClimateProfileFromLocation({
-                name: name,                  // same name across solar+climate DB tables
-                location_name: locationLabel,
-                latitude: pickedLat,
-                longitude: pickedLon,
-                lookback_years: importLookbackYears,
-                climate_trend_c_per_year: 0.0,
-                overwrite: true,             // overwrite to keep solar↔climate paired
-            });
-            // Phase 16 — keep the climate profile id for the electrical
-            // accordion and refresh the cached list so the auto-match
-            // reactive statement picks it up immediately.
-            climateProfileId = climateRecord.id;
-            climateProfiles = await api.listClimateProfiles().catch(() => climateProfiles);
-            thermalPreview = await api.previewClimateProfileById(climateRecord.id, {
-                n_paths: 50,
-                n_years: 1,
-                seed: 42,
-            });
-        } catch (err) {
-            thermalPreviewError = err.message || "Errore durante la calibrazione termica.";
-        } finally {
             thermalPreviewLoading = false;
         }
     }
@@ -267,8 +256,8 @@
     let selectedPanelId = null;
     let electricalDeratingExponentK = 0.5;
     // Climate profile id chosen / created in step Luogo. Picked up
-    // automatically by ``calibrateAndPreviewThermal`` and via a name
-    // match between the selected solar profile and listClimateProfiles.
+    // automatically by the location import and via a name match between
+    // the selected solar profile and listClimateProfiles.
     let climateProfileId = null;
 
     function onPanelChange() {

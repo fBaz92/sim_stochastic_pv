@@ -916,7 +916,7 @@ Questo impatta tre conti economici reali del simulatore:
   `appliance_kwh_annual_by_name` + card `peak_simultaneous_kw_mean` +
   (se smart_pv abilitato) card `smart_pv_self_consumption_pct` con
   delta vs naive_timer di riferimento.
-- Test (~12 backend in `tests/test_phase17bis_appliances.py`):
+- Test (~12 backend in `tests/test_appliances.py`):
   - long-run kWh/anno medio per appliance entro 5 % di
     `n_events_expected × p_kw × duration_hours`;
   - distribuzione delle ore di partenza confinata in `allowed_hours`
@@ -1005,7 +1005,7 @@ della pompa di calore se non come semplice conteggio di ore-breach.
   `aggregate_thermal_kpis` aggrega `t_in_min_c` come **min** e `t_in_max_c`
   come **max** sui path (caso peggiore). Le nuove chiavi fluiscono nel dict
   pass-through `summary["thermal"]` senza modifiche di schema API.
-- Test in `tests/test_phase17_stochastic_load_and_hvac.py`
+- Test in `tests/test_stochastic_load_and_hvac.py`
   (`TestPhase17DynamicRc`): invariante con steady-state, drift sotto setpoint
   per casa `poor` con pompa piccola, stabilità numerica, dead-band, semantica
   min/max dell'aggregazione.
@@ -1297,6 +1297,385 @@ preview con debounce live (basta un pulsante "Anteprima").
 
 ---
 
+## Fase 23 — Entità "Impianto" (PlantDesign) + flusso "Analizza un'offerta"
+
+**Problema**: l'impianto non esiste come entità propria — è un insieme di
+riferimenti hardware + parametri di sizing dentro la config dello scenario.
+I casi d'uso reali sono però due, con livelli di informazione diversissimi:
+(a) **analizzare un'offerta ricevuta**, definita solo dai dati di targa
+(potenza AC, potenza DC se dichiarata, accumulo, costo chiavi in mano, luogo,
+incentivo); (b) **progettare un impianto in dettaglio** (Fase 24). Entrambi
+devono poi alimentare la *stessa* analisi economica Monte Carlo. Senza
+un'entità unificante, l'offerta si "finge" scegliendo hardware a caso dal
+catalogo, e il design di dettaglio non ha dove vivere.
+
+**Deliverable**:
+
+- Tabella `plant_designs`: `name`, `design_level` (`essential` | `detailed`),
+  `data` (JSON), FK opzionali a inverter/pannello/batteria e ai profili
+  solare/clima del sito. Livello *essential*: `p_ac_kw`, `p_dc_kwp` (default
+  = `p_ac_kw`), `storage_kwh` opzionale, costo totale, incentivo, luogo.
+  Livello *detailed*: popolato dal designer (Fase 24) — stringhe, cavi,
+  protezioni, catena di perdite.
+- Resolver `plant_design → EnergySystemConfig` in `scenario_builder.py`:
+  da un design (di qualunque livello) deriva i parametri che il simulatore
+  già accetta. Per *essential* usa un pannello/inverter "generico"
+  parametrizzato dalla targa; per *detailed* applica la catena di derating
+  esplicita (rendimento inverter, perdite cavi DC, mismatch di default).
+- Lo scenario può referenziare `plant_design_id` in alternativa alla
+  definizione inline attuale (che resta valida — nessuna migrazione forzata).
+- Flusso UI "Analizza un'offerta": form a una pagina con i soli campi
+  essenziali + contesto economico → crea PlantDesign essential + scenario →
+  run → dashboard. Più offerte ricevute = lista di PlantDesign confrontati
+  in una campagna (ΔNPV, Δprobabilità di break-even fra offerte).
+
+**Out of scope ora**: il designer di dettaglio (Fase 24); migrazione degli
+scenari esistenti (restano inline); rinomine di navigazione (Fase 33).
+
+---
+
+## Fase 24 — Designer elettrico di dettaglio (dimensionamento stringhe, cavi, protezioni)
+
+**Problema**: il dimensionamento elettrico oggi vive in un Excel esterno
+(`Dimensionamento_FV.xlsx`): correzioni in temperatura di Voc/Vmp/Isc,
+range ammissibile di moduli per stringa, verifiche tensioni/correnti MPPT,
+margini di temperatura del design, fusibili di stringa (CEI EN 62548),
+perdite ohmiche dei cavi DC per sezione. Va portato *dentro* il software,
+dove può fare ciò che l'Excel dichiara esplicitamente fuori scope (foglio
+Note): clipping DC/AC valutato con simulazione oraria, derating termico con
+il clima stocastico del sito, perdite cavo integrate sull'anno. La Fase 16
+ha già `ElectricalModel` + specs opt-in: questa fase la completa e la
+promuove a strumento di progettazione.
+
+**Deliverable**:
+
+- **24a — Motore di calcolo** `simulation/electrical_design/`:
+  - `sizing.py` — correzioni in temperatura (Voc/Vmp a cella fredda, Vmp/Isc
+    a cella calda con ΔT da NOCT), N min/max moduli per stringa (vincoli
+    Vdc,max, Vmppt,min/max, V sistema modulo), verifiche tensioni di stringa
+    con margini, temperature ammissibili del design (T min per Voc, T max
+    per Vmppt,min) e margini rispetto al sito.
+  - `currents.py` — stringhe per MPPT (caso peggiore), verifica corrente
+    operativa (Imp corretta in T) e di cortocircuito (Isc) contro i limiti
+    per MPPT, Isc di progetto con fattore 1.25 per cavi/protezioni.
+  - `cables.py` — resistività rame a temperatura operativa, tabella perdite
+    per sezione (caduta V, %, W per stringa, kW totali, % su P_DC), sezione
+    minima che rispetta la soglia di perdita, vincolo portata Iz.
+  - `protections.py` — necessità protezione di stringa (≥3 stringhe in
+    parallelo, CEI EN 62548), finestra fusibile 1.5–2.4 × Isc STC, taglie
+    standard gPV, vincolo max series fuse del modulo.
+  - Tutto funzioni pure su dataclass (riusa/estende `PanelElectricalSpecs`
+    e `InverterElectricalSpecs` di Fase 16 con i campi mancanti: Imp, Isc,
+    coefficienti α/β/γ, V max sistema, max fusibile; inverter: I max
+    operativa/MPPT, Isc max/MPPT, stringhe per MPPT, range MPPT a pieno
+    carico). Test contro i valori dell'Excel di riferimento.
+- **24b — Database componenti**: estensione `specs` JSON di pannelli e
+  inverter con i campi sopra + degrado (Δ rendimento anno 1, degrado annuo —
+  già nel modello solare, va collegato alla scheda pannello); nuove tabelle
+  `cable_models` (marca, sezione mm², materiale, €/m, portata Iz) e
+  `protection_models` (tipo fusibile/magnetotermico/sezionatore/SPD, In,
+  V nominale, curva, prezzo). Seed con i componenti dell'Excel + taglie
+  standard. Migrazione additiva secondo CLAUDE.md §5.1.
+- **24c — Endpoint di valutazione** `POST /api/design/evaluate`: input
+  completo del design → *tutti* i valori derivati + esito verifiche
+  (OK/violazione con margine numerico) in una risposta, stateless e veloce:
+  è il motore della UI reattiva.
+- **24d — Pagina "Progettazione"**: foglio reattivo in stile spreadsheet —
+  celle input modificabili, celle derivate ricalcolate a ogni modifica via
+  `evaluate`, tendine vincolate dalle scelte (es. "moduli per stringa" offre
+  solo il range ammissibile calcolato; Tmin/Tmax sito proposte dai quantili
+  del profilo climatico del luogo invece che inserite a mano), pannello
+  verifiche con semafori e margini, tabella cavi per sezione con la
+  consigliata evidenziata. Salvataggio come PlantDesign *detailed* (Fase 23).
+- **24e — Aggancio al motore stocastico**: pulsante "produzione attesa" che
+  lancia una MC oraria rapida sul sito scelto → clipping DC/AC reale del
+  rapporto scelto, perdite cavo orarie ∝ I², energia annua con bande. È il
+  vantaggio competitivo rispetto al foglio Excel.
+
+**Out of scope ora**: comparatore fra design (Fase 25); relazione PDF
+(Fase 26); dimensionamento lato AC (cavo inverter–POC) — candidata
+estensione successiva; ombreggiamenti e mismatch dettagliati; moduli
+bifacciali.
+
+---
+
+## Fase 25 — Comparatore di design (analisi dei delta con valutazione MC)
+
+**Problema**: in fase di progetto le decisioni vere sono *comparative*:
+"se scelgo il cavo da 4 mm² invece che da 6, quanto risparmio oggi e quanto
+perdo all'anno? In quanto tempo brucio il risparmio?" — e lo stesso per
+inverter, pannelli, DC/AC ratio. L'Excel non può rispondere (serve la
+simulazione oraria); il software sì.
+
+**Deliverable**:
+
+- Assi di confronto supportati (ognuno = duplica design + varia un campo):
+  - **sezione cavo** — Δcapex (€/m × lunghezza) vs Δperdite annue (kWh →
+    € con il modello prezzo) → tempo di ripayback del delta;
+  - **inverter a parità di P_AC** — Δrendimento, Δprezzo, robustezza
+    (margini di temperatura e MPPT del design risultante) → confronto
+    *globale* design-vs-design, non solo scheda-vs-scheda;
+  - **modello pannello** (es. 505 vs 510 Wp) — granularità potenza totale,
+    Δcosto, stesso layout;
+  - **N moduli per stringa** entro il range — margini V vs correnti;
+  - **rapporto DC/AC** — Δclipping (solo via MC oraria) vs Δcosto moduli;
+  - **taglia accumulo** — riusa la campagna esistente.
+- Vista side-by-side di 2+ design: tabella delta (capex, kWh/anno attesi
+  con bande, ΔNPV con distribuzione, payback del delta) + verdetto sintetico.
+- Backend: riuso dell'optimizer/campagne dove possibile (un confronto è una
+  mini-campagna su lista esplicita di PlantDesign); KPI di delta dedicati.
+
+**Out of scope ora**: ottimizzazione automatica multi-asse simultanea
+(esplosione combinatoria — la campagna esistente già copre le griglie);
+frontiere di Pareto.
+
+---
+
+## Fase 26 — Relazione tecnica di progetto in PDF
+
+**Problema**: l'output di un design professionale deve essere una specifica
+completa e stampabile. Nota normativa: la **CEI 0-21** è la regola tecnica
+di *connessione* alla rete BT; il dimensionamento dell'array è governato da
+**CEI EN 62548** (requisiti di progetto array FV), **CEI 64-8** (impianti
+elettrici utilizzatori) e guida **CEI 82-25** (realizzazione sistemi FV).
+La relazione deve citare le norme giuste nelle sezioni giuste.
+
+**Deliverable**:
+
+- Template di relazione tecnica generata da un PlantDesign *detailed*:
+  dati di progetto e sito, componenti selezionati con specifiche, calcoli
+  di stringa (formule, valori corretti in temperatura, margini), verifiche
+  con esito, dimensionamento cavi e protezioni con riferimenti normativi,
+  produzione attesa con bande dalla MC (se calcolata), ipotesi e limiti
+  (l'equivalente del foglio "Note").
+- Generazione server-side riusando la pipeline export PDF di Fase 11;
+  endpoint `GET /api/designs/{id}/report.pdf`.
+- Pulsante nella pagina Progettazione e nella scheda del design salvato.
+
+**Out of scope ora**: schema unifilare disegnato (CAD); generazione
+automatica di pratiche GSE/distributore; firma digitale.
+
+---
+
+## Fase 27 — Il sito come entità: `LocationModel` + robustezza PVGIS/geocoding
+
+**Problema**: bug osservati sul campo — il profilo PVGIS scaricato non
+sempre risulta salvato, il salvataggio degli indirizzi non sempre funziona
+e non sempre l'indirizzo "porta con sé" il suo profilo PVGIS. La causa è
+strutturale: non esiste una tabella dei luoghi; il "sito" è una stringa
+`location_name` duplicata su solar profile e climate profile, e il download
+è un endpoint fire-and-forget senza transazionalità né feedback d'errore.
+
+**Deliverable**:
+
+- Tabella `locations`: indirizzo testuale, display name, lat/lon, quota;
+  FK `location_id` (nullable) su `solar_profiles` e `climate_profiles`.
+- Flusso unico "Aggiungi sito": geocoding → fetch PVGIS + Open-Meteo →
+  salvataggio **transazionale** di luogo + profili collegati, con errori
+  espliciti all'utente (niente fallback silenziosi, CLAUDE.md §6) e stato
+  visibile (scaricato il / da aggiornare / errore con motivo).
+- Riproduzione e fix dei bug attuali di salvataggio (test di regressione
+  sul flusso geocode→download→persist, inclusi i casi di rete che fallisce
+  a metà).
+- `LocationsManager` aggiornato: per ogni sito mostra i profili collegati
+  e permette di (ri)scaricare quelli mancanti.
+
+**Out of scope ora**: refresh schedulato automatico dei profili; cache
+offline dei tile mappa.
+
+---
+
+## Fase 28 — Validazione del modello climatico sugli estremi osservati
+
+**Problema**: a Pavullo l'estate scorsa ha toccato punte di 41 °C; il
+modello stocastico calibrato non sembra riprodurle. Cause candidate da
+verificare: la calibrazione su 30 anni diluisce il riscaldamento dell'ultimo
+decennio; `climate_trend_c_per_year` di default a 0; soglia/fit della coda
+GPD; il profilo diurno sinusoidale che smussa i picchi orari.
+
+**Deliverable**:
+
+- Harness di backtest in `thermal_calibration.py`: confronto della
+  distribuzione dei **massimi annui** simulati vs osservati (ultimi 5–10
+  anni dall'archivio Open-Meteo), QQ-plot delle code, copertura dei
+  percentili estremi. Test statistici con tolleranze esplicite.
+- Correzioni di calibrazione guidate dai risultati: finestra pesata verso
+  gli anni recenti *oppure* detrend + trend attivo di default; revisione
+  della soglia POT e del fit GPD per la coda calda.
+- Pannello diagnostico nella UI clima: "max annuo simulato (bande) vs
+  osservato" per il sito, così l'utente vede subito se il modello è
+  credibile per il suo luogo.
+
+**Out of scope ora**: downscaling regionale, scenari climatici IPCC,
+correlazione spaziale fra siti.
+
+---
+
+## Fase 29 — Schede prodotto nel Database (curve e dettagli per componente)
+
+**Problema**: la sezione Database apre solo form di editing. Aprendo un
+prodotto l'utente vuole una **scheda dedicata**: per un pannello, le curve
+generate dal modello elettrico interno (`PVModelSingleDiode` esiste già ed
+è inutilizzato dal flusso principale); per un inverter, la finestra MPPT e
+i limiti; per una batteria, la curva di degrado.
+
+**Deliverable**:
+
+- Pagina di dettaglio per **pannello**: curve I-V e P-V a più irraggiamenti
+  (200/400/600/800/1000 W/m²) e temperature (-10/25/45/70 °C) via
+  `PVModelSingleDiode`, punto MPP evidenziato, parametri di targa e
+  coefficienti termici. Endpoint preview dedicato (calcolo on-demand).
+- Dettaglio **inverter**: diagramma finestra di funzionamento (Vdc,max,
+  range MPPT, range a pieno carico), limiti di corrente per MPPT, curva di
+  rendimento se nota.
+- Dettaglio **batteria**: curva SoH vs anni/cicli dal modello di degrado,
+  capacità utile, specifiche.
+- Dettaglio **cavo** (dopo Fase 24b): perdite vs corrente a varie lunghezze.
+- Pattern UI già rodato dalla pagina di dettaglio dei profili di carico
+  (Fase 21c): click sull'elemento → scheda con grafici + edit.
+
+**Out of scope ora**: import automatico da datasheet PDF; confronto
+multi-prodotto nella stessa scheda (lo fa il comparatore di design, Fase 25).
+
+---
+
+## Fase 30 — Vettori energetici, sorgenti di calore, casa multi-zona (modello dati)
+
+**Problema**: il termico oggi è mono-zona con sola pompa di calore
+elettrica. La realtà di una seconda casa è: più stanze con profili di
+utilizzo diversi, più sorgenti (stufa a pellet, caldaia gas, pompa di
+calore, resistenze) che lavorano insieme o in alternativa, e combustibili
+con prezzi e fornitori propri. Serve il modello dati prima del motore.
+
+**Deliverable**:
+
+- **`EnergyCarrier`** (electricity, natural_gas, pellet, wood): unità
+  naturale (kWh, Smc, kg/sacco), potere calorifico per la conversione a
+  €/kWh termico. Il prezzo di ogni carrier usa il **framework prezzi
+  esistente** (Escalating/GBM/MeanReverting): il pellet si modella come il
+  gas — un processo stocastico per il prezzo all'ingrosso del vettore. I
+  `price_profiles` acquisiscono un campo `carrier` (default electricity,
+  retro-compatibile).
+- **`FuelSupplier`** (per pellet/legna): nome, formato di vendita (€/sacco
+  15 kg, €/ton), PCI dichiarato kWh/kg, qualità/umidità → €/kWh termico
+  effettivo. Il confronto fornitori è una **tabella derivata deterministica**
+  (chi costa meno per kWh utile), sovrapposta al processo stocastico del
+  carrier: il processo muove il mercato, il fornitore è un offset.
+**Decisione utente (2026-06-10)**: tutte le entità nuove (carriers,
+fornitori, sorgenti, stufe) vivono come **tabelle DB**; i JSON in
+`seed_data/` servono solo come default per il primo avvio (seeding del
+database), mai come fonte di verità a runtime.
+
+- **`HeatSource`** (catalogo DB + istanze nella config casa): pompa di
+  calore (COP curve — già esiste), stufa a pellet (potenza nominale,
+  rendimento, modulazione minima, carrier pellet, stanze servite), caldaia
+  gas (rendimento, modulazione), resistenza elettrica. Seed con default
+  realistici (stufe 6–12 kW, caldaie 24 kW).
+- **`Room`/zona**: superficie, quota di UA (o UA proprio), guadagni interni,
+  setpoint schedule, profilo di occupazione orario, sorgenti che la servono.
+  Prima iterazione: zone termicamente indipendenti che si ripartiscono
+  l'involucro (niente accoppiamento inter-zona).
+- Estensione della config termica a `zones[]` + `heat_sources[]` con
+  validazione; il caso a 1 zona + 1 pompa di calore resta il default e
+  produce risultati identici a oggi (retro-compatibilità testata).
+- Motore minimo: dispatch a **priorità fissa** per zona (per validare il
+  modello dati end-to-end). Strategie intelligenti in Fase 31.
+
+**Out of scope ora**: ottimizzazione delle strategie (Fase 31); scambio
+termico fra stanze; acqua calda sanitaria; inerzia della stufa (accensione
+/spegnimento istantanei in prima battuta).
+
+---
+
+## Fase 31 — Dispatch termico multi-sorgente + laboratorio di ottimizzazione
+
+**Problema**: con più sorgenti e più stanze la domanda diventa "quale
+strategia di utilizzo minimizza il costo a parità di comfort?" — pellet
+sempre, pompa di calore sempre, o ibrido in funzione della temperatura
+esterna e dei prezzi correnti?
+
+**Deliverable**:
+
+- Strategie di dispatch confrontabili: priorità fissa; soglia di T esterna
+  (PdC sopra X °C dove il COP regge, pellet sotto); **cost-aware** (a ogni
+  ora sceglie la sorgente col minimo €/kWh termico effettivo dato COP(T_out)
+  e prezzi correnti dei carrier); comfort-first (minimizza le ore fuori
+  setpoint, costo secondario).
+- KPI per strategia su N path MC: costo stagionale per vettore (con bande),
+  kWh erogati per sorgente, ore di discomfort per stanza, kg di pellet /
+  Smc di gas consumati (per il dimensionamento scorte).
+- Estensione del Laboratorio termico: definisci casa multi-zona + sorgenti
+  → confronta strategie fianco a fianco → grafico "frontiera costo-comfort"
+  e raccomandazione.
+- Confronto fornitori pellet integrato: la strategia vincente valutata con
+  ogni fornitore → "con il fornitore B risparmi X €/stagione".
+
+**Out of scope ora**: controllo ottimo formale (MPC/programmazione lineare);
+demand response sui prezzi orari; apprendimento di abitudini.
+
+---
+
+## Fase 32 — Carico: tre livelli di ingresso attorno al calendario di presenza
+
+**Problema**: la sezione carico è potente ma confusa — troppe leve senza
+una narrazione. Il caso d'uso primario (seconda casa) ruota attorno a un
+concetto oggi poco visibile: **quando si è in casa e quando no**. E manca
+l'estremo opposto: "ho due numeri presi dalla bolletta, fammi un'analisi
+veloce".
+
+**Deliverable**:
+
+- **Calendario di presenza di prima classe**: editor visuale sui 12 mesi
+  (pattern per mese: weekend sì/no, settimane intere, probabilità di
+  visita), con timeline grafica della presenza *simulata* (sample path +
+  bande) così l'utente vede subito cosa sta dichiarando. Il calendario è la
+  spina dorsale del profilo home/away esistente, non un modello nuovo.
+- **Tre livelli di ingresso** sulla stessa pagina di dettaglio profilo:
+  1. **Bolletta** — kWh annui (o per bimestre) + tipo di casa → fit
+     automatico: scala la baseline ARERA e stima lo split casa/via dal
+     calendario. Due numeri, un grafico, fine.
+  2. **Guidato** — calendario di presenza + elettrodomestici da preset +
+     variabilità con slider. Grafici live a ogni modifica.
+  3. **Esperto** — tutta la flessibilità attuale (pattern orari, blocchi
+     stochastic/appliances/thermal espliciti).
+  Un livello superiore *vede* cosa hanno prodotto i livelli inferiori
+  (il fit da bolletta produce un profilo guidato ispezionabile).
+- Visualizzazioni trasversali (riuso dell'endpoint preview di Fase 21b):
+  settimana tipo per mese con bande, heatmap presenza 12×24, kWh/anno con
+  split casa/via e per elettrodomestico.
+- Step Carico del wizard semplificato di conseguenza: scegli un profilo
+  (con anteprima) o crea al volo col livello Bolletta.
+
+**Out of scope ora**: import CSV da smart meter / curve di carico reali
+(fase futura naturale); disaggregazione dei consumi (NILM).
+
+---
+
+## Fase 33 — Navigazione per intenti d'uso
+
+**Problema**: la navigazione attuale è organizzata per *strumenti*
+(Scenario, Campagna, Database, Lab...) mentre l'utente arriva con un
+*intento*: "ho ricevuto un'offerta", "voglio progettare", "voglio capire il
+riscaldamento", "quanto consumo?". Con le fasi 23–32 gli strumenti ci sono
+tutti; serve la facciata.
+
+**Deliverable**:
+
+- Home "Progetti": elenco dei PlantDesign e delle analisi recenti + tre
+  ingressi chiari — **Analizza un'offerta** (Fase 23), **Progetta un
+  impianto** (Fase 24), **Studio termico** (Fase 31). Il wizard economico
+  diventa il passo finale comune ("valuta questo impianto").
+- Riorganizzazione della navbar: Progetti / Progettazione / Analisi /
+  Laboratori (Termico, Mercato) / Database.
+- Percorsi di continuità: da un'offerta analizzata → "raffina nel designer";
+  da un design → "valuta economicamente"; da un confronto → "salva come
+  scenario".
+- Glossario aggiornato in `CLAUDE.md` (Impianto/Design, Offerta, Sito).
+
+**Out of scope ora**: onboarding/tutorial; multi-utente.
+
+---
+
 ## Dipendenze fra fasi
 
 ```
@@ -1341,6 +1720,35 @@ per clima e solare), la 15 è il prerequisito comune di 16 e 17, la
 17-bis estende la 17 con il modello a eventi per chi vuole valutare
 strategie di scheduling intelligente (auto EV su PV, smart timer).
 
+### Macro-arco 23–33 (designer, termico modulare, carico, UX — pianificato 2026-06-10)
+
+```
+Fase 23 (entità Impianto + analisi offerta)
+   │
+   ├─→ Fase 24 (designer elettrico) ─→ Fase 25 (comparatore) ─→ Fase 26 (PDF)
+   │            ▲
+   │            └── estende Fase 16 (specs elettriche opt-in)
+   │
+Fase 27 (LocationModel + fix PVGIS)   ── indipendente, sblocca robustezza per 24d
+Fase 28 (validazione estremi clima)   ── indipendente, rafforza 15/17/24
+Fase 29 (schede prodotto Database)    ── indipendente (24b arricchisce la scheda cavi)
+
+Fase 30 (carriers + sorgenti + zone) ─→ Fase 31 (dispatch + lab ottimizzazione)
+              ▲
+              └── estende Fase 17/18 (HVAC + RC dinamica)
+
+Fase 32 (carico a tre livelli) ── estende Fase 21 (profilo-personalità)
+
+Fase 33 (navigazione per intenti) ◄── richiede 23, beneficia di tutte
+```
+
+Sequenza consigliata: **27 → 28 (bug fix e fiducia nei dati) → 23 → 24 →
+25 → 29 ∥ 26 → 32 → 30 → 31 → 33**. La 27 e la 28 sono piccole e
+ripagano subito (dati del sito affidabili sono il prerequisito di ogni
+design serio); la 23 è la fondazione architetturale di tutto l'arco; la
+24 è il pezzo grosso e va affettata (24a–24e già slice indipendenti); la
+33 va per ultima perché ridisegna la facciata su strumenti ormai stabili.
+
 ## Stato
 
 > Questo è il *log vivente* dell'evoluzione del progetto. Aggiornare
@@ -1350,9 +1758,51 @@ strategie di scheduling intelligente (auto EV su PV, smart timer).
 
 ### 🚧 In corso
 
-_Nessuna fase attualmente in corso._
+_Nessuna fase attualmente in corso._ Prossima della sequenza confermata
+(27 → 28 → 23 → 24 → 25 → 29 ∥ 26 → 32 → 30 → 31 → 33): **Fase 28**.
 
 ### ✅ Completate
+
+**Fase 27 — Il sito come entità: LocationModel + robustezza PVGIS/geocoding**
+— chiusa 2026-06-10 (suite 621 test backend verde nel container; build
+frontend OK; verificata end-to-end nel browser con download PVGIS/Open-Meteo
+reali su Pavullo, incluso delete a cascata e re-import upsert).
+
+- **Backend**: tabella `locations` (`LocationModel`: name uk, address,
+  display_name, lat/lon, quota) + FK nullable `location_id` su
+  `solar_profiles` e `climate_profiles` (migrazione lightweight in
+  `init_db`). `LocationRepository` con `persist_import` — **una sola
+  transazione** per luogo + profili; tutta la rete (PVGIS, Open-Meteo
+  normals, archivio + calibrazione) viene eseguita *prima* di qualunque
+  scrittura, quindi niente stati a metà. Router `/api/locations`:
+  `GET` (lista con summary dei profili collegati e `updated_at`),
+  `POST /import` (upsert per nome: location sempre salvata, profili solo
+  se il loro fetch è riuscito, errori espliciti per componente in
+  `solar_error`/`climate_error` — risolve i bug "profilo scaricato ma non
+  salvato" e "indirizzo non salvato"), `PUT` (rinomina con check
+  conflitti), `DELETE` (detach di default, `?delete_profiles=true` per
+  la cascata). Un profilo legacy omonimo viene **adottato** dal luogo al
+  primo re-import (percorso di migrazione). Rimossi gli endpoint
+  `from_location` a due chiamate (call site aggiornati, niente shim).
+- **Frontend**: `LocationsManager` riscritto attorno alle posizioni —
+  card per sito con badge di stato per componente ("Solare · agg. data ·
+  tilt", "Clima · finestra archivio") e azioni scarica/aggiorna ↻;
+  sezione "Profili non collegati a una posizione" per i record legacy;
+  add-flow a chiamata unica con avvisi espliciti su successi parziali.
+  Wizard step Luogo: le due chiamate sequenziali sostituite da
+  `POST /api/locations/import` (stessa UX, niente più 409 sul nome,
+  niente più metà-salvataggi).
+- **Test**: `tests/test_api_locations.py` (12 test: happy path collegato,
+  upsert su re-import, adozione profilo legacy, outage PVGIS → location
+  salvata + errore esplicito + nessuna riga solare, outage archivio →
+  solare salvato + errore clima, solo-indirizzo, lista con summary,
+  rename/conflitto, delete detach/cascata); stub condivisi estratti in
+  `tests/_external_stubs.py`; `test_api_external.py` aggiornato al nuovo
+  flusso di creazione.
+- **Incidente riparato strada facendo**: `frontend/src/lib/marketCharts.js`
+  (estratto in Fase 22) non era mai stato committato e la build frontend
+  di `main` era rotta — ricostruito dalla history git (versione inline
+  pre-refactor in `ElectricityMarket.svelte`) e verificato con build verde.
 
 **Fase 21 — Profilo di carico come personalità di consumo completa + pagina di
 dettaglio** — chiusa 2026-06-02 (tutte le slice 21a–21d; suite 615 test backend
@@ -1514,7 +1964,7 @@ Consegnato:
   p05–p95 in tabella; colonna risc./raffr.; selettore stagione per l'anteprima
   oraria. Verificato live: GBM allarga la banda di costo, split mostrato,
   selettore stagione ricarica la serie, export PDF/Excel 200.
-- **Test** `tests/test_phase19_thermal_lab.py`: +11 (price coupling, split,
+- **Test** `tests/test_thermal_lab.py`: +11 (price coupling, split,
   finestra stagionale, endpoint con blocco prezzo). Totale 40 nel file, 482
   nell'intera suite.
 
@@ -1550,7 +2000,7 @@ fondazione backend, UI Svelte, export report Excel/PDF.
   `ClimateProfileModel` (Fase 15) via `persistence.climate.load_thermal_model`.
   404 su profilo mancante, 400 su invarianti di dominio violate. Setpoint
   `±inf` (ore away senza setback) serializzati come `null`.
-- **Test** `tests/test_phase19_thermal_lab.py` (24 test): schedule byte-identico
+- **Test** `tests/test_thermal_lab.py` (24 test): schedule byte-identico
   vs scalare, night-setback riduce energia, validazione lunghezza/dead-band,
   monotonia energia vs isolamento, costo = kWh×prezzo, riproducibilità da seed,
   drift sotto setpoint con pompa sottodimensionata in dinamico, giorni più
@@ -1609,7 +2059,7 @@ Consegnato:
   `summary["thermal"]` senza modifiche di schema API (verificato end-to-end).
 - **`simulation/energy_simulator.py`**: cache `last_indoor_temp_c` della serie
   oraria di T interna (per il futuro preview della Fase 19).
-- **`tests/test_phase17_stochastic_load_and_hvac.py`**: nuova classe
+- **`tests/test_stochastic_load_and_hvac.py`**: nuova classe
   `TestPhase18DynamicRc` (8 test: invariante con steady-state, energia annua entro
   pochi %, drift sotto setpoint per casa `poor` sottodimensionata, stabilità a
   costante di tempo corta, dead-band, guadagni interni, aggregazione worst-case).
@@ -1709,7 +2159,7 @@ Consegnato:
   - `buildPayload` aggiunge `load_profile.appliances.{enabled,
     smart_pv, items[]}` solo quando il toggle è attivo e almeno un
     item è selezionato.
-- **Test** (`tests/test_phase17bis_appliances.py`): **32 nuovi test**:
+- **Test** (`tests/test_appliances.py`): **32 nuovi test**:
   - `TestPhase17bisApplianceEventValidation` (5): negative p_kw,
     duration_hours zero, monthly_frequency wrong length, allowed_hour
     out of range, expected_kwh_annual formula.
@@ -1837,7 +2287,7 @@ Consegnato:
   - `buildPayload` aggiunge `scenarioClone.load_profile.stochastic` e
     `scenarioClone.thermal_load` solo quando i rispettivi toggle sono
     attivi; `climate_profile_id` propagato automaticamente.
-- **Test** (`tests/test_phase17_stochastic_load_and_hvac.py`): **27 nuovi
+- **Test** (`tests/test_stochastic_load_and_hvac.py`): **27 nuovi
   test**:
   - `TestPhase17StochasticPathStats` (4): mean ≈ 1, marginal std(log) ≈
     sigma_log, lag-1 ≈ phi (200k samples ciascuno), zero sigma → unity.
@@ -2339,8 +2789,8 @@ Consegnato:
   `libpango-1.0-0 libpangoft2-1.0-0 libcairo2 libgdk-pixbuf-2.0-0
   libffi-dev shared-mime-info fonts-dejavu-core`.
 - 26 nuovi test (`tests/test_inflation_config.py`,
-  `tests/test_tax_bonus.py`, `tests/test_phase11_scenario_round_trip.py`,
-  `tests/test_phase11_payload.py`, `tests/test_phase11_export.py`). Suite
+  `tests/test_tax_bonus.py`, `tests/test_scenario_round_trip.py`,
+  `tests/test_analysis_payload.py`, `tests/test_report_export.py`). Suite
   completa: 225/225 verde.
 
 **Fase 6 — Riorganizzazione UI come wizard** — chiusa 2026-05-27.
@@ -2644,4 +3094,20 @@ Aggiunte 2026-05-27 dopo prima sessione di prova manuale dell'app:
 - [ ] Fase 9-bis — UI toggle simplified/advanced sizing nel CampaignBuilder
       (slider overcapacity, gated dietro un toggle per non confondere chi
       vuole il default semplice) — backend già pronto da Fase 9.
+
+Aggiunte 2026-06-10 — macro-arco pianificato dall'integrazione del foglio
+`Dimensionamento_FV.xlsx` e dal ripensamento dei flussi d'uso (dettagli
+nelle fasi 23–33):
+
+- [ ] Fase 23 — Entità "Impianto" (PlantDesign) + flusso "Analizza un'offerta"
+- [ ] Fase 24 — Designer elettrico di dettaglio (stringhe, cavi, protezioni)
+- [ ] Fase 25 — Comparatore di design (delta con valutazione MC)
+- [ ] Fase 26 — Relazione tecnica di progetto in PDF
+- [x] Fase 27 — Il sito come entità: LocationModel + robustezza PVGIS (✅ 2026-06-10)
+- [ ] Fase 28 — Validazione del modello climatico sugli estremi osservati
+- [ ] Fase 29 — Schede prodotto nel Database (curve per componente)
+- [ ] Fase 30 — Vettori energetici, sorgenti di calore, casa multi-zona
+- [ ] Fase 31 — Dispatch termico multi-sorgente + lab di ottimizzazione
+- [ ] Fase 32 — Carico: tre livelli di ingresso attorno al calendario di presenza
+- [ ] Fase 33 — Navigazione per intenti d'uso
 

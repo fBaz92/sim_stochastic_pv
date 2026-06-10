@@ -222,6 +222,70 @@ class BatteryModel(Base, TimestampMixin):
     scenarios = relationship("ScenarioRecord", back_populates="battery")
 
 
+class LocationModel(Base, TimestampMixin):
+    """
+    Database model for installation sites (geographic locations).
+
+    A location is the durable anchor of every site-specific dataset: the
+    solar production profile (PVGIS), the calibrated stochastic climate
+    profile (Open-Meteo), and — in future — plant designs. Before this
+    table existed, the "site" was a free-text ``location_name`` string
+    duplicated on each profile, which made the address ↔ profile pairing
+    fragile (renaming one side silently orphaned the other) and gave the
+    import flow no transactional unit to anchor to.
+
+    Attributes:
+        id: Primary key (auto-increment).
+        name: Unique short identifier chosen by the user (e.g. ``"Pavullo"``).
+            Used as the upsert key and propagated as the default name of the
+            linked solar/climate profiles.
+        address: Free-text query as typed by the user in the geocoding
+            search box (e.g. ``"via Giardini 5, Pavullo"``). Optional —
+            map-only picks have no typed address.
+        display_name: Canonical human-readable address returned by the
+            geocoder (Nominatim ``display_name``). Optional.
+        latitude: Decimal latitude in degrees (-90 to +90).
+        longitude: Decimal longitude in degrees (-180 to +180).
+        elevation_m: Elevation above sea level in metres, when known
+            (PVGIS or Open-Meteo gridcell value). Optional.
+        notes: Free-text user notes about the site.
+
+    Example:
+        ```python
+        site = LocationModel(
+            name="Pavullo",
+            address="Pavullo nel Frignano",
+            display_name="Pavullo nel Frignano, Modena, Emilia-Romagna, Italia",
+            latitude=44.336,
+            longitude=10.831,
+            elevation_m=682.0,
+        )
+        ```
+
+    Notes:
+        - ``name`` is the unique upsert key (same convention as profiles).
+        - Linked from ``SolarProfileModel.location_id`` and
+          ``ClimateProfileModel.location_id`` (nullable FKs): one location
+          can own several solar profiles (e.g. different tilt/azimuth
+          variants) but typically owns exactly one of each.
+        - Deleting a location detaches its profiles by default (FK set to
+          NULL); hard-deleting the profiles too is an explicit caller choice.
+    """
+
+    __tablename__ = "locations"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), unique=True, nullable=False, index=True)
+
+    address = Column(String(500), nullable=True)
+    display_name = Column(String(500), nullable=True)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    elevation_m = Column(Float, nullable=True)
+
+    notes = Column(Text, nullable=True)
+
+
 class SolarProfileModel(Base, TimestampMixin):
     """
     Database model for solar irradiance profiles by geographic location.
@@ -295,6 +359,9 @@ class SolarProfileModel(Base, TimestampMixin):
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
     elevation_m = Column(Float, nullable=True)
+    # Owning site, when the profile was imported through the unified
+    # "add location" flow. NULL on legacy/hand-crafted rows.
+    location_id = Column(Integer, ForeignKey("locations.id"), nullable=True)
 
     # Optimal orientation for this location
     optimal_tilt_degrees = Column(Float, nullable=False)
@@ -372,6 +439,9 @@ class ClimateProfileModel(Base, TimestampMixin):
     longitude = Column(Float, nullable=False)
     elevation_m = Column(Float, nullable=True)
     source = Column(String(255), nullable=True)
+    # Owning site, when the profile was calibrated through the unified
+    # "add location" flow. NULL on legacy/hand-crafted rows.
+    location_id = Column(Integer, ForeignKey("locations.id"), nullable=True)
 
     # Calibrated model payload
     harmonic = Column(JSON, nullable=False)            # {a0, a1, a2}

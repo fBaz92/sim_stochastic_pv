@@ -7,9 +7,10 @@ These schemas cover the API surface introduced to support the wizard
 - ``POST /api/external/geocode``: forward-geocoding via Nominatim;
 - ``GET  /api/external/climate-normals``: read-only monthly climate
   normals via Open-Meteo (preview for the Luogo step);
-- ``POST /api/profiles/solar/from_location``: orchestrates a PVGIS
-  fetch + an Open-Meteo cloud-cover lookup to create a
-  ``SolarProfileModel`` in one shot.
+- climate-profile management (response/update/preview schemas).
+
+Profile creation from external data goes through the unified
+location-import flow — see :mod:`..schemas.locations`.
 """
 
 from __future__ import annotations
@@ -116,108 +117,8 @@ class ClimateNormalsResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Solar profile from location
-# ---------------------------------------------------------------------------
-
-
-class SolarProfileFromLocationRequest(BaseModel):
-    """
-    Request to build a ``SolarProfileModel`` from PVGIS + Open-Meteo data.
-
-    The backend resolves PVGIS' monthly PV energy yields for the
-    ``(latitude, longitude, tilt, azimuth, loss)`` combination and uses
-    Open-Meteo cloud-cover normals to seed ``p_sunny[m]``. The other
-    weather-Markov parameters (``sunny_factor``, ``cloudy_factor``,
-    ``weather_persistence``) get sensible defaults that the user can later
-    edit through the standard profile editor.
-
-    Attributes:
-        name: Unique short identifier under which the profile is stored
-            (e.g. ``"Pavullo"``). If a profile with the same name exists,
-            the endpoint refuses to overwrite by default and returns 409
-            Conflict; use the ``overwrite`` flag to upsert.
-        location_name: Human-readable description, typically populated
-            from the Nominatim ``display_name`` of the chosen candidate.
-        latitude: Decimal latitude.
-        longitude: Decimal longitude.
-        tilt_degrees: Panel tilt to be used by PVGIS (0–90).
-        azimuth_degrees: Panel azimuth in compass convention
-            (0=N, 90=E, 180=S, 270=W). Internally converted to PVGIS' aspect.
-        loss_pct: System loss percentage assumed by PVGIS. Defaults to 14.
-        lookback_years: Open-Meteo aggregation window in years. Defaults
-            to 10.
-        overwrite: When ``True``, upsert the profile by ``name`` if it
-            already exists. Default ``False`` → conflict on collision.
-    """
-
-    model_config = ConfigDict(json_schema_extra={
-        "examples": [{
-            "name": "Pavullo",
-            "location_name": "Pavullo nel Frignano, Modena, Italia",
-            "latitude": 44.336,
-            "longitude": 10.831,
-            "tilt_degrees": 35.0,
-            "azimuth_degrees": 180.0,
-            "loss_pct": 14.0,
-            "lookback_years": 10,
-            "overwrite": False,
-        }]
-    })
-
-    name: Annotated[str, Field(min_length=1, max_length=100)]
-    location_name: Annotated[str, Field(min_length=1, max_length=255)]
-    latitude: Annotated[float, Field(ge=-90.0, le=90.0)]
-    longitude: Annotated[float, Field(ge=-180.0, le=180.0)]
-    tilt_degrees: Annotated[float, Field(ge=0.0, le=90.0)] = 35.0
-    azimuth_degrees: Annotated[float, Field(ge=0.0, le=360.0)] = 180.0
-    loss_pct: Annotated[float, Field(ge=0.0, le=100.0)] = 14.0
-    lookback_years: Annotated[int, Field(ge=1, le=30)] = 10
-    overwrite: bool = False
-
-
-# ---------------------------------------------------------------------------
 # Climate profile (Phase 15 — thermal model)
 # ---------------------------------------------------------------------------
-
-
-class ClimateProfileFromLocationRequest(BaseModel):
-    """
-    Request to build a :class:`ClimateProfileModel` from Open-Meteo data
-    by fitting a :class:`ThermalModel` to the last ``lookback_years`` of
-    daily archive at ``(latitude, longitude)``.
-
-    Attributes:
-        name: Unique short identifier.
-        location_name: Human-readable description.
-        latitude: Decimal latitude.
-        longitude: Decimal longitude.
-        lookback_years: Archive window used for calibration (default 10).
-        climate_trend_c_per_year: Linear trend to bake into the resulting
-            model (°C/year, default 0). Phase 15 does not auto-detect a
-            trend from the data — the user opts in explicitly.
-        overwrite: Upsert if a profile with the same name exists; default
-            ``False`` returns 409 instead.
-    """
-
-    model_config = ConfigDict(json_schema_extra={
-        "examples": [{
-            "name": "Pavullo_climate",
-            "location_name": "Pavullo nel Frignano, Modena, Italia",
-            "latitude": 44.336,
-            "longitude": 10.831,
-            "lookback_years": 10,
-            "climate_trend_c_per_year": 0.0,
-            "overwrite": False,
-        }]
-    })
-
-    name: Annotated[str, Field(min_length=1, max_length=100)]
-    location_name: Annotated[str, Field(min_length=1, max_length=255)]
-    latitude: Annotated[float, Field(ge=-90.0, le=90.0)]
-    longitude: Annotated[float, Field(ge=-180.0, le=180.0)]
-    lookback_years: Annotated[int, Field(ge=1, le=30)] = 10
-    climate_trend_c_per_year: Annotated[float, Field(ge=-0.5, le=0.5)] = 0.0
-    overwrite: bool = False
 
 
 class ClimateProfileResponse(BaseModel):
@@ -230,6 +131,8 @@ class ClimateProfileResponse(BaseModel):
     in ``notes`` for now.
     """
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
     location_name: str
@@ -237,6 +140,7 @@ class ClimateProfileResponse(BaseModel):
     longitude: float
     elevation_m: float | None = None
     source: str | None = None
+    location_id: int | None = None
     harmonic: dict
     monthly_params: list[dict]
     climate_trend_c_per_year: float

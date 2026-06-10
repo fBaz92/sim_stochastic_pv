@@ -94,9 +94,7 @@ export const api = {
         request(`/profiles/solar/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     deleteSolarProfile: (id) => request(`/profiles/solar/${id}`, { method: 'DELETE' }),
 
-    // Phase 14 — external geolocation, climate normals, and one-shot import
-    // of a solar profile from a (lat, lon, tilt, azimuth) combo via
-    // PVGIS + Open-Meteo on the backend.
+    // External geolocation + climate normals (read-only previews).
     async geocode(query, { limit = 5, accept_language = 'it,en' } = {}) {
         return request('/external/geocode', {
             method: 'POST',
@@ -107,25 +105,23 @@ export const api = {
         const q = new URLSearchParams({ lat, lon, lookback_years }).toString();
         return request(`/external/climate-normals?${q}`);
     },
-    async createSolarProfileFromLocation(payload) {
-        return request('/profiles/solar/from_location', {
-            method: 'POST',
-            body: JSON.stringify(payload),
-        });
-    },
 
-    // Phase 15 — stochastic thermal profile (ClimateProfileModel).
-    // The from_location endpoint fits a ThermalModel from 10 years of
-    // Open-Meteo daily archive (seasonal harmonic + AR(1) residuals +
-    // GPD tails for heatwaves/coldsnaps).
+    // ── Locations (installation sites) ───────────────────────────────────
+    // A location anchors the solar + climate profiles of a site. The
+    // import endpoint saves the address and downloads PVGIS / Open-Meteo
+    // data in one shot; failures are reported per-component in the
+    // response (solar_error / climate_error), never silently.
+    listLocations: () => request('/locations'),
+    importLocation: (payload) =>
+        request('/locations/import', { method: 'POST', body: JSON.stringify(payload) }),
+    updateLocation: (id, data) =>
+        request(`/locations/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteLocation: (id, { deleteProfiles = false } = {}) =>
+        request(`/locations/${id}?delete_profiles=${deleteProfiles}`, { method: 'DELETE' }),
+
+    // Stochastic thermal profiles (ClimateProfileModel) management.
     async listClimateProfiles() {
         return request('/profiles/climate');
-    },
-    async createClimateProfileFromLocation(payload) {
-        return request('/profiles/climate/from_location', {
-            method: 'POST',
-            body: JSON.stringify(payload),
-        });
     },
     async previewClimateProfileById(id, { n_paths = 50, n_years = 1, seed = 42 } = {}) {
         const q = new URLSearchParams({ n_paths, n_years, seed }).toString();

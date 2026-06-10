@@ -32,6 +32,7 @@ from .climate_repo import ClimateProfileRepository
 from .configuration_repo import ConfigurationRepository
 from .execution_repo import ExecutionRepository
 from .hardware_repo import HardwareRepository
+from .location_repo import LocationRepository
 from .market_repo import MarketProfileRepository
 from .solar_repo import SolarProfileRepository
 from .hydration import hydrate_scenario, hydrate_optimization, hydrate_scenario_from_ids
@@ -129,6 +130,8 @@ class PersistenceService:
         self.solar = SolarProfileRepository(self._session_factory)
         # Phase 15 — calibrated stochastic thermal profiles.
         self.climate = ClimateProfileRepository(self._session_factory)
+        # Installation sites — the durable anchor of solar/climate profiles.
+        self.locations = LocationRepository(self._session_factory)
         # Reusable electricity-market profiles (cached wholesale price surface
         # + dedicated-withdrawal valuation parameters).
         self.market = MarketProfileRepository(self._session_factory)

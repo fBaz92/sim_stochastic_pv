@@ -19,6 +19,7 @@ from .execution import router as execution_router
 from .external import router as external_router
 from .hardware import router as hardware_router
 from .jobs import router as jobs_router
+from .locations import router as locations_router
 from .market import router as market_router
 from .profiles import router as profiles_router
 from .simulation import router as simulation_router
@@ -32,6 +33,7 @@ __all__ = [
     "execution_router",
     "external_router",
     "jobs_router",
+    "locations_router",
     "market_router",
     "thermal_lab_router",
 ]

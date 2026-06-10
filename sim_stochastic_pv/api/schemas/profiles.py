@@ -419,6 +419,7 @@ class SolarProfileResponse(BaseModel):
     latitude: float = Field(..., description="Decimal latitude (°)")
     longitude: float = Field(..., description="Decimal longitude (°)")
     elevation_m: Optional[float] = Field(None, description="Elevation (m a.s.l.)")
+    location_id: Optional[int] = Field(None, description="Owning site (locations.id), None for legacy rows")
     optimal_tilt_degrees: float = Field(..., description="Optimal panel tilt (°)")
     optimal_azimuth_degrees: float = Field(180.0, description="Optimal panel azimuth (°, 180=south)")
     avg_daily_kwh_per_kwp: List[float] = Field(..., description="Monthly avg daily production (kWh/kWp/day, 12 values)")

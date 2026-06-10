@@ -1,157 +1,51 @@
 """
-End-to-end tests for the Phase-14 external API endpoints.
+End-to-end tests for the external API endpoints (geocode, climate normals,
+climate-profile management).
 
-All three external clients are stubbed via ``app.dependency_overrides`` so
-the tests never hit the public Internet. The persistence layer uses the
-shared in-memory SQLite fixture from ``conftest.py``.
+All external clients are stubbed via ``app.dependency_overrides`` so the
+tests never hit the public Internet. The persistence layer uses the shared
+in-memory SQLite fixture from ``conftest.py``. Profile *creation* is
+exercised in ``test_api_locations.py`` (unified import flow); here we only
+need a created profile as a fixture for the management endpoints, so we go
+through the same import endpoint.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 from fastapi.testclient import TestClient
 
+from _external_stubs import StubNominatim, StubOpenMeteo, StubPVGIS
 from sim_stochastic_pv.api import dependencies
 from sim_stochastic_pv.api.app import create_app
-from sim_stochastic_pv.external import (
-    ClimateNormals,
-    GeocodeResult,
-    NominatimClient,
-    OpenMeteoClient,
-    PVGISClient,
-    PVGISMonthlyYield,
-)
 from sim_stochastic_pv.persistence import PersistenceService
-
-
-# ---------------------------------------------------------------------------
-# Stub clients (no network)
-# ---------------------------------------------------------------------------
-
-
-class _StubNominatim:
-    """Returns a single canned :class:`GeocodeResult` regardless of input."""
-
-    def search(self, query: str, limit: int = 5, accept_language: str = "it,en"):
-        return [
-            GeocodeResult(
-                display_name="Pavullo nel Frignano, Modena, Italia",
-                latitude=44.336,
-                longitude=10.831,
-                place_class="place",
-                place_type="town",
-                importance=0.71,
-            )
-        ]
-
-
-class _StubPVGIS:
-    """Returns a deterministic :class:`PVGISMonthlyYield`."""
-
-    def fetch_monthly_yield(
-        self,
-        latitude: float,
-        longitude: float,
-        tilt_degrees: float,
-        azimuth_degrees: float,
-        peakpower_kwp: float = 1.0,
-        loss_pct: float = 14.0,
-        pv_tech: str = "crystSi",
-        mounting_place: str = "free",
-    ) -> PVGISMonthlyYield:
-        e_m = (45, 65, 100, 125, 155, 165, 170, 145, 110, 85, 55, 40)
-        h_i = tuple(int(e * 1.05) for e in e_m)
-        return PVGISMonthlyYield(
-            latitude=latitude,
-            longitude=longitude,
-            elevation_m=682.0,
-            tilt_degrees=tilt_degrees,
-            azimuth_degrees=azimuth_degrees,
-            loss_pct=loss_pct,
-            peakpower_kwp=peakpower_kwp,
-            monthly_e_kwh=tuple(float(v) for v in e_m),
-            monthly_h_i_kwh_per_m2=tuple(float(v) for v in h_i),
-        )
-
-
-class _StubOpenMeteo:
-    """
-    Returns 12 constant monthly normals (40% cloud → p_sunny=0.6) for
-    :meth:`fetch_climate_normals`, and a synthetic 10-year daily archive
-    with a clean seasonal sinusoid for :meth:`fetch_daily_archive` (used
-    by the Phase-15 ``from_location`` endpoint).
-    """
-
-    def fetch_climate_normals(
-        self,
-        latitude: float,
-        longitude: float,
-        lookback_years: int = 10,
-        end_year: int | None = None,
-    ) -> ClimateNormals:
-        return ClimateNormals(
-            latitude=latitude,
-            longitude=longitude,
-            elevation_m=682.0,
-            years_window=(2014, 2023),
-            avg_tmax_c=tuple([20.0] * 12),
-            avg_tmin_c=tuple([8.0] * 12),
-            avg_tmean_c=tuple([14.0] * 12),
-            p_sunny=tuple([0.6] * 12),
-        )
-
-    def fetch_daily_archive(
-        self,
-        latitude: float,
-        longitude: float,
-        lookback_years: int = 10,
-        end_year: int | None = None,
-    ):
-        from sim_stochastic_pv.external import DailyArchive  # noqa: PLC0415
-        import datetime as dt  # noqa: PLC0415
-        import math  # noqa: PLC0415
-
-        dates: list[str] = []
-        tmean: list[float] = []
-        tmax: list[float] = []
-        tmin: list[float] = []
-        start = dt.date(2014, 1, 1)
-        end = dt.date(2023, 12, 31)
-        d = start
-        while d <= end:
-            doy = d.timetuple().tm_yday - 1
-            seasonal = 12.0 - 10.0 * math.cos(2 * math.pi * doy / 365.25)
-            dates.append(d.isoformat())
-            tmean.append(seasonal)
-            tmax.append(seasonal + 5.0)
-            tmin.append(seasonal - 5.0)
-            d += dt.timedelta(days=1)
-        return DailyArchive(
-            latitude=latitude,
-            longitude=longitude,
-            elevation_m=682.0,
-            years_window=(2014, 2023),
-            dates=tuple(dates),
-            t_mean_c=tuple(tmean),
-            t_max_c=tuple(tmax),
-            t_min_c=tuple(tmin),
-        )
-
-
-# ---------------------------------------------------------------------------
-# Test-client factory with all four overrides
-# ---------------------------------------------------------------------------
 
 
 def _create_test_client(persistence: PersistenceService) -> TestClient:
     app = create_app()
     app.dependency_overrides[dependencies.get_persistence_service] = lambda: persistence
-    app.dependency_overrides[dependencies.get_nominatim_client] = _StubNominatim
-    app.dependency_overrides[dependencies.get_pvgis_client] = _StubPVGIS
-    app.dependency_overrides[dependencies.get_openmeteo_client] = _StubOpenMeteo
+    app.dependency_overrides[dependencies.get_nominatim_client] = StubNominatim
+    app.dependency_overrides[dependencies.get_pvgis_client] = StubPVGIS
+    app.dependency_overrides[dependencies.get_openmeteo_client] = StubOpenMeteo
     return TestClient(app)
+
+
+def _create_climate_profile(client: TestClient, name: str) -> int:
+    """Create a climate profile through the unified import flow; return its id."""
+    resp = client.post(
+        "/api/locations/import",
+        json={
+            "name": name,
+            "latitude": 44.336,
+            "longitude": 10.831,
+            "include_solar": False,
+            "include_climate": True,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["climate_profile"] is not None, body
+    return body["climate_profile"]["id"]
 
 
 # ---------------------------------------------------------------------------
@@ -215,133 +109,8 @@ def test_climate_normals_validates_query_params(persistence: PersistenceService)
 
 
 # ---------------------------------------------------------------------------
-# /api/profiles/solar/from_location
+# Climate-profile management (list / preview / delete)
 # ---------------------------------------------------------------------------
-
-
-def _make_from_location_payload(**overrides: Any) -> dict:
-    base = {
-        "name": "Pavullo_API_Test",
-        "location_name": "Pavullo nel Frignano, Modena, Italia",
-        "latitude": 44.336,
-        "longitude": 10.831,
-        "tilt_degrees": 35.0,
-        "azimuth_degrees": 180.0,
-    }
-    base.update(overrides)
-    return base
-
-
-def test_from_location_creates_solar_profile(persistence: PersistenceService) -> None:
-    """End-to-end: PVGIS + OpenMeteo orchestration writes a SolarProfileModel."""
-    client = _create_test_client(persistence)
-    resp = client.post(
-        "/api/profiles/solar/from_location",
-        json=_make_from_location_payload(),
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-
-    # 12 monthly values, derived from the stubbed PVGIS payload via avg_daily.
-    assert len(body["avg_daily_kwh_per_kwp"]) == 12
-    # Numbers should be positive and roughly in the [0.5, 6] range for a 1kWp
-    # nominal request — verifies the per-day conversion math at least roughly.
-    assert all(0.0 <= v < 20.0 for v in body["avg_daily_kwh_per_kwp"])
-
-    # p_sunny seeded from Open-Meteo (40% cloud → 0.6)
-    assert all(abs(p - 0.6) < 1e-9 for p in body["p_sunny"])
-
-    # Source attribution + notes are populated for auditability.
-    assert body["source"] == "PVGIS+OpenMeteo"
-    assert "PVGIS" in body["notes"] and "Open-Meteo" in body["notes"]
-
-    # The record is queryable via the DB.
-    saved = persistence.solar.get_solar_profile_by_name("Pavullo_API_Test")
-    assert saved is not None
-    assert saved.optimal_tilt_degrees == pytest.approx(35.0)
-
-
-def test_from_location_conflicts_on_duplicate_name(persistence: PersistenceService) -> None:
-    """Second call with the same name and overwrite=False → 409."""
-    client = _create_test_client(persistence)
-    payload = _make_from_location_payload(name="Pavullo_Dup")
-
-    first = client.post("/api/profiles/solar/from_location", json=payload)
-    assert first.status_code == 200, first.text
-
-    second = client.post("/api/profiles/solar/from_location", json=payload)
-    assert second.status_code == 409
-    assert "already exists" in second.json()["detail"]
-
-
-def test_from_location_overwrite_upserts(persistence: PersistenceService) -> None:
-    """Same name + overwrite=True updates the existing record."""
-    client = _create_test_client(persistence)
-    payload = _make_from_location_payload(name="Pavullo_Upsert")
-
-    first = client.post("/api/profiles/solar/from_location", json=payload)
-    assert first.status_code == 200
-    first_id = first.json()["id"]
-
-    # Same name, different tilt + overwrite=True → upsert
-    payload2 = _make_from_location_payload(
-        name="Pavullo_Upsert", tilt_degrees=15.0, overwrite=True
-    )
-    second = client.post("/api/profiles/solar/from_location", json=payload2)
-    assert second.status_code == 200
-    assert second.json()["id"] == first_id
-    assert second.json()["optimal_tilt_degrees"] == pytest.approx(15.0)
-
-
-# ---------------------------------------------------------------------------
-# Phase 15 — /api/profiles/climate/from_location + /preview
-# ---------------------------------------------------------------------------
-
-
-def _make_climate_payload(**overrides):
-    base = {
-        "name": "Pavullo_Climate",
-        "location_name": "Pavullo nel Frignano, Modena, Italia",
-        "latitude": 44.336,
-        "longitude": 10.831,
-        "lookback_years": 10,
-        "climate_trend_c_per_year": 0.0,
-    }
-    base.update(overrides)
-    return base
-
-
-def test_climate_from_location_creates_profile(persistence: PersistenceService) -> None:
-    """End-to-end: Open-Meteo daily archive → calibration → persisted record."""
-    client = _create_test_client(persistence)
-    resp = client.post(
-        "/api/profiles/climate/from_location",
-        json=_make_climate_payload(),
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["name"] == "Pavullo_Climate"
-    assert body["source"] == "OpenMeteo Archive"
-    assert "harmonic" in body and set(body["harmonic"]) >= {"a0", "a1", "a2"}
-    # 12 monthly param dicts
-    assert len(body["monthly_params"]) == 12
-    # Lookback window populated
-    assert body["lookback_window"] == {"start_year": 2014, "end_year": 2023}
-    # Persisted in DB
-    saved = persistence.climate.get_climate_profile_by_name("Pavullo_Climate")
-    assert saved is not None
-
-
-def test_climate_from_location_conflicts_on_duplicate(
-    persistence: PersistenceService,
-) -> None:
-    client = _create_test_client(persistence)
-    payload = _make_climate_payload(name="Dup_C")
-    assert client.post(
-        "/api/profiles/climate/from_location", json=payload
-    ).status_code == 200
-    resp = client.post("/api/profiles/climate/from_location", json=payload)
-    assert resp.status_code == 409
 
 
 def test_climate_preview_returns_fan_chart_shape(
@@ -349,12 +118,7 @@ def test_climate_preview_returns_fan_chart_shape(
 ) -> None:
     """After creating a profile, GET /preview returns the band + sample paths."""
     client = _create_test_client(persistence)
-    create = client.post(
-        "/api/profiles/climate/from_location",
-        json=_make_climate_payload(name="Preview_C"),
-    )
-    assert create.status_code == 200
-    profile_id = create.json()["id"]
+    profile_id = _create_climate_profile(client, "Preview_C")
 
     resp = client.get(
         f"/api/profiles/climate/{profile_id}/preview",
@@ -397,12 +161,7 @@ def test_climate_preview_404_on_missing(persistence: PersistenceService) -> None
 
 def test_climate_list_and_delete(persistence: PersistenceService) -> None:
     client = _create_test_client(persistence)
-    create = client.post(
-        "/api/profiles/climate/from_location",
-        json=_make_climate_payload(name="ListDel_C"),
-    )
-    assert create.status_code == 200
-    profile_id = create.json()["id"]
+    profile_id = _create_climate_profile(client, "ListDel_C")
 
     list_resp = client.get("/api/profiles/climate")
     assert list_resp.status_code == 200

@@ -127,6 +127,9 @@ def _apply_lightweight_migrations() -> None:
 
     Currently handled:
         - ``solar_profiles.weather_persistence`` (JSON, nullable)
+        - ``solar_profiles.location_id`` / ``climate_profiles.location_id``
+          (INTEGER FK to ``locations``, nullable)
+        - ``run_results.archived_at`` (TIMESTAMP, nullable)
 
     Notes:
         - Operates transparently on both SQLite and PostgreSQL via the
@@ -155,6 +158,24 @@ def _apply_lightweight_migrations() -> None:
                         )
                     )
                 print("✅ Migrated solar_profiles: added column 'weather_persistence'")
+
+        # Locations become first-class entities: solar and climate profiles
+        # gain a nullable FK to their owning site. Legacy rows keep NULL and
+        # behave exactly as before (the simulator never reads this column).
+        for table in ("solar_profiles", "climate_profiles"):
+            if table in tables:
+                existing_columns = {
+                    col["name"] for col in inspector.get_columns(table)
+                }
+                if "location_id" not in existing_columns:
+                    with engine.begin() as connection:
+                        connection.execute(
+                            text(
+                                f"ALTER TABLE {table} ADD COLUMN location_id INTEGER "
+                                f"REFERENCES locations(id)"
+                            )
+                        )
+                    print(f"✅ Migrated {table}: added column 'location_id'")
 
         # Phase 12 — add the soft-archive timestamp to run_results.
         if "run_results" in tables:
