@@ -22,7 +22,9 @@ matplotlib.use("Agg")  # headless backend for server-side rendering
 import matplotlib.pyplot as plt
 import numpy as np
 from jinja2 import Template
-from weasyprint import HTML
+# WeasyPrint is imported lazily inside the render function so the API and the
+# test suite can boot without its native libraries (PDF export is an optional
+# feature; the import only needs to succeed when a PDF is actually requested).
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -333,4 +335,5 @@ def build_pdf_report(
     }
 
     html_str = _HTML_TEMPLATE.render(**context)
+    from weasyprint import HTML  # lazy: native libs only needed to render
     HTML(string=html_str).write_pdf(target=buffer)

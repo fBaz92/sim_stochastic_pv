@@ -29,7 +29,9 @@ matplotlib.use("Agg")  # headless backend for server-side rendering
 import matplotlib.pyplot as plt
 import numpy as np
 from jinja2 import Template
-from weasyprint import HTML
+# WeasyPrint is imported lazily inside the render function so the API and the
+# test suite can boot without its native libraries (PDF export is an optional
+# feature; the import only needs to succeed when a PDF is actually requested).
 
 _MONTHS_SHORT = ["Gen", "Feb", "Mar", "Apr", "Mag", "Giu",
                  "Lug", "Ago", "Set", "Ott", "Nov", "Dic"]
@@ -225,4 +227,5 @@ def build_market_pdf(report: Mapping[str, Any], buffer: BinaryIO) -> None:
         n_runs=report.get("n_runs", "—"),
         figures=figures,
     )
+    from weasyprint import HTML  # lazy: native libs only needed to render
     HTML(string=html_str).write_pdf(target=buffer)

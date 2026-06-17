@@ -28,6 +28,9 @@
     let items = [];
     let showForm = false;
 
+    /** House-type archetypes for the quick "Bolletta" create path. */
+    let houseTypes = [];
+
     /** When set, the dedicated detail/personality page is shown for this item. */
     let detailItem = null;
 
@@ -53,6 +56,9 @@
             away_monthly_w: Array(12).fill(100),
             away_monthly_24h_w: Array.from({ length: 12 }, () => Array(24).fill(100)),
             away_weekly_pattern_w: Array.from({ length: 7 }, () => Array(24).fill(100)),
+            // bolletta (quick fit from a bill)
+            bolletta_annual_kwh: 2700,
+            bolletta_house_type: "",
         },
     });
 
@@ -79,7 +85,11 @@
         f.name = item.name;
         f.profile_type = item.profile_type;
 
-        if (item.profile_type === "custom") {
+        if (item.profile_type === "bolletta") {
+            const b = d.bolletta || {};
+            f.data.bolletta_annual_kwh = b.annual_kwh ?? 2700;
+            f.data.bolletta_house_type = b.house_type ?? "";
+        } else if (item.profile_type === "custom") {
             f.data.monthly_w = d.monthly_w ?? Array(12).fill(100);
         } else if (item.profile_type === "custom_24h") {
             f.data.monthly_24h_w = d.monthly_24h_w ?? Array.from({ length: 12 }, () => Array(24).fill(100));
@@ -172,6 +182,33 @@
     }
 
     async function handleSubmit() {
+        // Bolletta: ask the backend to fit the ARERA scale to the bill, then
+        // save the returned ready-made data block (kind/input_level/derived).
+        if (newItem.profile_type === "bolletta") {
+            let derived;
+            try {
+                const fit = await api.fitBolletta({
+                    annual_kwh: Number(newItem.data.bolletta_annual_kwh),
+                    house_type: newItem.data.bolletta_house_type || null,
+                });
+                derived = fit.derived_profile_data;
+            } catch (e) {
+                alert("Errore nel calcolo del profilo: " + e.message);
+                return;
+            }
+            const payload = { name: newItem.name, profile_type: "bolletta", data: derived };
+            try {
+                if (editingId != null) await api.updateLoadProfile(editingId, payload);
+                else await api.createLoadProfile(payload);
+            } catch (e) {
+                alert("Errore nel salvataggio: " + e.message);
+                return;
+            }
+            cancelForm();
+            load();
+            return;
+        }
+
         const payloadData = {};
         if (newItem.profile_type === "custom") {
             payloadData.monthly_w = newItem.data.monthly_w;
@@ -212,7 +249,24 @@
         load();
     }
 
-    onMount(load);
+    onMount(async () => {
+        await load();
+        try {
+            houseTypes = await api.listHouseTypes();
+        } catch (e) {
+            houseTypes = [];
+        }
+    });
+
+    // Input-level badge (Bolletta / Guidato / Esperto) shown next to each
+    // profile. Mirrors the detail page's default: a bill profile is "Bolletta",
+    // anything else defaults to "Esperto" until edited at a lower level.
+    const LEVEL_LABELS = { bolletta: "Bolletta", guidato: "Guidato", esperto: "Esperto" };
+    function levelLabel(item) {
+        const lvl = item.data?.input_level
+            || (item.profile_type === "bolletta" ? "bolletta" : "esperto");
+        return LEVEL_LABELS[lvl] || "Esperto";
+    }
 
     /**
      * Render a short, human-readable summary for the list of saved profiles.
@@ -227,6 +281,10 @@
     }
 
     function describeItem(item) {
+        if (item.profile_type === "bolletta") {
+            const annual = item.data?.bolletta?.annual_kwh;
+            return annual ? `bolletta (~${Math.round(annual)} kWh/anno)` : "bolletta";
+        }
         if (item.profile_type === "home_away") {
             const homeKind = describeSide(item.data?.home);
             const awayKind = describeSide(item.data?.away);
@@ -282,6 +340,9 @@
                         class="select"
                         bind:value={newItem.profile_type}
                     >
+                        <option value="bolletta">
+                            Bolletta (consumo annuo) ✨
+                        </option>
                         <option value="home_away">
                             Casa + via (consigliato)
                         </option>
@@ -289,12 +350,28 @@
                         <option value="custom_24h">Solo 12×24 (W)</option>
                     </select>
                     <p class="hint">
-                        "Casa + via" descrive come consumi nei due regimi:
-                        quanti giorni sei a casa lo decidi poi nello scenario.
+                        "Bolletta" stima tutto da due numeri. "Casa + via"
+                        descrive come consumi nei due regimi: quanti giorni sei
+                        a casa lo affini poi nel dettaglio del profilo.
                     </p>
                 </div>
 
-                {#if newItem.profile_type === "custom"}
+                {#if newItem.profile_type === "bolletta"}
+                    <div class="form-group">
+                        <label class="label" for="bolletta-house">Tipo di casa</label>
+                        <select id="bolletta-house" class="select" bind:value={newItem.data.bolletta_house_type}>
+                            <option value="">— scegli (facoltativo) —</option>
+                            {#each houseTypes as ht}
+                                <option value={ht.key}>{ht.label_it} (~{ht.baseline_annual_kwh.toFixed(0)} kWh)</option>
+                            {/each}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="label" for="bolletta-annual">Consumo annuo (kWh)</label>
+                        <input id="bolletta-annual" class="input" type="number" min="0" step="50" bind:value={newItem.data.bolletta_annual_kwh} />
+                        <p class="hint">Lo trovi in bolletta. Potrai affinare il calendario di presenza nel dettaglio del profilo.</p>
+                    </div>
+                {:else if newItem.profile_type === "custom"}
                     <MonthInput
                         label="Average Watts"
                         bind:values={newItem.data.monthly_w}
@@ -423,7 +500,10 @@
                         <button class="title-btn" on:click={() => (detailItem = item)} title="Apri il dettaglio del profilo">
                             {item.name}
                         </button>
-                        <p class="meta">{describeItem(item)}</p>
+                        <p class="meta">
+                            <span class="level-badge level-{levelLabel(item).toLowerCase()}">{levelLabel(item)}</span>
+                            {describeItem(item)}
+                        </p>
                     </div>
                     <div class="item-actions">
                         {#if deleteConfirmId === item.id}
@@ -460,7 +540,11 @@
     .form-card { padding: 1.5rem; margin-bottom: 2rem; }
     .edit-hint { font-size: 0.82rem; color: var(--color-text-muted, #6c757d); margin: 0 0 1rem; }
     .form-actions { margin-top: 1rem; display: flex; gap: 0.5rem; justify-content: flex-end; }
-    .meta { color: var(--color-text-secondary); font-size: 0.9rem; }
+    .meta { color: var(--color-text-secondary); font-size: 0.9rem; display: flex; align-items: center; gap: 0.5rem; }
+    .level-badge { display: inline-block; font-size: 0.7rem; font-weight: 600; padding: 1px 7px; border-radius: 999px; border: 1px solid transparent; }
+    .level-badge.level-bolletta { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+    .level-badge.level-guidato { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
+    .level-badge.level-esperto { background: #f5f3ff; color: #6d28d9; border-color: #ddd6fe; }
     .hint { color: var(--color-text-secondary); font-size: 0.85rem; margin-top: 0.25rem; }
     .empty { color: var(--color-text-muted, #6c757d); font-style: italic; }
     .side-tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; border-bottom: 1px solid var(--color-border, #e2e8f0); }

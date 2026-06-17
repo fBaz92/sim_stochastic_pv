@@ -214,6 +214,133 @@ class LoadProfilePreviewResponse(BaseModel):
     temp_in_c_mean: Optional[List[float]] = None
 
 
+class MonthPresencePatternSchema(BaseModel):
+    """
+    One month's occupancy pattern for a presence calendar.
+
+    Mirrors :class:`sim_stochastic_pv.simulation.load_profiles.MonthPresencePattern`.
+    Describes *how often* a building is occupied during the month as a few
+    human-meaningful counts (full weeks, extra weekdays, weekends, and a soft
+    visit probability), not a day-by-day schedule.
+
+    Attributes:
+        weekends: Whether weekends count as occupied days.
+        full_weeks: Whole Mon–Sun weeks spent at the building (0–5).
+        extra_weekdays: Additional isolated weekdays occupied (0–7).
+        visit_probability: Chance per otherwise-away day of a short visit
+            (0.0–1.0); widens the sampled home-day band upward.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    weekends: bool = Field(True, description="Weekends are occupied days")
+    full_weeks: int = Field(4, ge=0, le=5, description="Whole weeks at home (0–5)")
+    extra_weekdays: int = Field(0, ge=0, le=7, description="Extra isolated weekdays (0–7)")
+    visit_probability: float = Field(
+        0.0, ge=0.0, le=1.0, description="Per-away-day visit chance (0–1)"
+    )
+
+
+class PresenceCalendarSchema(BaseModel):
+    """
+    Twelve-month occupancy description for a building.
+
+    Mirrors :class:`sim_stochastic_pv.simulation.load_profiles.PresenceCalendar`:
+    exactly 12 :class:`MonthPresencePatternSchema` entries (January = index 0).
+    Converted server-side into the ``min_days_home`` / ``max_days_home`` arrays
+    the home/away load model consumes.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    months: List[MonthPresencePatternSchema] = Field(
+        ..., min_length=12, max_length=12, description="12 month patterns (Jan→Dec)"
+    )
+
+
+class BollettaFitRequest(BaseModel):
+    """
+    Request to auto-fit a load profile from a bill and a presence calendar.
+
+    The user supplies either a single annual consumption figure or six
+    bimonthly readings, optionally a house-type archetype (advisory) and a
+    presence calendar. The server returns the ARERA home-scale factor and a
+    ready-to-save profile ``data`` block (see :class:`BollettaFitResponse`).
+
+    Attributes:
+        annual_kwh: Whole-year consumption (kWh, > 0). Required unless
+            ``bimonthly_kwh`` is provided.
+        bimonthly_kwh: Six bimonthly readings (kWh); summed into the annual
+            total and taking precedence over ``annual_kwh`` when present.
+        house_type: Optional :data:`HOUSE_TYPE_PRESETS` key (advisory metadata).
+        presence_calendar: Optional occupancy calendar; defaults server-side to
+            a typical primary residence when omitted.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    annual_kwh: Optional[float] = Field(
+        None, gt=0, description="Annual consumption (kWh); required if no bimonthly"
+    )
+    bimonthly_kwh: Optional[List[float]] = Field(
+        None, min_length=6, max_length=6, description="Six bimonthly readings (kWh)"
+    )
+    house_type: Optional[str] = Field(None, description="House-type preset key (advisory)")
+    presence_calendar: Optional[PresenceCalendarSchema] = Field(
+        None, description="Occupancy calendar; defaults to a primary residence"
+    )
+
+
+class BollettaFitResponse(BaseModel):
+    """
+    Result of a bill-based auto-fit.
+
+    Mirrors the dict returned by
+    :func:`sim_stochastic_pv.simulation.load_profiles.fit_bolletta_profile`.
+
+    Attributes:
+        home_scale_factor: Multiplier on the ARERA base-load table for the home
+            regime (≥ a small positive floor).
+        estimated_home_kwh: Annual energy attributed to occupied days.
+        estimated_away_kwh: Annual energy attributed to standby (away) days.
+        annual_presence_fraction: Expected occupancy fraction used in the split.
+        min_days_home / max_days_home: 12-month occupancy bounds from the
+            calendar.
+        derived_profile_data: Ready-to-save load-profile ``data`` block
+            (``kind="bolletta"`` + presence calendar + bill echo + ``_derived``).
+    """
+
+    home_scale_factor: float
+    estimated_home_kwh: float
+    estimated_away_kwh: float
+    annual_presence_fraction: float
+    min_days_home: List[int]
+    max_days_home: List[int]
+    derived_profile_data: Dict[str, Any]
+
+
+class HouseTypeResponse(BaseModel):
+    """
+    One house-type archetype for the quick bill-fit dropdown.
+
+    Mirrors :class:`sim_stochastic_pv.simulation.load_profiles.HouseTypePreset`
+    with its registry ``key`` added so the UI can submit it back as
+    ``BollettaFitRequest.house_type``.
+
+    Attributes:
+        key: Registry key (e.g. ``"apartment_standard"``).
+        label_it: Italian display label.
+        floor_area_m2: Representative floor area (m²).
+        baseline_annual_kwh: Typical annual consumption (kWh/year) used to
+            pre-fill the bill field.
+    """
+
+    key: str
+    label_it: str
+    floor_area_m2: float
+    baseline_annual_kwh: float
+
+
 class PriceProfileResponse(BaseModel):
     """
     Electricity price profile response schema.

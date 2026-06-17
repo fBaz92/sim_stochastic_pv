@@ -34,6 +34,13 @@ from ...simulation.load_preview import (
     LoadPreviewResult,
     simulate_load_profile_preview,
 )
+from ...simulation.load_profiles import (
+    DEFAULT_PRESENCE_CALENDAR,
+    HOUSE_TYPE_PRESETS,
+    PresenceCalendar,
+    annual_kwh_from_bimonthly,
+    fit_bolletta_profile,
+)
 from ...simulation.prices import (
     PricePreviewResult,
     simulate_price_preview,
@@ -368,6 +375,99 @@ def preview_load_profile_saved(
         record.profile_type, record.data or {}, payload, persistence
     )
     return profile_schemas.LoadProfilePreviewResponse(**asdict(result))
+
+
+@router.get(
+    "/profiles/load/house-types",
+    response_model=list[profile_schemas.HouseTypeResponse],
+)
+def list_house_types() -> list[profile_schemas.HouseTypeResponse]:
+    """
+    List the house-type archetypes for the quick bill-fit entry level.
+
+    Feeds the "tipo di casa" dropdown on the load-profile detail page: each
+    entry carries a typical annual consumption the UI uses to pre-fill the bill
+    field. Reference data only — it never enters the fit maths.
+
+    Returns:
+        List of :class:`HouseTypeResponse`, in the registry's declaration order
+        (small apartment → large house → vacation home).
+    """
+    return [
+        profile_schemas.HouseTypeResponse(
+            key=key,
+            label_it=preset.label_it,
+            floor_area_m2=preset.floor_area_m2,
+            baseline_annual_kwh=preset.baseline_annual_kwh,
+        )
+        for key, preset in HOUSE_TYPE_PRESETS.items()
+    ]
+
+
+@router.post(
+    "/profiles/load/fit-bolletta",
+    response_model=profile_schemas.BollettaFitResponse,
+)
+def fit_bolletta(
+    payload: profile_schemas.BollettaFitRequest,
+) -> profile_schemas.BollettaFitResponse:
+    """
+    Auto-fit a load profile from an annual bill and a presence calendar.
+
+    Computes the ARERA home-scale factor that makes the profile's expected
+    annual energy match the declared consumption, and returns a ready-to-save
+    profile ``data`` block (see :func:`fit_bolletta_profile`). Stateless —
+    nothing is written to the DB; the frontend saves the profile separately.
+
+    Args:
+        payload: Bill (annual or bimonthly), optional house type, optional
+            presence calendar.
+
+    Returns:
+        :class:`BollettaFitResponse` with the scale factor, the home/away energy
+        split and the derived profile data.
+
+    Raises:
+        HTTPException 422: neither ``annual_kwh`` nor ``bimonthly_kwh`` supplied,
+            a non-positive consumption, or an unknown ``house_type``.
+    """
+    if payload.bimonthly_kwh is not None:
+        try:
+            target_annual_kwh = annual_kwh_from_bimonthly(payload.bimonthly_kwh)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    elif payload.annual_kwh is not None:
+        target_annual_kwh = float(payload.annual_kwh)
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide either 'annual_kwh' or 'bimonthly_kwh'.",
+        )
+
+    if target_annual_kwh <= 0:
+        raise HTTPException(
+            status_code=422, detail="Annual consumption must be greater than 0."
+        )
+
+    if payload.house_type is not None and payload.house_type not in HOUSE_TYPE_PRESETS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown house_type '{payload.house_type}'.",
+        )
+
+    if payload.presence_calendar is None:
+        calendar = DEFAULT_PRESENCE_CALENDAR
+    else:
+        calendar = PresenceCalendar.from_dict(payload.presence_calendar.model_dump())
+
+    try:
+        result = fit_bolletta_profile(
+            target_annual_kwh, calendar, house_type=payload.house_type
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return profile_schemas.BollettaFitResponse(**result)
 
 
 @router.get("/profiles/price", response_model=list[profile_schemas.PriceProfileResponse])

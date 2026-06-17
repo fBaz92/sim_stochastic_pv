@@ -23,6 +23,13 @@
     import MonthInput from "../components/forms/MonthInput.svelte";
     import MonthlyProfileEditor from "../components/forms/MonthlyProfileEditor.svelte";
     import WeeklyPatternEditor from "../components/forms/WeeklyPatternEditor.svelte";
+    import PresenceCalendarEditor from "../components/forms/PresenceCalendarEditor.svelte";
+    import ResultsChart from "../components/ResultsChart.svelte";
+    import {
+        fitBollettaClient,
+        buildBollettaData,
+        defaultPresenceCalendar,
+    } from "../lib/presence.js";
     // Phase 14 — Geolocation + PVGIS + Open-Meteo for the Luogo step.
     import LeafletMap from "../components/LeafletMap.svelte";
     import LocationSearch from "../components/LocationSearch.svelte";
@@ -354,9 +361,22 @@
         : selectedSolarProfile?.optimal_azimuth_degrees ?? null;
 
     // ── Step 3 — Carico ────────────────────────────────────────────────────
-    // Source: "db" (saved profile) or "inline" (custom in-wizard)
-    let loadSource = "db"; // "db" | "inline"
+    // Source: saved profile ("db"), quick bill fit ("bolletta"), or a fully
+    // custom in-wizard profile ("inline", behind the «Avanzato» disclosure).
+    let loadSource = "db"; // "db" | "bolletta" | "inline"
     let selectedLoadProfileId = "";
+
+    // Quick "from a bill" path — builds a bolletta load_profile block on the
+    // fly (no DB save). The home/away split is computed client-side for the KPI.
+    let wizBollettaAnnual = 2700;
+    let wizBollettaHouseType = "";
+    let wizHouseTypes = [];
+    let wizBollettaCalendar = defaultPresenceCalendar();
+    $: wizBollettaFit = fitBollettaClient(Number(wizBollettaAnnual) || 1, wizBollettaCalendar);
+
+    // Mini preview (weekly thumbnail + annual kWh) of the selected saved profile.
+    let dbPreview = null;
+    let dbPreviewLoading = false;
 
     // Days at home (always editable, even when profile is from DB)
     let minDaysHome = Array(12).fill(25);
@@ -527,6 +547,10 @@
     /** Human-readable summary of the selected DB load profile. */
     function describeLoadProfile(item) {
         if (!item) return "";
+        if (item.profile_type === "bolletta") {
+            const annual = item.data?.bolletta?.annual_kwh;
+            return annual ? `${item.name} — bolletta ~${Math.round(annual)} kWh/anno` : `${item.name} — bolletta`;
+        }
         if (item.profile_type === "home_away") {
             const hk = item.data?.home?.type === "arera" ? "ARERA"
                 : item.data?.home?.monthly_24h_w ? "24h" : "media mensile";
@@ -536,6 +560,47 @@
         }
         return `${item.name} (${item.profile_type})`;
     }
+
+    // Mini representative-week preview of the selected saved profile (home
+    // regime, few paths — just enough for a thumbnail + annual badge).
+    async function fetchDbPreview(id) {
+        if (!id) { dbPreview = null; return; }
+        dbPreviewLoading = true;
+        try {
+            dbPreview = await api.previewLoadProfileById(Number(id), {
+                month: 0, regime: "home", n_paths: 20, seed: 42,
+            });
+        } catch (e) {
+            dbPreview = null;
+        } finally {
+            dbPreviewLoading = false;
+        }
+    }
+    $: if (loadSource === "db") fetchDbPreview(selectedLoadProfileId);
+
+    function buildMiniLoadChart(res) {
+        return {
+            type: "line",
+            data: {
+                labels: res.week_hours.map(() => ""),
+                datasets: [{
+                    data: res.total_kw_mean,
+                    borderColor: "#1d4ed8",
+                    backgroundColor: "#1d4ed822",
+                    pointRadius: 0,
+                    borderWidth: 1.5,
+                    fill: true,
+                }],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: { x: { display: false }, y: { display: true, beginAtZero: true } },
+            },
+        };
+    }
+    $: dbMiniChart = dbPreview ? buildMiniLoadChart(dbPreview) : null;
 
     // ── Step 4 — Mercato ───────────────────────────────────────────────────
     let priceModelType = "escalating"; // "escalating" | "gbm" | "mean_reverting"
@@ -622,6 +687,7 @@
             panels = pan;
             climateProfiles = climate;
             marketProfiles = market;
+            wizHouseTypes = await api.listHouseTypes().catch(() => []);
         } catch (e) {
             console.error("Failed to load initial data:", e);
         }
@@ -684,6 +750,22 @@
             scenarioClone.min_days_home = [...minDaysHome];
             scenarioClone.max_days_home = [...maxDaysHome];
             delete scenarioClone.load_profile;
+            return scenarioClone;
+        }
+
+        if (loadSource === "bolletta") {
+            // On-the-fly bill-fitted profile (not persisted). The presence
+            // calendar inside the block defines occupancy, so scenario-level
+            // min/max days are dropped.
+            scenarioClone.load_profile = buildBollettaData(
+                Number(wizBollettaAnnual) || 0,
+                wizBollettaHouseType,
+                wizBollettaCalendar,
+                wizBollettaFit,
+            );
+            delete scenarioClone.load_profile_id;
+            delete scenarioClone.min_days_home;
+            delete scenarioClone.max_days_home;
             return scenarioClone;
         }
 
@@ -989,6 +1071,13 @@
             if (d.load_profile_id) {
                 loadSource = "db";
                 selectedLoadProfileId = String(d.load_profile_id);
+            } else if (d.load_profile?.kind === "bolletta") {
+                loadSource = "bolletta";
+                wizBollettaAnnual = d.load_profile.bolletta?.annual_kwh ?? 2700;
+                wizBollettaHouseType = d.load_profile.bolletta?.house_type ?? "";
+                if (d.load_profile.presence_calendar) {
+                    wizBollettaCalendar = d.load_profile.presence_calendar;
+                }
             } else if (d.load_profile) {
                 loadSource = "inline";
                 homeProfileType = d.load_profile.home_profile_type ?? "arera";
@@ -1642,15 +1731,15 @@
             </p>
 
             <div class="form-group">
-                <label class="label">Sorgente del profilo</label>
+                <label class="label">Come vuoi definire il carico?</label>
                 <div class="radio-group">
                     <label class="radio-label">
                         <input type="radio" name="load-source" value="db" bind:group={loadSource} />
-                        Dal database
+                        Scegli un profilo salvato
                     </label>
                     <label class="radio-label">
-                        <input type="radio" name="load-source" value="inline" bind:group={loadSource} />
-                        Personalizzato (inline)
+                        <input type="radio" name="load-source" value="bolletta" bind:group={loadSource} />
+                        Crea veloce da bolletta
                     </label>
                 </div>
             </div>
@@ -1659,7 +1748,7 @@
                 <div class="form-group">
                     <label class="label" for="load-profile-id">Profilo salvato</label>
                     <select id="load-profile-id" class="select" bind:value={selectedLoadProfileId}>
-                        <option value="">— Nessuno (usa inline) —</option>
+                        <option value="">— Nessuno —</option>
                         {#each loadProfiles as lp}
                             <option value={String(lp.id)}>{describeLoadProfile(lp)}</option>
                         {/each}
@@ -1668,16 +1757,55 @@
                         <div class="card subtle preview-box">
                             <strong>Profilo:</strong>
                             {describeLoadProfile(loadProfiles.find((p) => String(p.id) === selectedLoadProfileId))}
+                            {#if dbPreviewLoading && !dbPreview}
+                                <p class="hint">Anteprima in corso…</p>
+                            {:else if dbPreview}
+                                <div class="mini-kpi">
+                                    <span class="mini-badge">~{dbPreview.annual_kwh_mean.toFixed(0)} kWh/anno (a casa)</span>
+                                </div>
+                                {#if dbMiniChart}
+                                    <div class="mini-chart"><ResultsChart type={dbMiniChart.type} data={dbMiniChart.data} options={dbMiniChart.options} zoomable={false} downloadFilename="anteprima_carico" /></div>
+                                {/if}
+                            {/if}
                             <p class="hint">Per modificarlo apri <em>Database → Profili di carico</em>.</p>
                         </div>
                     {:else}
                         <p class="hint text-meta">
-                            Nessun profilo selezionato — verranno usati i parametri inline
-                            dello step 3 (passa a "Personalizzato").
+                            Nessun profilo selezionato — scegline uno dall'elenco
+                            oppure crea al volo da bolletta.
                         </p>
                     {/if}
                 </div>
-            {:else}
+            {:else if loadSource === "bolletta"}
+                <div class="form-group">
+                    <label class="label" for="wiz-house">Tipo di casa</label>
+                    <select id="wiz-house" class="select" bind:value={wizBollettaHouseType} on:change={() => { const ht = wizHouseTypes.find((h) => h.key === wizBollettaHouseType); if (ht) wizBollettaAnnual = ht.baseline_annual_kwh; }}>
+                        <option value="">— scegli (facoltativo) —</option>
+                        {#each wizHouseTypes as ht}<option value={ht.key}>{ht.label_it} (~{ht.baseline_annual_kwh.toFixed(0)} kWh)</option>{/each}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="label" for="wiz-annual">Consumo annuo (kWh)</label>
+                    <input id="wiz-annual" class="input big-bill" type="number" min="0" step="50" bind:value={wizBollettaAnnual} />
+                    <p class="hint">Lo trovi in bolletta. Lo split casa/via è stimato dal calendario qui sotto.</p>
+                </div>
+                <div class="mini-kpi">
+                    <span class="mini-badge">Totale ~{(wizBollettaFit.estimated_home_kwh + wizBollettaFit.estimated_away_kwh).toFixed(0)} kWh</span>
+                    <span class="mini-badge ghost">a casa {wizBollettaFit.estimated_home_kwh.toFixed(0)} · via {wizBollettaFit.estimated_away_kwh.toFixed(0)}</span>
+                    <span class="mini-badge ghost">presenza {(wizBollettaFit.annual_presence_fraction * 100).toFixed(0)}%</span>
+                </div>
+                <div class="divider"></div>
+                <div class="section-subtitle">Quando sei in casa</div>
+                <PresenceCalendarEditor calendar={wizBollettaCalendar} compact={true} on:change={(e) => (wizBollettaCalendar = e.detail)} />
+            {/if}
+
+            <details class="advanced-disc" open={loadSource === "inline"}>
+                <summary class="adv-summary">⚙️ Avanzato — profilo personalizzato (inline)</summary>
+                <label class="radio-label adv-radio">
+                    <input type="radio" name="load-source" value="inline" bind:group={loadSource} />
+                    Definisci un profilo personalizzato qui
+                </label>
+                {#if loadSource === "inline"}
                 <!-- Inline custom editor -->
                 <div class="form-group">
                     <label class="label" for="home-profile-type">Tipo profilo casa (home)</label>
@@ -1781,16 +1909,20 @@
                         </div>
                     {/if}
                 </div>
-            {/if}
+                {/if}
+            </details>
 
+            {#if loadSource !== "bolletta"}
             <div class="divider"></div>
             <div class="section-subtitle">Giorni a casa per mese</div>
             <p class="hint">
                 Per ogni mese il simulatore estrae uniformemente un numero di
                 giorni a casa tra [min, max], poi sceglie casualmente quali.
+                Un profilo che porta con sé un calendario di presenza lo sovrascrive.
             </p>
             <MonthInput label="Giorni minimi a casa / mese" bind:values={minDaysHome} />
             <MonthInput label="Giorni massimi a casa / mese" bind:values={maxDaysHome} />
+            {/if}
 
             {#if loadSource === "inline"}
             <!-- Consumption layers (variability / appliances / HVAC) are edited
@@ -2564,6 +2696,16 @@
         background: var(--color-bg-secondary, #f8f9fa);
         border: 1px dashed var(--color-border, #e2e8f0);
     }
+
+    /* ── Step 3 — bill fit + mini preview + advanced disclosure ───────────── */
+    .mini-kpi { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.6rem 0; }
+    .mini-badge { font-size: 0.78rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--color-accent, #1d4ed8); color: #fff; }
+    .mini-badge.ghost { background: transparent; color: var(--color-text-secondary, #6b7280); border: 1px solid var(--color-border, #d1d5db); font-weight: 500; }
+    .mini-chart { height: 130px; margin-top: 0.5rem; }
+    .big-bill { font-size: 1.3rem; font-weight: 600; }
+    .advanced-disc { margin-top: 1rem; border: 1px solid var(--color-border, #e2e8f0); border-radius: 8px; padding: 0.5rem 0.75rem; }
+    .adv-summary { cursor: pointer; font-weight: 600; color: var(--color-text-secondary, #6b7280); font-size: 0.9rem; }
+    .adv-radio { margin: 0.6rem 0; display: flex; align-items: center; gap: 0.4rem; }
 
     /* ── Summary table ────────────────────────────────────────────────────── */
     .summary-table {

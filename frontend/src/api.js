@@ -190,6 +190,14 @@ export const api = {
     async previewLoadProfileById(id, params) {
         return request(`/profiles/load/${id}/preview`, { method: 'POST', body: JSON.stringify(params) });
     },
+    // House-type archetypes for the quick bill-fit dropdown (key + typical annual kWh).
+    async listHouseTypes() { return request('/profiles/load/house-types'); },
+    // Auto-fit a load profile from a bill + presence calendar; returns the home
+    // scale factor, the home/away energy split and a ready-to-save data block.
+    // Pass {annual_kwh|bimonthly_kwh, house_type?, presence_calendar?}.
+    async fitBolletta(payload) {
+        return request('/profiles/load/fit-bolletta', { method: 'POST', body: JSON.stringify(payload) });
+    },
 
     async listPriceProfiles() { return request('/profiles/price'); },
     async createPriceProfile(data) {

@@ -28,6 +28,21 @@ from .appliances import (
     aggregate_appliances_kpis,
     get_preset,
 )
+from .presence import (
+    DEFAULT_PRESENCE_CALENDAR,
+    HOUSE_TYPE_PRESETS,
+    HouseTypePreset,
+    MonthPresencePattern,
+    PRESENCE_CALENDAR_PRESETS,
+    PresenceCalendar,
+)
+from .bolletta import (
+    ARERA_BASELINE_ANNUAL_KWH,
+    annual_kwh_from_bimonthly,
+    build_scaled_arera_factory,
+    compute_arera_baseline_annual_kwh,
+    fit_bolletta_profile,
+)
 
 __all__ = [
     # Base
@@ -59,4 +74,17 @@ __all__ = [
     "EventBasedApplianceProfile",
     "aggregate_appliances_kpis",
     "get_preset",
+    # Presence calendar (occupancy backbone of home/away profiles)
+    "MonthPresencePattern",
+    "PresenceCalendar",
+    "HouseTypePreset",
+    "HOUSE_TYPE_PRESETS",
+    "DEFAULT_PRESENCE_CALENDAR",
+    "PRESENCE_CALENDAR_PRESETS",
+    # Bill-based auto-fit
+    "ARERA_BASELINE_ANNUAL_KWH",
+    "compute_arera_baseline_annual_kwh",
+    "fit_bolletta_profile",
+    "build_scaled_arera_factory",
+    "annual_kwh_from_bimonthly",
 ]

@@ -1787,10 +1787,43 @@ design serio); la 23 è la fondazione architetturale di tutto l'arco; la
 ### 🚧 In corso
 
 _Nessuna fase attualmente in corso._ Prossima della sequenza confermata
-(27 → 28 → 23 → 24 → 25 → 29 ∥ 26 → 32 → 30 → 31 → 33): **Fase 32**
-(carico a tre livelli).
+(27 → 28 → 23 → 24 → 25 → 29 ∥ 26 → 32 → 30 → 31 → 33): **Fase 30**
+(vettori energetici, sorgenti di calore, casa multi-zona).
 
 ### ✅ Completate
+
+**Fase 32 — Carico: tre livelli di ingresso attorno al calendario di
+presenza** — chiusa 2026-06-11 (49 test nuovi verdi in locale per il
+nucleo presence/bolletta; `test_bolletta_api.py` verde nel container;
+build frontend OK).
+
+- **Calendario di presenza** (`simulation/load_profiles/presence.py`):
+  `MonthPresencePattern` + `PresenceCalendar` convertono pattern mensili
+  (settimane intere, weekend, giorni extra, probabilità di visita) negli
+  array `min/max_days_home` del modello home/away. Preset
+  (`primary_residence`, `summer_vacation`, `weekend_house`),
+  `HOUSE_TYPE_PRESETS`, `DEFAULT_PRESENCE_CALENDAR` (~23 gg/mese).
+- **Fit da bolletta** (`load_profiles/bolletta.py`):
+  `ARERA_BASELINE_ANNUAL_KWH` ≈ 1196 kWh; `fit_bolletta_profile` risolve il
+  fattore di scala ARERA che fa combaciare i kWh annui dichiarati con lo
+  split casa/via implicato dal calendario; `build_scaled_arera_factory`.
+- **scenario_builder**: nuovo `kind="bolletta"`, sotto-profilo
+  `{"type":"arera","scale_factor":…}`, override dell'occupazione da
+  `presence_calendar` (sorgente autorevole), helper
+  `parse_presence_calendar`; `build_regime_load_profile_factory` gestisce
+  il regime bolletta.
+- **API**: `POST /api/profiles/load/fit-bolletta`,
+  `GET /api/profiles/load/house-types`; schemi Pydantic
+  (`PresenceCalendarSchema`, `BollettaFitRequest/Response`,
+  `HouseTypeResponse`).
+- **Frontend**: `forms/PresenceCalendarEditor.svelte`, `lib/presence.js`
+  (mirror client del calcolo + fit), `LoadProfileDetail` ristrutturato a
+  tre livelli (Bolletta/Guidato/Esperto) con heatmap di presenza e
+  transizioni di livello; badge livello nel manager + path "Bolletta" in
+  creazione; step Carico del wizard semplificato (scegli un profilo con
+  mini-anteprima / crea da bolletta / inline dietro «Avanzato»).
+- Test: `test_presence_calendar.py`, `test_bolletta_fit.py`,
+  `test_bolletta_api.py`.
 
 **Fase 29 — Schede prodotto nel Database** — chiusa 2026-06-10 (suite 695
 test backend verde nel container; build frontend OK; verificata nel
@@ -3331,6 +3364,6 @@ nelle fasi 23–33):
 - [x] Fase 29 — Schede prodotto nel Database (curve per componente) (✅ 2026-06-10)
 - [ ] Fase 30 — Vettori energetici, sorgenti di calore, casa multi-zona
 - [ ] Fase 31 — Dispatch termico multi-sorgente + lab di ottimizzazione
-- [ ] Fase 32 — Carico: tre livelli di ingresso attorno al calendario di presenza
+- [x] Fase 32 — Carico: tre livelli di ingresso attorno al calendario di presenza
 - [ ] Fase 33 — Navigazione per intenti d'uso
 

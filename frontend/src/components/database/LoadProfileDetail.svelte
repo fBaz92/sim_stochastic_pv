@@ -1,26 +1,42 @@
 <script>
     /**
-     * LoadProfileDetail — the load-profile "consumption personality" page.
+     * LoadProfileDetail — the load-profile page with three input levels.
      *
-     * Opens when the user clicks a saved profile. It lets the user *see* the
-     * profile (a representative week per month, with uncertainty bands and a
-     * baseline / appliances / HVAC breakdown) and *define* the layers that make
-     * it a full personality:
+     * The same consumption "personality" can be defined at three depths, all of
+     * which produce the same runtime home/away structure — they differ only in
+     * how much the user controls vs the system infers:
      *
-     *   - daily variability (log-normal AR(1) multiplier),
-     *   - discrete appliances (kW × duration × times/week),
-     *   - heat-pump / HVAC against a chosen climate (with weekly temperature).
+     *   - **Bolletta**: annual kWh (or six bimonthly readings) + house type +
+     *     a compact presence calendar. The system scales the ARERA baseline to
+     *     match the bill and splits home/away from the calendar. Two numbers,
+     *     one graph.
+     *   - **Guidato**: full presence calendar + appliance presets + a single
+     *     variability slider. No HVAC, no raw stochastic knobs.
+     *   - **Esperto**: everything — presence calendar, full stochastic, discrete
+     *     appliances, and heat-pump/HVAC against a climate.
      *
-     * The "mixed scenario" is built in: the **home** regime carries all layers,
-     * the **away** regime is the semi-constant pattern with optional variability
-     * only. The preview runs server-side (``/api/profiles/load/preview``) on the
-     * edited-but-unsaved shape, so changes are visible before saving. "Salva"
-     * persists the layers into the profile's ``data`` (the home/away patterns
-     * themselves stay editable in the quick-edit form).
+     * The right panel is shared: an annual-kWh KPI (with home/away split for the
+     * bill fit), the representative-week chart, the presence heatmap, and (when
+     * present) the temperature chart and appliance breakdown. The preview runs
+     * server-side on the edited-but-unsaved shape via the inline endpoint.
      */
     import { onMount, createEventDispatcher } from "svelte";
     import { api } from "../../api.js";
     import ResultsChart from "../ResultsChart.svelte";
+    import Heatmap from "../Heatmap.svelte";
+    import PresenceCalendarEditor from "../forms/PresenceCalendarEditor.svelte";
+    import {
+        ARERA_BASELINE_ANNUAL_KWH,
+        annualPresenceFraction,
+        buildBollettaData,
+        defaultPresenceCalendar,
+        fitBollettaClient,
+        normalizeCalendar,
+        presenceHeatmapMatrix,
+        PRESENCE_CATEGORIES,
+        PRESENCE_CATEGORY_COLORS,
+        MONTH_ABBR,
+    } from "../../lib/presence.js";
 
     export let profile; // { id, name, profile_type, data }
 
@@ -28,9 +44,9 @@
 
     const MONTHS = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"];
     const DAYS = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
+    const HEATMAP_COLS = Array.from({ length: 31 }, (_, i) => String(i + 1));
 
     const rng = (a, b) => Array.from({ length: b - a }, (_, i) => a + i);
-    // Appliance quick-add presets (sent to the backend as custom events).
     const PRESETS = [
         { label: "Lavatrice", name: "Lavatrice", pKw: 1.5, durationH: 1.5, perWeek: 3, allowedHours: rng(9, 19) },
         { label: "Lavastoviglie", name: "Lavastoviglie", pKw: 1.2, durationH: 1.0, perWeek: 4, allowedHours: rng(13, 23) },
@@ -40,7 +56,22 @@
         { label: "Piano a induzione", name: "Piano induzione", pKw: 1.8, durationH: 0.5, perWeek: 7, allowedHours: [11, 12, 13, 19, 20, 21] },
     ];
 
-    // ── Editable state ──────────────────────────────────────────────────────
+    // ── Level + shared editable state ───────────────────────────────────────
+    let inputLevel = "esperto";
+    let structuralType = "home_away"; // original profile_type, preserved for esperto
+    let presenceCalendar = defaultPresenceCalendar();
+    let homeSub = { type: "arera" };
+    let awaySub = { type: "arera" };
+    let transitionMsg = "";
+
+    // Bolletta-level inputs.
+    let bollettaAnnualKwh = 2700;
+    let useBimonthly = false;
+    let bimonthly = [450, 450, 450, 450, 450, 450];
+    let houseType = "";
+    let houseTypes = [];
+
+    // Preview controls.
     let month = 0;
     let regime = "home";
     let showComposition = false;
@@ -54,28 +85,40 @@
         copH: 3.5, copC: 3.0, pMax: 3.0, spH: 20, spC: 26, dynamic: false,
     };
 
-    // ── Preview state ─────────────────────────────────────────────────────────
+    // Preview state.
     let result = null;
     let loading = false;
     let error = null;
     let saving = false;
     let saveMsg = "";
     let previewTimer = null;
+    // Last previewed annual kWh per regime — used to recalc the bill when
+    // stepping down to the Bolletta level.
+    let lastAnnualByRegime = {};
 
     function initFromProfile() {
         const d = profile.data || {};
+        structuralType = profile.profile_type || "home_away";
+        inputLevel = d.input_level || (structuralType === "bolletta" ? "bolletta" : "esperto");
+
+        presenceCalendar = d.presence_calendar
+            ? normalizeCalendar(d.presence_calendar)
+            : defaultPresenceCalendar();
+
+        homeSub = d.home || { type: "arera" };
+        awaySub = d.away || { type: "arera" };
+
+        const b = d.bolletta || {};
+        bollettaAnnualKwh = b.annual_kwh || 2700;
+        houseType = b.house_type || "";
+        bimonthly = Array.isArray(b.bimonthly_kwh) && b.bimonthly_kwh.length === 6
+            ? b.bimonthly_kwh.slice()
+            : Array(6).fill(Math.round(bollettaAnnualKwh / 6));
+
         const s = d.stochastic || {};
-        stoch = {
-            enabled: !!s.enabled,
-            sigma_log: s.sigma_log ?? 0.2,
-            phi: s.phi_intra_day ?? 0.5,
-        };
+        stoch = { enabled: !!s.enabled, sigma_log: s.sigma_log ?? 0.2, phi: s.phi_intra_day ?? 0.5 };
         const a = d.appliances || {};
-        app = {
-            enabled: !!a.enabled,
-            smartPv: !!a.smart_pv,
-            items: (a.items || []).map(fromItemPayload),
-        };
+        app = { enabled: !!a.enabled, smartPv: !!a.smart_pv, items: (a.items || []).map(fromItemPayload) };
         const t = d.thermal || {};
         const h = t.house || {};
         const hp = t.heat_pump || {};
@@ -120,9 +163,38 @@
         };
     }
 
-    // Merge the edited layers back into the profile's data (patterns untouched).
+    // Bill target: the sum of the bimonthly readings, or the single annual box.
+    $: currentTarget = useBimonthly
+        ? bimonthly.reduce((a, b) => a + Number(b || 0), 0)
+        : Number(bollettaAnnualKwh || 0);
+
+    // Live home/away split for the bill fit (client mirror of the backend).
+    $: bollettaFit = fitBollettaClient(currentTarget || 1, presenceCalendar);
+
+    // profile_type sent to the backend depends on the active level.
+    function profileTypeForSave() {
+        if (inputLevel === "bolletta") return "bolletta";
+        if (inputLevel === "guidato") return "home_away";
+        // esperto: keep the original structure, promoting a bill profile to home_away.
+        return structuralType === "bolletta" ? "home_away" : (structuralType || "home_away");
+    }
+
     function buildData() {
+        if (inputLevel === "bolletta") {
+            const data = buildBollettaData(currentTarget, houseType, presenceCalendar, bollettaFit);
+            if (useBimonthly) data.bolletta.bimonthly_kwh = bimonthly.map(Number);
+            return data;
+        }
         const d = { ...(profile.data || {}) };
+        d.input_level = inputLevel;
+        d.presence_calendar = normalizeCalendar(presenceCalendar);
+        if (profileTypeForSave() === "home_away") {
+            d.kind = "home_away";
+            d.home = homeSub;
+            d.away = awaySub;
+            delete d.bolletta;
+            delete d._derived;
+        }
         d.stochastic = {
             enabled: stoch.enabled,
             sigma_log: Number(stoch.sigma_log),
@@ -133,7 +205,7 @@
             smart_pv: app.smartPv,
             items: app.items.map(toItemPayload),
         };
-        if (hvac.enabled) {
+        if (inputLevel === "esperto" && hvac.enabled) {
             d.thermal = {
                 enabled: true,
                 house: { floor_area_m2: Number(hvac.area), insulation_preset: hvac.preset },
@@ -152,7 +224,7 @@
         error = null;
         try {
             result = await api.previewLoadProfileInline({
-                profile_type: profile.profile_type,
+                profile_type: profileTypeForSave(),
                 data: buildData(),
                 month,
                 regime,
@@ -160,6 +232,7 @@
                 n_paths: 80,
                 seed: 42,
             });
+            lastAnnualByRegime = { ...lastAnnualByRegime, [regime]: result.annual_kwh_mean };
         } catch (e) {
             error = e.message;
             result = null;
@@ -168,10 +241,67 @@
         }
     }
 
-    // Debounced re-preview used by every control so quick edits don't spam.
     function schedulePreview() {
         if (previewTimer) clearTimeout(previewTimer);
         previewTimer = setTimeout(runPreview, 450);
+    }
+
+    // ── Level transitions ───────────────────────────────────────────────────
+    // Estimate the whole-year energy from the most recent previews, weighting
+    // home vs away by the presence fraction. Used to seed the bill on step-down.
+    function estimatedTotalAnnual() {
+        const f = annualPresenceFraction(presenceCalendar);
+        const home = lastAnnualByRegime.home;
+        const away = lastAnnualByRegime.away ?? ARERA_BASELINE_ANNUAL_KWH;
+        if (home != null) return home * f + away * (1 - f);
+        if (result && result.annual_kwh_mean) {
+            return result.annual_kwh_mean * f + ARERA_BASELINE_ANNUAL_KWH * (1 - f);
+        }
+        return Number(bollettaAnnualKwh) || 2700;
+    }
+
+    function setLevel(target) {
+        if (target === inputLevel) return;
+        const prev = inputLevel;
+        transitionMsg = "";
+
+        // Lossy "up" transitions ask for confirmation.
+        if (prev === "esperto" && target === "guidato" && hvac.enabled) {
+            if (!confirm("Passando a «Guidato» perderai le impostazioni HVAC e i parametri avanzati. Continuare?")) return;
+            hvac.enabled = false;
+            transitionMsg = "Impostazioni HVAC/avanzate rimosse passando a Guidato.";
+        }
+        if ((prev === "guidato" || prev === "esperto") && target === "bolletta") {
+            if (app.items.length && !confirm("Passando a «Bolletta» perderai elettrodomestici e variabilità. Continuare?")) return;
+            bollettaAnnualKwh = Math.round(estimatedTotalAnnual());
+            useBimonthly = false;
+            transitionMsg = "Consumo annuo stimato dal profilo corrente.";
+        }
+        // "Down" from Bolletta: synthesise the home/away ARERA structure from
+        // the fitted scale so the guided/expert editors have something to show.
+        if (prev === "bolletta" && (target === "guidato" || target === "esperto")) {
+            homeSub = { type: "arera", scale_factor: Number(bollettaFit.home_scale_factor.toFixed(3)) };
+            awaySub = { type: "arera" };
+            transitionMsg = "Profilo casa/via derivato dalla bolletta (ARERA scalato).";
+        }
+
+        inputLevel = target;
+        schedulePreview();
+    }
+
+    function selectHouseType(key) {
+        houseType = key;
+        const ht = houseTypes.find((h) => h.key === key);
+        if (ht) {
+            bollettaAnnualKwh = ht.baseline_annual_kwh;
+            bimonthly = Array(6).fill(Math.round(ht.baseline_annual_kwh / 6));
+        }
+        schedulePreview();
+    }
+
+    function onCalendarChange(e) {
+        presenceCalendar = e.detail;
+        schedulePreview();
     }
 
     function addPreset(p) {
@@ -179,12 +309,10 @@
         app.enabled = true;
         schedulePreview();
     }
-
     function addBlank() {
         app.items = [...app.items, { name: "Nuovo", pKw: 1.0, durationH: 1.0, perWeek: 2, allowedHours: rng(6, 23) }];
         app.enabled = true;
     }
-
     function removeItem(i) {
         app.items = app.items.filter((_, idx) => idx !== i);
         schedulePreview();
@@ -197,10 +325,10 @@
         try {
             await api.updateLoadProfile(profile.id, {
                 name: profile.name,
-                profile_type: profile.profile_type,
+                profile_type: profileTypeForSave(),
                 data: buildData(),
             });
-            saveMsg = "Personalità del profilo salvata.";
+            saveMsg = "Profilo salvato.";
             dispatch("saved");
         } catch (e) {
             error = e.message;
@@ -216,6 +344,11 @@
         } catch (e) {
             climateProfiles = [];
         }
+        try {
+            houseTypes = await api.listHouseTypes();
+        } catch (e) {
+            houseTypes = [];
+        }
         await runPreview();
     });
 
@@ -223,6 +356,9 @@
     $: weekLabels = result
         ? result.week_hours.map((i) => (i % 24 === 0 ? DAYS[Math.floor(i / 24)] : ""))
         : [];
+    $: heatMatrix = presenceHeatmapMatrix(presenceCalendar);
+    $: showPresence = inputLevel === "bolletta" || inputLevel === "guidato"
+        || (inputLevel === "esperto" && profileTypeForSave() === "home_away");
 
     function bandDatasets(p05, p95, mean, color, label) {
         return [
@@ -296,137 +432,237 @@
         <h2>{profile.name}</h2>
         <div class="spacer"></div>
         <button class="btn btn-primary" on:click={save} disabled={saving}>
-            {saving ? "Salvataggio…" : "💾 Salva personalità"}
+            {saving ? "Salvataggio…" : "💾 Salva profilo"}
         </button>
     </div>
+
+    <!-- ── Level selector ───────────────────────────────────────────── -->
+    <div class="level-bar">
+        {#each [["bolletta", "Bolletta", "Due numeri dalla bolletta"], ["guidato", "Guidato", "Calendario + elettrodomestici"], ["esperto", "Esperto", "Tutto: orari, stocastico, HVAC"]] as [key, label, hint]}
+            <button
+                type="button"
+                class="level-btn"
+                class:active={inputLevel === key}
+                on:click={() => setLevel(key)}
+                title={hint}
+            >
+                <span class="level-name">{label}</span>
+                <span class="level-hint">{hint}</span>
+            </button>
+        {/each}
+    </div>
+    {#if transitionMsg}<p class="hint info">ℹ️ {transitionMsg}</p>{/if}
     {#if saveMsg}<p class="ok-msg">{saveMsg}</p>{/if}
     {#if error}<p class="error-msg">{error}</p>{/if}
 
     <div class="grid">
         <!-- ── Controls ─────────────────────────────────────────────── -->
         <div class="card controls">
-            <div class="row">
+            {#if inputLevel === "bolletta"}
+                <div class="section-title">Dalla bolletta</div>
+                <p class="hint">Inserisci il consumo annuo (lo trovi in bolletta) e che tipo di casa è. Il resto lo stimiamo noi.</p>
+
                 <div class="form-group">
-                    <label class="label" for="lp-month">Mese</label>
-                    <select id="lp-month" class="select" bind:value={month} on:change={runPreview}>
-                        {#each MONTHS as m, i}<option value={i}>{m}</option>{/each}
+                    <label class="label" for="lp-house">Tipo di casa</label>
+                    <select id="lp-house" class="select" bind:value={houseType} on:change={() => selectHouseType(houseType)}>
+                        <option value="">— scegli (facoltativo) —</option>
+                        {#each houseTypes as ht}<option value={ht.key}>{ht.label_it} (~{ht.baseline_annual_kwh.toFixed(0)} kWh)</option>{/each}
                     </select>
                 </div>
-                <div class="form-group">
-                    <label class="label" for="lp-regime">Regime</label>
-                    <select id="lp-regime" class="select" bind:value={regime} on:change={runPreview}>
-                        <option value="home">A casa (personalità completa)</option>
-                        <option value="away">Via (semi-costante)</option>
-                    </select>
-                </div>
-            </div>
-            <label class="check"><input type="checkbox" bind:checked={showComposition} /> Mostra composizione (baseline / elettrodomestici / HVAC)</label>
 
-            <div class="divider"></div>
-            <div class="section-title">Variabilità giornaliera</div>
-            <label class="check"><input type="checkbox" bind:checked={stoch.enabled} on:change={schedulePreview} /> Abilita variabilità stocastica</label>
-            {#if stoch.enabled}
-                <div class="form-group">
-                    <label class="label" for="lp-sigma">Ampiezza σ (≈ {(stoch.sigma_log * 100).toFixed(0)}% 1σ): {stoch.sigma_log}</label>
-                    <input id="lp-sigma" type="range" min="0" max="0.6" step="0.02" bind:value={stoch.sigma_log} on:input={schedulePreview} />
-                </div>
-                <div class="form-group">
-                    <label class="label" for="lp-phi">Persistenza intra-day φ: {stoch.phi}</label>
-                    <input id="lp-phi" type="range" min="0" max="0.95" step="0.05" bind:value={stoch.phi} on:input={schedulePreview} />
-                </div>
-            {/if}
+                <label class="check"><input type="checkbox" bind:checked={useBimonthly} on:change={schedulePreview} /> Inserisci per bimestre invece dell'annuo</label>
 
-            {#if regime === "home"}
-                <div class="divider"></div>
-                <div class="section-title">Elettrodomestici discreti</div>
-                <label class="check"><input type="checkbox" bind:checked={app.enabled} on:change={schedulePreview} /> Abilita elettrodomestici</label>
-                {#if app.enabled}
-                    <label class="check"><input type="checkbox" bind:checked={app.smartPv} on:change={schedulePreview} /> Avvia preferibilmente con il sole (smart PV)</label>
-                    <div class="preset-row">
-                        {#each PRESETS as p}
-                            <button type="button" class="chip" on:click={() => addPreset(p)}>+ {p.label}</button>
-                        {/each}
-                        <button type="button" class="chip chip-blank" on:click={addBlank}>+ Personalizzato</button>
+                {#if useBimonthly}
+                    <div class="form-group">
+                        <span class="label">Consumo per bimestre (kWh)</span>
+                        <div class="bimonthly-grid">
+                            {#each bimonthly as v, i}
+                                <input class="input" type="number" min="0" step="10" bind:value={bimonthly[i]} on:input={schedulePreview} aria-label="Bimestre {i + 1}" />
+                            {/each}
+                        </div>
+                        <p class="hint">Totale: <strong>{currentTarget.toFixed(0)}</strong> kWh/anno</p>
                     </div>
-                    {#if app.items.length}
-                        <table class="app-table">
-                            <thead><tr><th>Nome</th><th>kW</th><th>Ore</th><th>×/sett.</th><th></th></tr></thead>
-                            <tbody>
-                                {#each app.items as it, i}
-                                    <tr>
-                                        <td><input class="input mini-w" bind:value={it.name} on:change={schedulePreview} /></td>
-                                        <td><input class="input mini" type="number" min="0" step="0.1" bind:value={it.pKw} on:change={schedulePreview} /></td>
-                                        <td><input class="input mini" type="number" min="0" step="0.25" bind:value={it.durationH} on:change={schedulePreview} /></td>
-                                        <td><input class="input mini" type="number" min="0" step="0.5" bind:value={it.perWeek} on:change={schedulePreview} /></td>
-                                        <td><button type="button" class="link-btn" on:click={() => removeItem(i)} title="Rimuovi">×</button></td>
-                                    </tr>
-                                {/each}
-                            </tbody>
-                        </table>
-                    {:else}
-                        <p class="hint">Nessun elettrodomestico. Aggiungine dai preset o personalizzato.</p>
-                    {/if}
+                {:else}
+                    <div class="form-group">
+                        <label class="label" for="lp-annual">Consumo annuo (kWh)</label>
+                        <input id="lp-annual" class="input big-input" type="number" min="0" step="50" bind:value={bollettaAnnualKwh} on:input={schedulePreview} />
+                    </div>
                 {/if}
 
                 <div class="divider"></div>
-                <div class="section-title">Pompa di calore / HVAC</div>
-                <label class="check"><input type="checkbox" bind:checked={hvac.enabled} on:change={schedulePreview} /> Abilita HVAC (richiede un clima)</label>
-                {#if hvac.enabled}
+                <div class="section-title">Quando sei in casa</div>
+                <PresenceCalendarEditor calendar={presenceCalendar} compact={true} on:change={onCalendarChange} />
+            {:else}
+                <!-- Guidato + Esperto -->
+                <div class="row">
                     <div class="form-group">
-                        <label class="label" for="lp-climate">Profilo climatico</label>
-                        <select id="lp-climate" class="select" bind:value={climateId} on:change={runPreview}>
-                            <option value="">— seleziona un clima —</option>
-                            {#each climateProfiles as c}<option value={c.id}>{c.name}</option>{/each}
+                        <label class="label" for="lp-month">Mese</label>
+                        <select id="lp-month" class="select" bind:value={month} on:change={runPreview}>
+                            {#each MONTHS as m, i}<option value={i}>{m}</option>{/each}
                         </select>
-                        {#if !climateId}<p class="hint warn">Seleziona un profilo climatico per simulare l'HVAC e vedere la temperatura.</p>{/if}
                     </div>
-                    <div class="row">
+                    <div class="form-group">
+                        <label class="label" for="lp-regime">Regime</label>
+                        <select id="lp-regime" class="select" bind:value={regime} on:change={runPreview}>
+                            <option value="home">A casa (personalità completa)</option>
+                            <option value="away">Via (semi-costante)</option>
+                        </select>
+                    </div>
+                </div>
+                <label class="check"><input type="checkbox" bind:checked={showComposition} /> Mostra composizione (baseline / elettrodomestici / HVAC)</label>
+
+                <div class="divider"></div>
+                <div class="section-title">Quando sei in casa</div>
+                {#if inputLevel === "guidato"}
+                    <PresenceCalendarEditor calendar={presenceCalendar} on:change={onCalendarChange} />
+                {:else}
+                    <details>
+                        <summary class="summary-toggle">Calendario di presenza (sovrascrive i giorni casa/via)</summary>
+                        <PresenceCalendarEditor calendar={presenceCalendar} on:change={onCalendarChange} />
+                    </details>
+                {/if}
+
+                <div class="divider"></div>
+                <div class="section-title">Variabilità giornaliera</div>
+                <label class="check"><input type="checkbox" bind:checked={stoch.enabled} on:change={schedulePreview} /> Abilita variabilità</label>
+                {#if stoch.enabled}
+                    <div class="form-group">
+                        <label class="label" for="lp-sigma">Ampiezza σ (≈ {(stoch.sigma_log * 100).toFixed(0)}% 1σ): {stoch.sigma_log}</label>
+                        <input id="lp-sigma" type="range" min="0" max="0.6" step="0.02" bind:value={stoch.sigma_log} on:input={schedulePreview} />
+                    </div>
+                    {#if inputLevel === "esperto"}
                         <div class="form-group">
-                            <label class="label" for="lp-iso">Isolamento</label>
-                            <select id="lp-iso" class="select" bind:value={hvac.preset} on:change={schedulePreview}>
-                                <option value="poor">Scarso (anni '60-'70)</option>
-                                <option value="standard">Medio (anni '90)</option>
-                                <option value="good">Buono (NZEB / classe A)</option>
-                            </select>
+                            <label class="label" for="lp-phi">Persistenza intra-day φ: {stoch.phi}</label>
+                            <input id="lp-phi" type="range" min="0" max="0.95" step="0.05" bind:value={stoch.phi} on:input={schedulePreview} />
                         </div>
-                        <div class="form-group">
-                            <label class="label" for="lp-area">Superficie m²</label>
-                            <input id="lp-area" class="input" type="number" min="10" step="5" bind:value={hvac.area} on:change={schedulePreview} />
+                    {/if}
+                {/if}
+
+                {#if regime === "home"}
+                    <div class="divider"></div>
+                    <div class="section-title">Elettrodomestici discreti</div>
+                    <label class="check"><input type="checkbox" bind:checked={app.enabled} on:change={schedulePreview} /> Abilita elettrodomestici</label>
+                    {#if app.enabled}
+                        <label class="check"><input type="checkbox" bind:checked={app.smartPv} on:change={schedulePreview} /> Avvia preferibilmente con il sole (smart PV)</label>
+                        <div class="preset-row">
+                            {#each PRESETS as p}
+                                <button type="button" class="chip" on:click={() => addPreset(p)}>+ {p.label}</button>
+                            {/each}
+                            <button type="button" class="chip chip-blank" on:click={addBlank}>+ Personalizzato</button>
                         </div>
-                    </div>
-                    <div class="row">
-                        <div class="form-group"><label class="label" for="lp-ch">COP risc.</label><input id="lp-ch" class="input" type="number" min="1" step="0.1" bind:value={hvac.copH} on:change={schedulePreview} /></div>
-                        <div class="form-group"><label class="label" for="lp-cc">COP raffr.</label><input id="lp-cc" class="input" type="number" min="1" step="0.1" bind:value={hvac.copC} on:change={schedulePreview} /></div>
-                        <div class="form-group"><label class="label" for="lp-pm">P max kW</label><input id="lp-pm" class="input" type="number" min="0.5" step="0.5" bind:value={hvac.pMax} on:change={schedulePreview} /></div>
-                    </div>
-                    <div class="row">
-                        <div class="form-group"><label class="label" for="lp-sh">Setpoint risc. °C</label><input id="lp-sh" class="input" type="number" step="0.5" bind:value={hvac.spH} on:change={schedulePreview} /></div>
-                        <div class="form-group"><label class="label" for="lp-sc">Setpoint raffr. °C</label><input id="lp-sc" class="input" type="number" step="0.5" bind:value={hvac.spC} on:change={schedulePreview} /></div>
-                    </div>
-                    <label class="check"><input type="checkbox" bind:checked={hvac.dynamic} on:change={schedulePreview} /> Modello dinamico RC (temperatura interna)</label>
+                        {#if app.items.length}
+                            <table class="app-table">
+                                <thead><tr><th>Nome</th><th>kW</th><th>Ore</th><th>×/sett.</th><th></th></tr></thead>
+                                <tbody>
+                                    {#each app.items as it, i}
+                                        <tr>
+                                            <td><input class="input mini-w" bind:value={it.name} on:change={schedulePreview} /></td>
+                                            <td><input class="input mini" type="number" min="0" step="0.1" bind:value={it.pKw} on:change={schedulePreview} /></td>
+                                            <td><input class="input mini" type="number" min="0" step="0.25" bind:value={it.durationH} on:change={schedulePreview} /></td>
+                                            <td><input class="input mini" type="number" min="0" step="0.5" bind:value={it.perWeek} on:change={schedulePreview} /></td>
+                                            <td><button type="button" class="link-btn" on:click={() => removeItem(i)} title="Rimuovi">×</button></td>
+                                        </tr>
+                                    {/each}
+                                </tbody>
+                            </table>
+                        {:else}
+                            <p class="hint">Nessun elettrodomestico. Aggiungine dai preset o personalizzato.</p>
+                        {/if}
+                    {/if}
+
+                    {#if inputLevel === "esperto"}
+                        <div class="divider"></div>
+                        <div class="section-title">Pompa di calore / HVAC</div>
+                        <label class="check"><input type="checkbox" bind:checked={hvac.enabled} on:change={schedulePreview} /> Abilita HVAC (richiede un clima)</label>
+                        {#if hvac.enabled}
+                            <div class="form-group">
+                                <label class="label" for="lp-climate">Profilo climatico</label>
+                                <select id="lp-climate" class="select" bind:value={climateId} on:change={runPreview}>
+                                    <option value="">— seleziona un clima —</option>
+                                    {#each climateProfiles as c}<option value={c.id}>{c.name}</option>{/each}
+                                </select>
+                                {#if !climateId}<p class="hint warn">Seleziona un profilo climatico per simulare l'HVAC e vedere la temperatura.</p>{/if}
+                            </div>
+                            <div class="row">
+                                <div class="form-group">
+                                    <label class="label" for="lp-iso">Isolamento</label>
+                                    <select id="lp-iso" class="select" bind:value={hvac.preset} on:change={schedulePreview}>
+                                        <option value="poor">Scarso (anni '60-'70)</option>
+                                        <option value="standard">Medio (anni '90)</option>
+                                        <option value="good">Buono (NZEB / classe A)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label class="label" for="lp-area">Superficie m²</label>
+                                    <input id="lp-area" class="input" type="number" min="10" step="5" bind:value={hvac.area} on:change={schedulePreview} />
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="form-group"><label class="label" for="lp-ch">COP risc.</label><input id="lp-ch" class="input" type="number" min="1" step="0.1" bind:value={hvac.copH} on:change={schedulePreview} /></div>
+                                <div class="form-group"><label class="label" for="lp-cc">COP raffr.</label><input id="lp-cc" class="input" type="number" min="1" step="0.1" bind:value={hvac.copC} on:change={schedulePreview} /></div>
+                                <div class="form-group"><label class="label" for="lp-pm">P max kW</label><input id="lp-pm" class="input" type="number" min="0.5" step="0.5" bind:value={hvac.pMax} on:change={schedulePreview} /></div>
+                            </div>
+                            <div class="row">
+                                <div class="form-group"><label class="label" for="lp-sh">Setpoint risc. °C</label><input id="lp-sh" class="input" type="number" step="0.5" bind:value={hvac.spH} on:change={schedulePreview} /></div>
+                                <div class="form-group"><label class="label" for="lp-sc">Setpoint raffr. °C</label><input id="lp-sc" class="input" type="number" step="0.5" bind:value={hvac.spC} on:change={schedulePreview} /></div>
+                            </div>
+                            <label class="check"><input type="checkbox" bind:checked={hvac.dynamic} on:change={schedulePreview} /> Modello dinamico RC (temperatura interna)</label>
+                        {/if}
+                    {/if}
                 {/if}
             {/if}
         </div>
 
         <!-- ── Results ──────────────────────────────────────────────── -->
         <div class="results">
+            {#if inputLevel === "bolletta"}
+                <div class="card kpi-card">
+                    <div class="kpis">
+                        <div class="kpi"><div class="kpi-v">{(bollettaFit.estimated_home_kwh + bollettaFit.estimated_away_kwh).toFixed(0)}</div><div class="kpi-l">kWh / anno (totale)</div></div>
+                        <div class="kpi"><div class="kpi-v">{bollettaFit.estimated_home_kwh.toFixed(0)}</div><div class="kpi-l">a casa</div></div>
+                        <div class="kpi"><div class="kpi-v">{bollettaFit.estimated_away_kwh.toFixed(0)}</div><div class="kpi-l">via (standby)</div></div>
+                        <div class="kpi"><div class="kpi-v">{(bollettaFit.annual_presence_fraction * 100).toFixed(0)}%</div><div class="kpi-l">presenza</div></div>
+                    </div>
+                    <div class="split-bar" title="Ripartizione casa / via">
+                        <div class="split-home" style="width:{100 * bollettaFit.estimated_home_kwh / Math.max(1, bollettaFit.estimated_home_kwh + bollettaFit.estimated_away_kwh)}%"></div>
+                    </div>
+                </div>
+            {/if}
+
             {#if loading && !result}
                 <div class="card"><p class="text-meta">Calcolo dell'anteprima in corso…</p></div>
             {:else if result}
-                <div class="card kpi-card">
-                    <div class="kpis">
-                        <div class="kpi"><div class="kpi-v">{result.annual_kwh_mean.toFixed(0)}</div><div class="kpi-l">kWh / anno (totale)</div></div>
-                        <div class="kpi"><div class="kpi-v">{result.baseline_kwh_annual.toFixed(0)}</div><div class="kpi-l">baseline</div></div>
-                        {#if result.has_appliances}<div class="kpi"><div class="kpi-v">{result.appliance_kwh_annual.toFixed(0)}</div><div class="kpi-l">elettrodomestici</div></div>{/if}
-                        {#if result.has_hvac}<div class="kpi"><div class="kpi-v">{result.hvac_kwh_annual_mean.toFixed(0)}</div><div class="kpi-l">HVAC</div></div>{/if}
+                {#if inputLevel !== "bolletta"}
+                    <div class="card kpi-card">
+                        <div class="kpis">
+                            <div class="kpi"><div class="kpi-v">{result.annual_kwh_mean.toFixed(0)}</div><div class="kpi-l">kWh / anno ({regime === "home" ? "a casa" : "via"})</div></div>
+                            <div class="kpi"><div class="kpi-v">{result.baseline_kwh_annual.toFixed(0)}</div><div class="kpi-l">baseline</div></div>
+                            {#if result.has_appliances}<div class="kpi"><div class="kpi-v">{result.appliance_kwh_annual.toFixed(0)}</div><div class="kpi-l">elettrodomestici</div></div>{/if}
+                            {#if result.has_hvac}<div class="kpi"><div class="kpi-v">{result.hvac_kwh_annual_mean.toFixed(0)}</div><div class="kpi-l">HVAC</div></div>{/if}
+                        </div>
+                        {#if loading}<p class="hint">aggiornamento…</p>{/if}
                     </div>
-                    {#if loading}<p class="hint">aggiornamento…</p>{/if}
-                </div>
+                {/if}
 
                 <div class="card">
                     <div class="section-title">Settimana tipo — {MONTHS[result.month]} ({regime === "home" ? "a casa" : "via"})</div>
                     <div class="chart-wrap"><ResultsChart type={loadChart.type} data={loadChart.data} options={loadChart.options} downloadFilename="profilo_carico_settimana" /></div>
                 </div>
+
+                {#if showPresence}
+                    <div class="card">
+                        <div class="section-title">Calendario di presenza (giorni in casa per mese)</div>
+                        <Heatmap
+                            matrix={heatMatrix}
+                            rowLabels={MONTH_ABBR}
+                            colLabels={HEATMAP_COLS}
+                            mode="categorical"
+                            categories={PRESENCE_CATEGORIES}
+                            categoryColors={PRESENCE_CATEGORY_COLORS}
+                            colLabelEvery={5}
+                        />
+                    </div>
+                {/if}
 
                 {#if result.has_thermal && tempChart}
                     <div class="card">
@@ -457,7 +693,12 @@
     .top-bar { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; }
     .top-bar h2 { margin: 0; }
     .spacer { flex: 1; }
-    .grid { display: grid; grid-template-columns: 380px 1fr; gap: 1.5rem; align-items: start; }
+    .level-bar { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .level-btn { flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 0.55rem 0.8rem; border: 1px solid var(--color-border, #d1d5db); background: var(--color-bg-secondary, #f9fafb); border-radius: 8px; cursor: pointer; text-align: left; }
+    .level-btn.active { border-color: var(--color-accent, #1d4ed8); background: var(--color-accent, #1d4ed8); color: #fff; }
+    .level-name { font-weight: 600; font-size: 0.95rem; }
+    .level-hint { font-size: 0.72rem; opacity: 0.85; }
+    .grid { display: grid; grid-template-columns: 400px 1fr; gap: 1.5rem; align-items: start; }
     .controls { padding: 1.25rem; position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow-y: auto; }
     .results { display: flex; flex-direction: column; gap: 1.5rem; min-width: 0; }
     .chart-wrap { height: 320px; }
@@ -475,17 +716,24 @@
     .app-table td, .kwh-table td { padding: 2px 3px; border-bottom: 1px solid var(--color-border, #f1f5f9); }
     .input.mini { width: 56px; padding: 2px 4px; }
     .input.mini-w { width: 100%; padding: 2px 4px; }
+    .big-input { font-size: 1.4rem; font-weight: 600; padding: 0.5rem 0.6rem; }
+    .bimonthly-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem; }
+    .summary-toggle { cursor: pointer; font-size: 0.85rem; color: var(--color-accent, #1d4ed8); margin-bottom: 0.5rem; }
     .kpis { display: flex; flex-wrap: wrap; gap: 1rem; }
     .kpi { min-width: 90px; }
     .kpi-v { font-size: 1.4rem; font-weight: 700; color: var(--color-accent, #1d4ed8); }
     .kpi-l { font-size: 0.75rem; color: var(--color-text-secondary, #6b7280); }
+    .split-bar { margin-top: 0.75rem; height: 12px; border-radius: 6px; background: #e5e7eb; overflow: hidden; }
+    .split-home { height: 100%; background: var(--color-accent, #1d4ed8); }
     .hint { font-size: 0.78rem; color: var(--color-text-secondary, #6b7280); margin: 0.3rem 0; }
     .hint.warn { color: #b45309; }
+    .hint.info { color: #1d4ed8; }
     .ok-msg { color: #16a34a; font-size: 0.85rem; }
     .error-msg { color: #dc2626; font-size: 0.85rem; }
     .link-btn { background: none; border: none; color: #dc2626; cursor: pointer; font-size: 1rem; line-height: 1; }
     @media (max-width: 900px) {
         .grid { grid-template-columns: 1fr; }
         .controls { position: static; max-height: none; }
+        .level-bar { flex-direction: column; }
     }
 </style>

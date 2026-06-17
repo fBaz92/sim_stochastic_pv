@@ -26,7 +26,9 @@ from datetime import date
 from typing import Any, BinaryIO, Mapping
 
 from jinja2 import Template
-from weasyprint import HTML
+# WeasyPrint is imported lazily inside the render function so the API and the
+# test suite can boot without its native libraries (PDF export is an optional
+# feature; the import only needs to succeed when a PDF is actually requested).
 
 from ...simulation.electrical_design import DesignEvaluation
 from ...simulation.electrical_design.production import ProductionPreviewResult
@@ -305,6 +307,7 @@ def build_design_report_pdf(
         production=production,
     )
     stream = output or io.BytesIO()
+    from weasyprint import HTML  # lazy: native libs only needed to render
     HTML(string=html).write_pdf(stream)
     stream.seek(0)
     return stream

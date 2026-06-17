@@ -14,6 +14,7 @@ from sim_stochastic_pv.simulation import (
     BatteryOption,
     BatterySpecs,
     DEFAULT_DERATING_EXPONENT_K,
+    DEFAULT_PRESENCE_CALENDAR,
     DEFAULT_PHI_INTRA_DAY,
     DEFAULT_SIGMA_LOG,
     EconomicConfig,
@@ -34,6 +35,7 @@ from sim_stochastic_pv.simulation import (
     OptimizationRequest,
     PanelElectricalSpecs,
     PanelOption,
+    PresenceCalendar,
     PriceModel,
     PvString,
     SetpointConfig,
@@ -43,6 +45,8 @@ from sim_stochastic_pv.simulation import (
     ThermalLoadConfig,
     WeeklyPatternLoadProfile,
     WEEKLY_PRESETS,
+    build_scaled_arera_factory,
+    fit_bolletta_profile,
     get_appliance_preset,
     make_default_solar_params_for_pavullo,
 )
@@ -186,6 +190,12 @@ def _build_single_load_profile_factory(sub_cfg: Mapping[str, Any]) -> "callable"
     """
     sub_type = str(sub_cfg.get("type", "")).lower()
     if sub_type == "arera":
+        # An optional scale_factor multiplies the whole ARERA base-load table —
+        # this is how a bill-fitted "home" regime expresses "the standard shape
+        # but N× as much energy". 1.0 (or absent) is the plain baseline.
+        scale_factor = float(sub_cfg.get("scale_factor", 1.0))
+        if scale_factor != 1.0:
+            return build_scaled_arera_factory(scale_factor)
         return lambda: AreraLoadProfile()
 
     # -- Phase 5: weekly pattern sub-profile ----------------------------------
@@ -366,6 +376,40 @@ def _legacy_side_factory(
     return factory
 
 
+def parse_presence_calendar(raw: Any) -> PresenceCalendar:
+    """
+    Hydrate a JSON ``presence_calendar`` block into a :class:`PresenceCalendar`.
+
+    Centralises the "raw dict → dataclass" conversion used by both the
+    full-scenario builder and the regime preview, with a single fallback rule:
+    a missing/``None`` block yields :data:`DEFAULT_PRESENCE_CALENDAR` (a typical
+    primary residence). An already-constructed calendar passes through.
+
+    Args:
+        raw: ``None``, a :class:`PresenceCalendar`, or a JSON-decoded dict with
+            a ``"months"`` list of 12 month-pattern dicts.
+
+    Returns:
+        PresenceCalendar: The hydrated (or default) calendar.
+
+    Raises:
+        ValueError: If ``raw`` is a dict but malformed (wrong month count or an
+            out-of-range pattern), propagated from
+            :meth:`PresenceCalendar.from_dict`.
+
+    Example:
+        ```python
+        parse_presence_calendar(None)                       # DEFAULT_PRESENCE_CALENDAR
+        parse_presence_calendar({"months": [ ... 12 ... ]}) # hydrated calendar
+        ```
+    """
+    if raw is None:
+        return DEFAULT_PRESENCE_CALENDAR
+    if isinstance(raw, PresenceCalendar):
+        return raw
+    return PresenceCalendar.from_dict(raw)
+
+
 def build_default_load_profile(scenario_data: Mapping[str, Any] | str | Path | None = None) -> LoadProfile:
     """
     Build the scenario's :class:`LoadProfile` from a hydrated scenario dict.
@@ -386,6 +430,7 @@ def build_default_load_profile(scenario_data: Mapping[str, Any] | str | Path | N
     A *sub-profile* is one of:
 
     - ``{"type": "arera"}`` — Italian ARERA standard profile
+    - ``{"type": "arera", "scale_factor": 1.8}`` — ARERA table × 1.8
     - ``{"monthly_24h_w": [[…24…], …12…]}`` — explicit 12×24 matrix
     - ``{"monthly_w": [w0…w11]}`` — flat monthly pattern (expanded)
 
@@ -393,6 +438,16 @@ def build_default_load_profile(scenario_data: Mapping[str, Any] | str | Path | N
     **scenario** (they describe how the user *uses* the building, not the
     building itself), so they are read from the scenario root first and
     fall back to inside the ``load_profile`` block for compatibility.
+
+    **Bill-fitted shape** — ``kind="bolletta"``: home is the ARERA baseline
+    scaled to match a declared annual consumption, away is plain ARERA. The
+    home scale is taken from a precomputed ``_derived.home_scale_factor`` block
+    or recomputed from ``bolletta.annual_kwh`` + the presence calendar.
+
+    **Presence calendar** — any of the above shapes may carry a
+    ``"presence_calendar"`` block (12 month patterns). When present it is the
+    authoritative occupancy source and overrides the ``min/max_days_home``
+    arrays (see :func:`parse_presence_calendar`).
 
     **Legacy shape (still supported)** — flat dict with
     ``home_profile_type``/``away_profile`` selectors and
@@ -438,6 +493,14 @@ def build_default_load_profile(scenario_data: Mapping[str, Any] | str | Path | N
         )
     )
 
+    # When the profile carries a presence calendar it is the authoritative
+    # source of occupancy (it is how the Bolletta/Guidato/Esperto editors
+    # express "when the building is used"), overriding any scenario-level or
+    # default min/max day arrays.
+    if "presence_calendar" in load_cfg:
+        calendar = parse_presence_calendar(load_cfg.get("presence_calendar"))
+        min_days_home, max_days_home = calendar.to_min_max_days_home()
+
     load_kind = str(load_cfg.get("kind", "")).lower()
 
     if load_kind == "weekly":
@@ -455,6 +518,29 @@ def build_default_load_profile(scenario_data: Mapping[str, Any] | str | Path | N
             )
         home_factory = _build_single_load_profile_factory(load_cfg["home"])
         away_factory = _build_single_load_profile_factory(load_cfg["away"])
+    elif load_kind == "bolletta":
+        # Bill-fitted profile: home is the ARERA baseline scaled to match the
+        # annual bill, away is the plain ARERA standby. The home scale is taken
+        # from the precomputed ``_derived`` block, or recomputed from the bill
+        # and presence calendar if absent. The shape is deterministic (no daily
+        # variability) — this is the "two numbers, one graph" tier.
+        calendar = parse_presence_calendar(load_cfg.get("presence_calendar"))
+        min_days_home, max_days_home = calendar.to_min_max_days_home()
+        derived = load_cfg.get("_derived") or {}
+        scale_factor = derived.get("home_scale_factor")
+        if scale_factor is None:
+            bolletta_block = load_cfg.get("bolletta") or {}
+            annual_kwh = bolletta_block.get("annual_kwh")
+            if annual_kwh is None:
+                raise ValueError(
+                    "load_profile with kind='bolletta' requires either "
+                    "'_derived.home_scale_factor' or 'bolletta.annual_kwh'"
+                )
+            scale_factor = fit_bolletta_profile(annual_kwh, calendar)["home_scale_factor"]
+        home_factory = build_scaled_arera_factory(float(scale_factor))
+        away_factory = lambda: AreraLoadProfile()
+        home_var = None
+        away_var = None
     elif _looks_like_phase8_single_side(load_cfg):
         # DB-saved single-sided profiles ("custom", "custom_24h",
         # "weekly", "arera") — the LoadProfileManager stores them as a
@@ -505,6 +591,9 @@ def build_regime_load_profile_factory(
 
     - ``profile_type="home_away"`` → ``data["home"]`` / ``data["away"]`` are
       sub-profile dicts; a missing side falls back to ARERA.
+    - ``profile_type="bolletta"`` → ``home`` is the bill-scaled ARERA (factor
+      from ``data["_derived"]`` or recomputed from ``data["bolletta"]`` + the
+      presence calendar); ``away`` is plain ARERA.
     - single-sided types (``custom``, ``custom_24h``, ``weekly``, ``arera``):
       the ``"home"`` regime uses the root ``data`` as the sub-profile; the
       ``"away"`` regime falls back to ARERA (appliances/HVAC are home-only,
@@ -534,6 +623,22 @@ def build_regime_load_profile_factory(
         if isinstance(sub, Mapping):
             return _build_single_load_profile_factory(sub)
         return lambda: AreraLoadProfile()
+
+    if pt == "bolletta":
+        # Bill-fitted profile: away is plain ARERA, home is the scaled ARERA
+        # whose factor matches the bill (precomputed in ``_derived`` or, as a
+        # fallback, recomputed from the bill + presence calendar).
+        if regime == "away":
+            return lambda: AreraLoadProfile()
+        derived = data.get("_derived") or {}
+        scale_factor = derived.get("home_scale_factor")
+        if scale_factor is None:
+            annual_kwh = (data.get("bolletta") or {}).get("annual_kwh")
+            if annual_kwh is None:
+                return lambda: AreraLoadProfile()
+            calendar = parse_presence_calendar(data.get("presence_calendar"))
+            scale_factor = fit_bolletta_profile(annual_kwh, calendar)["home_scale_factor"]
+        return build_scaled_arera_factory(float(scale_factor))
 
     # Single-sided profile: the away regime is always the simple ARERA shape.
     if regime == "away":
